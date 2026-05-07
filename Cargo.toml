@@ -40,3 +40,11 @@ path = "src/bin.rs"
 [[bench]]
 name = "vfs_benchmarks"
 harness = false
+
+[[bench]]
+name = "pager_benchmarks"
+harness = false
+
+[[bench]]
+name = "wal_benchmarks"
+harness = false

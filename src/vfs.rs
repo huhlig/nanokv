@@ -21,10 +21,12 @@
 //! - In-memory testing without disk I/O
 //! - Custom storage backends (e.g., cloud storage, encrypted storage)
 
+mod error;
 mod filesystem;
 mod local;
 mod memory;
 
-pub use self::filesystem::{File, FileLockMode, FileSystem, FileSystemError, FileSystemResult};
+pub use self::error::{FileSystemError, FileSystemResult};
+pub use self::filesystem::{File, FileLockMode, FileSystem};
 pub use self::local::{LocalFileHandle, LocalFileSystem};
 pub use self::memory::{MemoryFileHandle, MemoryFileSystem};

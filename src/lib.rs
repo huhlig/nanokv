@@ -16,9 +16,10 @@
 
 mod api;
 mod cache;
+pub mod pager;
 mod rest;
-mod pager;
 mod table;
 pub mod vfs;
+pub mod wal;
 
 pub mod prelude {}
