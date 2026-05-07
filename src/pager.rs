@@ -14,3 +14,31 @@
 // limitations under the License.
 //
 
+//! Pager Layer - Block-level storage with page management
+//!
+//! The Pager provides:
+//! - Configurable page sizes (4KB, 8KB, 16KB, 32KB, 64KB)
+//! - Page allocation and deallocation
+//! - Free list management
+//! - Optional compression (LZ4, Zstd)
+//! - Optional encryption (AES-256-GCM)
+//! - SHA-256 checksums for integrity
+//! - Superblock for database metadata
+
+mod config;
+mod error;
+mod file_header;
+mod free_list;
+mod page;
+mod pagefile;
+mod superblock;
+
+pub use self::config::{CompressionType, EncryptionType, PageSize, PagerConfig};
+pub use self::error::{PagerError, PagerResult};
+pub use self::file_header::FileHeader;
+pub use self::free_list::{FreeList, FreeListPage};
+pub use self::page::{Page, PageHeader, PageId, PageType};
+pub use self::pagefile::Pager;
+pub use self::superblock::Superblock;
+
+// Made with Bob

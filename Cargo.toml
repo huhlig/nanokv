@@ -14,15 +14,15 @@ repository = "https://github.com/huhlig/nanokv"
 
 [dependencies]
 async-trait = { version = "0.1" }
-thiserror = { version = "1.0" }
+thiserror = { version = "2" }
 parking_lot = { version = "0.12" }
-sha2 = { version = "0.10" }
+sha2 = { version = "0.11" }
 fs2 = "0.4.3"
 tracing = "0.1.44"
 tracing-test = "0.2.6"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2" }
@@ -30,9 +30,13 @@ libc = { version = "0.2" }
 [dev-dependencies]
 tempfile = { version = "3" }
 proptest = { version = "1" }
-criterion = { version = "0.5" }
+criterion = { version = "0.8" }
 
 
 [[bin]]
 name = "nanokv"
 path = "src/bin.rs"
+
+[[bench]]
+name = "vfs_benchmarks"
+harness = false

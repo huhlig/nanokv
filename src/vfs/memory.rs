@@ -14,28 +14,24 @@
 // limitations under the License.
 //
 
-use std::collections::{BTreeMap, BTreeSet};
+use super::FileLockMode;
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
-use std::thread::{Thread, ThreadId};
-
-use crate::filesystem::FileLockMode;
-use kbase_uri::SegmentedPath;
 
 use super::{File, FileSystem, FileSystemError, FileSystemResult};
 
 /// Memory File System
 ///
 /// ```rust
-/// use kbase_vfs::{File, FileSystem, FileSystemError, FileSystemResult, MemoryFileSystem };
-/// use kbase_uri::SegmentedPath;
+/// use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 /// use std::io::{Read, Seek, SeekFrom, Write};
 ///
 /// let fs = MemoryFileSystem::new();
 ///
 /// let mut file = fs.create_file("/test.txt").expect("Error Creating File");
 /// file.write_all(b"Hello, World!").unwrap();
-/// assert_eq!(file.size().unwrap(), 13, "File size wasn't 13");
+/// assert_eq!(file.get_size().unwrap(), 13, "File size wasn't 13");
 /// file.seek(SeekFrom::Start(0)).unwrap();
 ///
 /// ```
@@ -99,7 +95,7 @@ impl FileSystem for MemoryFileSystem {
                 MemoryEntry::File(file) => {
                     let data = file.0.read().expect("Poisoned Lock");
                     Ok(data.buffer.len() as u64)
-                },
+                }
                 _ => Err(FileSystemError::InvalidOperation),
             }
         } else {
@@ -115,9 +111,9 @@ impl FileSystem for MemoryFileSystem {
         } else {
             tree.insert(
                 path.to_string(),
-                MemoryEntry::Directory(MemoryDirectoryEntry(Arc::new(
-                    RwLock::new(MemoryDirectoryData(BTreeMap::new())),
-                ))),
+                MemoryEntry::Directory(MemoryDirectoryEntry(Arc::new(RwLock::new(
+                    MemoryDirectoryData(BTreeMap::new()),
+                )))),
             );
             Ok(())
         }
@@ -129,27 +125,18 @@ impl FileSystem for MemoryFileSystem {
         if tree.contains_key(path) {
             Err(FileSystemError::PathExists)
         } else {
-            let mut parent_path = SegmentedPath::new(path);
-            loop {
-                if parent_path.segments().is_empty() {
-                    break;
-                }
-                if !tree.contains_key(parent_path.as_str()) {
-                    tree.insert(
-                        parent_path.to_string(),
-                        MemoryEntry::Directory(MemoryDirectoryEntry(Arc::new(
-                            RwLock::new(MemoryDirectoryData(BTreeMap::new())),
-                        ))),
-                    );
-                }
-                parent_path = parent_path.parent();
+            // Create all parent directories
+            let path_str = path.trim_start_matches('/');
+            let parts: Vec<&str> = path_str.split('/').collect();
+
+            for i in 0..parts.len() {
+                let parent_path = format!("/{}", parts[..=i].join("/"));
+                tree.entry(parent_path).or_insert_with(|| {
+                    MemoryEntry::Directory(MemoryDirectoryEntry(Arc::new(RwLock::new(
+                        MemoryDirectoryData(BTreeMap::new()),
+                    ))))
+                });
             }
-            tree.insert(
-                path.to_string(),
-                MemoryEntry::Directory(MemoryDirectoryEntry(Arc::new(
-                    RwLock::new(MemoryDirectoryData(BTreeMap::new())),
-                ))),
-            );
             Ok(())
         }
     }
@@ -161,8 +148,8 @@ impl FileSystem for MemoryFileSystem {
             match entry {
                 MemoryEntry::Directory(dir) => {
                     let dir = dir.0.read().expect("Poisoned Lock");
-                    Ok(dir.0.keys().map(|s| s.clone()).collect())
-                },
+                    Ok(dir.0.keys().cloned().collect())
+                }
                 _ => Err(FileSystemError::InvalidOperation),
             }
         } else {
@@ -190,7 +177,6 @@ impl FileSystem for MemoryFileSystem {
         if tree.contains_key(path) {
             Err(FileSystemError::PathExists)
         } else {
-            let parent = SegmentedPath::new(path).parent();
             let inner = Arc::new(RwLock::new(MemoryFileData {
                 buffer: Vec::default(),
                 lock: FileLockMode::Unlocked,
@@ -282,10 +268,9 @@ impl std::fmt::Debug for MemoryFileHandle {
 impl Read for MemoryFileHandle {
     #[tracing::instrument]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut data = self.data.write().unwrap();
+        let data = self.data.write().unwrap();
         let len = std::cmp::min(buf.len(), data.buffer.len() - self.cursor);
-        buf[..len]
-            .copy_from_slice(&data.buffer[self.cursor..self.cursor + len]);
+        buf[..len].copy_from_slice(&data.buffer[self.cursor..self.cursor + len]);
         self.cursor += len;
         Ok(len)
     }
@@ -316,13 +301,13 @@ impl Seek for MemoryFileHandle {
         match pos {
             SeekFrom::Start(offset) => {
                 self.cursor = offset as usize;
-            },
+            }
             SeekFrom::End(offset) => {
                 self.cursor = (data.buffer.len() as i64 + offset) as usize;
-            },
+            }
             SeekFrom::Current(offset) => {
                 self.cursor = (self.cursor as i64 + offset) as usize;
-            },
+            }
         }
         Ok(self.cursor as u64)
     }
@@ -373,12 +358,8 @@ impl File for MemoryFileHandle {
     }
 
     #[tracing::instrument]
-    fn read_at_offset(
-        &mut self,
-        pos: u64,
-        buf: &mut [u8],
-    ) -> FileSystemResult<usize> {
-        let mut data = self.data.read().expect("Poisoned Lock");
+    fn read_at_offset(&mut self, pos: u64, buf: &mut [u8]) -> FileSystemResult<usize> {
+        let data = self.data.read().expect("Poisoned Lock");
 
         // Calculate Slice Bounds
         let off = pos as usize; // Lower Slice Bound
@@ -391,11 +372,7 @@ impl File for MemoryFileHandle {
         Ok(len)
     }
     #[tracing::instrument]
-    fn write_to_offset(
-        &mut self,
-        pos: u64,
-        buf: &[u8],
-    ) -> FileSystemResult<usize> {
+    fn write_to_offset(&mut self, pos: u64, buf: &[u8]) -> FileSystemResult<usize> {
         let mut data = self.data.write().unwrap();
 
         // Calculate Slice Bounds
@@ -422,11 +399,7 @@ mod test {
     #[test]
     #[traced_test]
     fn test_memory_filesystem() {
-        use crate::{
-            File, FileSystem, FileSystemError, FileSystemResult,
-            MemoryFileSystem,
-        };
-        use kbase_uri::SegmentedPath;
+        use super::{File, FileSystem, MemoryFileSystem};
         use std::io::{Read, Seek, SeekFrom, Write};
 
         let fs = MemoryFileSystem::new();
@@ -496,8 +469,9 @@ mod test {
         // Remove file and test
         fs.remove_file(filename.as_str())
             .expect("Error Removing File");
-        assert!(!fs
-            .exists(filename.as_str())
-            .expect("Error Checking File Existence"));
+        assert!(
+            !fs.exists(filename.as_str())
+                .expect("Error Checking File Existence")
+        );
     }
 }

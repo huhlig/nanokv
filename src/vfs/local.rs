@@ -14,29 +14,11 @@
 // limitations under the License.
 //
 
-use super::FileLockMode;
-use crate::{File, FileSystem, FileSystemError, FileSystemResult};
+use super::{File, FileLockMode, FileSystem, FileSystemError, FileSystemResult};
 use fs2::FileExt;
-use kbase_uri::SegmentedPath;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Local File System
-///
-/// ```rust
-/// use kbase_vfs::{File, FileSystem, FileSystemError, FileSystemResult, LocalFileSystem };
-/// use kbase_uri::SegmentedPath;
-/// use std::io::{Read, Seek, SeekFrom, Write};
-///
-/// let fs = LocalFileSystem::new(std::env::temp_dir());
-///
-/// let mut file = fs.create_file("/test.txt").expect("Error Creating File");
-/// file.write_all(b"Hello, World!").unwrap();
-/// assert_eq!(file.size().unwrap(), 13, "File size wasn't 13");
-/// file.seek(SeekFrom::Start(0)).unwrap();
-/// fs.remove_file("/test.txt").unwrap();
-///
-/// ```
-///
 pub struct LocalFileSystem {
     root: std::path::PathBuf,
 }
@@ -87,20 +69,18 @@ impl FileSystem for LocalFileSystem {
 
     #[tracing::instrument]
     fn create_directory(&self, path: &str) -> FileSystemResult<()> {
-        std::fs::create_dir(self.absolute_path(path))
-            .map_err(io_error_to_file_system_error)
+        std::fs::create_dir(self.absolute_path(path)).map_err(io_error_to_file_system_error)
     }
 
     #[tracing::instrument]
     fn create_directory_all(&self, path: &str) -> FileSystemResult<()> {
-        std::fs::create_dir_all(self.absolute_path(path))
-            .map_err(io_error_to_file_system_error)
+        std::fs::create_dir_all(self.absolute_path(path)).map_err(io_error_to_file_system_error)
     }
 
     #[tracing::instrument]
     fn list_directory<'a>(&self, path: &str) -> FileSystemResult<Vec<String>> {
-        let rd = std::fs::read_dir(self.absolute_path(path))
-            .map_err(io_error_to_file_system_error)?;
+        let rd =
+            std::fs::read_dir(self.absolute_path(path)).map_err(io_error_to_file_system_error)?;
         let x = rd
             .filter_map(Result::ok)
             .filter_map(|r| r.file_name().into_string().ok())
@@ -110,14 +90,12 @@ impl FileSystem for LocalFileSystem {
 
     #[tracing::instrument]
     fn remove_directory(&self, path: &str) -> FileSystemResult<()> {
-        std::fs::remove_dir(self.absolute_path(path))
-            .map_err(io_error_to_file_system_error)
+        std::fs::remove_dir(self.absolute_path(path)).map_err(io_error_to_file_system_error)
     }
 
     #[tracing::instrument]
     fn remove_directory_all(&self, path: &str) -> FileSystemResult<()> {
-        std::fs::remove_dir_all(self.absolute_path(path))
-            .map_err(io_error_to_file_system_error)
+        std::fs::remove_dir_all(self.absolute_path(path)).map_err(io_error_to_file_system_error)
     }
 
     #[tracing::instrument]
@@ -148,8 +126,7 @@ impl FileSystem for LocalFileSystem {
 
     #[tracing::instrument]
     fn remove_file(&self, path: &str) -> FileSystemResult<()> {
-        std::fs::remove_file(self.absolute_path(path))
-            .map_err(io_error_to_file_system_error)
+        std::fs::remove_file(self.absolute_path(path)).map_err(io_error_to_file_system_error)
     }
 }
 
@@ -234,12 +211,18 @@ impl File for LocalFileHandle {
     }
 
     fn set_lock_status(&mut self, mode: FileLockMode) -> FileSystemResult<()> {
-        match mode {
+        let result = match mode {
             FileLockMode::Unlocked => self.file.unlock(),
             FileLockMode::Shared => self.file.lock_shared(),
             FileLockMode::Exclusive => self.file.lock_exclusive(),
         }
-            .map_err(io_error_to_file_system_error)
+        .map_err(io_error_to_file_system_error);
+        
+        if result.is_ok() {
+            self.lock = mode;
+        }
+        
+        result
     }
 }
 
@@ -247,28 +230,18 @@ fn io_error_to_file_system_error(error: std::io::Error) -> FileSystemError {
     match error.kind() {
         std::io::ErrorKind::NotFound => FileSystemError::PathMissing,
         std::io::ErrorKind::AlreadyExists => FileSystemError::PathExists,
-        std::io::ErrorKind::PermissionDenied => {
-            FileSystemError::PermissionDenied
-        },
-        std::io::ErrorKind::InvalidInput => {
-            FileSystemError::InvalidPath(error.to_string())
-        },
+        std::io::ErrorKind::PermissionDenied => FileSystemError::PermissionDenied,
+        std::io::ErrorKind::InvalidInput => FileSystemError::InvalidPath(error.to_string()),
         _ => FileSystemError::WrappedError(Box::new(error)),
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::io::Write;
-    use std::time::SystemTime;
-
     #[test]
     #[tracing_test::traced_test]
     fn test_local_filesystem() {
-        use crate::{
-            File, FileSystem, FileSystemError, FileSystemResult,
-            LocalFileSystem,
-        };
+        use super::{File, FileSystem, LocalFileSystem};
         use std::io::{Read, Seek, SeekFrom, Write};
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -326,8 +299,7 @@ mod test {
         }
         {
             // Open existing file and test
-            let mut file =
-                fs.open_file(filename.as_str()).expect("Error Opening File");
+            let mut file = fs.open_file(filename.as_str()).expect("Error Opening File");
             assert_eq!(file.get_size().expect("Error getting file size"), 8);
 
             // Seek to start and read full file
@@ -340,8 +312,9 @@ mod test {
         // Remove file and test
         fs.remove_file(filename.as_str())
             .expect("Error Removing File");
-        assert!(!fs
-            .exists(filename.as_str())
-            .expect("Error Checking File Existence"));
+        assert!(
+            !fs.exists(filename.as_str())
+                .expect("Error Checking File Existence")
+        );
     }
 }

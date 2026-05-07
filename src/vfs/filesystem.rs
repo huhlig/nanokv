@@ -34,7 +34,7 @@ pub trait FileSystem: std::fmt::Debug + Sized + Sync + Send + 'static {
     /// Creates a new, empty folder entry at the provided path.
     fn create_directory_all(&self, path: &str) -> FileSystemResult<()>;
     /// Returns an iterator over the names of entries within a Folder.
-    fn list_directory<'a>(&self, path: &str) -> FileSystemResult<Vec<String>>;
+    fn list_directory(&self, path: &str) -> FileSystemResult<Vec<String>>;
     /// Removes the folder at this path.
     fn remove_directory(&self, path: &str) -> FileSystemResult<()>;
     /// Removes the folder at this path and all children.
