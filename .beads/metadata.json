@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "nanokv",
+  "project_id": "cc1c22d2-74e1-4383-87e8-41eb392d57b6"
+}
