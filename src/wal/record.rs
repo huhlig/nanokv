@@ -16,7 +16,11 @@
 
 //! WAL record types and serialization
 
+use crate::pager::{CompressionType, EncryptionType};
 use crate::wal::{WalError, WalResult};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
@@ -166,11 +170,20 @@ pub struct WalRecord {
     pub timestamp: u64,
     /// Record data
     pub data: RecordData,
+    /// Compression type
+    pub compression: CompressionType,
+    /// Encryption type
+    pub encryption: EncryptionType,
 }
 
 impl WalRecord {
     /// Create a new WAL record
-    pub fn new(lsn: Lsn, data: RecordData) -> Self {
+    pub fn new(
+        lsn: Lsn,
+        data: RecordData,
+        compression: CompressionType,
+        encryption: EncryptionType,
+    ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -180,6 +193,8 @@ impl WalRecord {
             lsn,
             timestamp,
             data,
+            compression,
+            encryption,
         }
     }
 
@@ -190,10 +205,13 @@ impl WalRecord {
     /// - LSN (8 bytes)
     /// - Timestamp (8 bytes)
     /// - Record type (1 byte)
-    /// - Data length (4 bytes)
-    /// - Data (variable)
+    /// - Compression type (1 byte)
+    /// - Encryption type (1 byte)
+    /// - Uncompressed size (4 bytes)
+    /// - Compressed/encrypted size (4 bytes)
+    /// - Data (variable, possibly compressed and/or encrypted)
     /// - Checksum (32 bytes, SHA-256)
-    pub fn to_bytes(&self) -> WalResult<Vec<u8>> {
+    pub fn to_bytes(&self, encryption_key: Option<&[u8; 32]>) -> WalResult<Vec<u8>> {
         let mut buffer = Vec::new();
 
         // Magic number
@@ -214,16 +232,64 @@ impl WalRecord {
             .write_all(&[self.data.record_type().to_u8()])
             .map_err(WalError::IoError)?;
 
+        // Compression type
+        buffer
+            .write_all(&[self.compression.to_u8()])
+            .map_err(WalError::IoError)?;
+
+        // Encryption type
+        buffer
+            .write_all(&[self.encryption.to_u8()])
+            .map_err(WalError::IoError)?;
+
         // Serialize data
         let data_bytes = self.serialize_data()?;
+        let uncompressed_size = data_bytes.len() as u32;
 
-        // Data length
+        // Compress data if needed
+        let compressed_data = match self.compression {
+            CompressionType::None => data_bytes,
+            CompressionType::Lz4 => lz4_flex::compress_prepend_size(&data_bytes),
+            CompressionType::Zstd => zstd::encode_all(&data_bytes[..], 3)
+                .map_err(|e| WalError::SerializationError(format!("Zstd compression failed: {}", e)))?,
+        };
+
+        // Encrypt data if needed (after compression)
+        let final_data = match self.encryption {
+            EncryptionType::None => compressed_data,
+            EncryptionType::Aes256Gcm => {
+                let key = encryption_key.ok_or(WalError::MissingEncryptionKey)?;
+
+                let mut nonce_bytes = [0u8; 12];
+                rand::thread_rng().fill_bytes(&mut nonce_bytes);
+                let nonce = Nonce::from_slice(&nonce_bytes);
+
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+                let encrypted = cipher
+                    .encrypt(nonce, compressed_data.as_ref())
+                    .map_err(|e| WalError::EncryptionError(e.to_string()))?;
+
+                let mut result = Vec::with_capacity(12 + encrypted.len());
+                result.extend_from_slice(&nonce_bytes);
+                result.extend_from_slice(&encrypted);
+                result
+            }
+        };
+
+        let stored_size = final_data.len() as u32;
+
+        // Uncompressed size
         buffer
-            .write_all(&(data_bytes.len() as u32).to_le_bytes())
+            .write_all(&uncompressed_size.to_le_bytes())
+            .map_err(WalError::IoError)?;
+
+        // Stored size
+        buffer
+            .write_all(&stored_size.to_le_bytes())
             .map_err(WalError::IoError)?;
 
         // Data
-        buffer.write_all(&data_bytes).map_err(WalError::IoError)?;
+        buffer.write_all(&final_data).map_err(WalError::IoError)?;
 
         // Calculate checksum (excluding the checksum itself)
         let mut hasher = Sha256::new();
@@ -237,9 +303,9 @@ impl WalRecord {
     }
 
     /// Deserialize a record from bytes
-    pub fn from_bytes(bytes: &[u8]) -> WalResult<Self> {
-        if bytes.len() < 57 {
-            // Minimum size: magic(4) + lsn(8) + timestamp(8) + type(1) + len(4) + checksum(32)
+    pub fn from_bytes(bytes: &[u8], encryption_key: Option<&[u8; 32]>) -> WalResult<Self> {
+        if bytes.len() < 67 {
+            // Minimum size: magic(4) + lsn(8) + timestamp(8) + type(1) + compression(1) + encryption(1) + uncompressed(4) + stored(4) + checksum(32)
             return Err(WalError::InvalidRecord("Record too short".to_string()));
         }
 
@@ -271,21 +337,39 @@ impl WalRecord {
         let record_type = RecordType::from_u8(bytes[cursor])?;
         cursor += 1;
 
-        // Data length
-        let data_len = u32::from_le_bytes(
+        // Compression type
+        let compression = CompressionType::from_u8(bytes[cursor])
+            .ok_or_else(|| WalError::DeserializationError("Invalid compression type".to_string()))?;
+        cursor += 1;
+
+        // Encryption type
+        let encryption = EncryptionType::from_u8(bytes[cursor])
+            .ok_or_else(|| WalError::DeserializationError("Invalid encryption type".to_string()))?;
+        cursor += 1;
+
+        // Uncompressed size
+        let _uncompressed_size = u32::from_le_bytes(
             bytes[cursor..cursor + 4]
                 .try_into()
-                .map_err(|_| WalError::DeserializationError("Invalid data length".to_string()))?,
+                .map_err(|_| WalError::DeserializationError("Invalid uncompressed size".to_string()))?,
+        ) as usize;
+        cursor += 4;
+
+        // Stored size
+        let stored_size = u32::from_le_bytes(
+            bytes[cursor..cursor + 4]
+                .try_into()
+                .map_err(|_| WalError::DeserializationError("Invalid stored size".to_string()))?,
         ) as usize;
         cursor += 4;
 
         // Verify we have enough bytes
-        if bytes.len() < cursor + data_len + 32 {
+        if bytes.len() < cursor + stored_size + 32 {
             return Err(WalError::InvalidRecord("Incomplete record".to_string()));
         }
 
         // Verify checksum
-        let data_end = cursor + data_len;
+        let data_end = cursor + stored_size;
         let expected_checksum = &bytes[data_end..data_end + 32];
         let mut hasher = Sha256::new();
         hasher.update(&bytes[..data_end]);
@@ -295,14 +379,49 @@ impl WalRecord {
             return Err(WalError::ChecksumMismatch(lsn));
         }
 
+        // Get stored data
+        let stored_data = &bytes[cursor..data_end];
+
+        // Decrypt if needed
+        let compressed_data = match encryption {
+            EncryptionType::None => stored_data.to_vec(),
+            EncryptionType::Aes256Gcm => {
+                let key = encryption_key.ok_or(WalError::MissingEncryptionKey)?;
+
+                if stored_data.len() < 12 {
+                    return Err(WalError::DecryptionError(
+                        "Insufficient data for nonce".to_string(),
+                    ));
+                }
+
+                let nonce = Nonce::from_slice(&stored_data[0..12]);
+                let ciphertext = &stored_data[12..];
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+
+                cipher
+                    .decrypt(nonce, ciphertext)
+                    .map_err(|e| WalError::DecryptionError(e.to_string()))?
+            }
+        };
+
+        // Decompress if needed
+        let data_bytes = match compression {
+            CompressionType::None => compressed_data,
+            CompressionType::Lz4 => lz4_flex::decompress_size_prepended(&compressed_data)
+                .map_err(|e| WalError::DeserializationError(format!("LZ4 decompression failed: {}", e)))?,
+            CompressionType::Zstd => zstd::decode_all(&compressed_data[..])
+                .map_err(|e| WalError::DeserializationError(format!("Zstd decompression failed: {}", e)))?,
+        };
+
         // Deserialize data
-        let data_bytes = &bytes[cursor..data_end];
-        let data = Self::deserialize_data(record_type, data_bytes)?;
+        let data = Self::deserialize_data(record_type, &data_bytes)?;
 
         Ok(Self {
             lsn,
             timestamp,
             data,
+            compression,
+            encryption,
         })
     }
 
@@ -556,12 +675,19 @@ mod tests {
 
     #[test]
     fn test_begin_record_serialization() {
-        let record = WalRecord::new(1, RecordData::Begin { txn_id: 42 });
-        let bytes = record.to_bytes().unwrap();
-        let deserialized = WalRecord::from_bytes(&bytes).unwrap();
+        let record = WalRecord::new(
+            1,
+            RecordData::Begin { txn_id: 42 },
+            CompressionType::None,
+            EncryptionType::None,
+        );
+        let bytes = record.to_bytes(None).unwrap();
+        let deserialized = WalRecord::from_bytes(&bytes, None).unwrap();
 
         assert_eq!(record.lsn, deserialized.lsn);
         assert_eq!(record.data, deserialized.data);
+        assert_eq!(record.compression, deserialized.compression);
+        assert_eq!(record.encryption, deserialized.encryption);
     }
 
     #[test]
@@ -575,22 +701,33 @@ mod tests {
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),
             },
+            CompressionType::None,
+            EncryptionType::None,
         );
-        let bytes = record.to_bytes().unwrap();
-        let deserialized = WalRecord::from_bytes(&bytes).unwrap();
+        let bytes = record.to_bytes(None).unwrap();
+        let deserialized = WalRecord::from_bytes(&bytes, None).unwrap();
 
         assert_eq!(record.lsn, deserialized.lsn);
         assert_eq!(record.data, deserialized.data);
+        assert_eq!(record.compression, deserialized.compression);
+        assert_eq!(record.encryption, deserialized.encryption);
     }
 
     #[test]
     fn test_commit_record_serialization() {
-        let record = WalRecord::new(3, RecordData::Commit { txn_id: 42 });
-        let bytes = record.to_bytes().unwrap();
-        let deserialized = WalRecord::from_bytes(&bytes).unwrap();
+        let record = WalRecord::new(
+            3,
+            RecordData::Commit { txn_id: 42 },
+            CompressionType::None,
+            EncryptionType::None,
+        );
+        let bytes = record.to_bytes(None).unwrap();
+        let deserialized = WalRecord::from_bytes(&bytes, None).unwrap();
 
         assert_eq!(record.lsn, deserialized.lsn);
         assert_eq!(record.data, deserialized.data);
+        assert_eq!(record.compression, deserialized.compression);
+        assert_eq!(record.encryption, deserialized.encryption);
     }
 
     #[test]
@@ -601,24 +738,33 @@ mod tests {
                 lsn: 100,
                 active_txns: vec![1, 2, 3],
             },
+            CompressionType::None,
+            EncryptionType::None,
         );
-        let bytes = record.to_bytes().unwrap();
-        let deserialized = WalRecord::from_bytes(&bytes).unwrap();
+        let bytes = record.to_bytes(None).unwrap();
+        let deserialized = WalRecord::from_bytes(&bytes, None).unwrap();
 
         assert_eq!(record.lsn, deserialized.lsn);
         assert_eq!(record.data, deserialized.data);
+        assert_eq!(record.compression, deserialized.compression);
+        assert_eq!(record.encryption, deserialized.encryption);
     }
 
     #[test]
     fn test_checksum_validation() {
-        let record = WalRecord::new(1, RecordData::Begin { txn_id: 42 });
-        let mut bytes = record.to_bytes().unwrap();
+        let record = WalRecord::new(
+            1,
+            RecordData::Begin { txn_id: 42 },
+            CompressionType::None,
+            EncryptionType::None,
+        );
+        let mut bytes = record.to_bytes(None).unwrap();
 
         // Corrupt the data
         bytes[20] ^= 0xFF;
 
         // Should fail checksum validation
-        assert!(WalRecord::from_bytes(&bytes).is_err());
+        assert!(WalRecord::from_bytes(&bytes, None).is_err());
     }
 }
 

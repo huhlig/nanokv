@@ -69,6 +69,10 @@ pub enum PagerError {
     #[error("Decryption error: {0}")]
     DecryptionError(String),
 
+    /// Missing encryption key
+    #[error("Encryption key required but not provided")]
+    MissingEncryptionKey,
+
     /// Configuration error
     #[error("Configuration error: {0}")]
     ConfigError(String),

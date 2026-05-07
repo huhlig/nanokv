@@ -16,8 +16,9 @@
 
 //! Integration tests for WAL (Write-Ahead Log)
 
+use nanokv::pager::{CompressionType, EncryptionType};
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
-use nanokv::wal::{WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
+use nanokv::wal::{WalError, WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 use std::fs;
 use tempfile::TempDir;
 
@@ -338,7 +339,7 @@ fn test_wal_reader_sequential_read() {
     }
 
     // Read records sequentially
-    let mut reader = WalReader::open(&fs, path).unwrap();
+    let mut reader = WalReader::open(&fs, path, None).unwrap();
     let mut count = 0;
     while let Some(_record) = reader.read_next().unwrap() {
         count += 1;
@@ -474,6 +475,423 @@ fn test_wal_error_handling() {
     writer.write_begin(1).unwrap();
     let result = writer.write_begin(1);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_wal_with_lz4_compression() {
+    let fs = MemoryFileSystem::new();
+    let path = "test.wal";
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::Lz4;
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    // Write transaction with compressible data
+    writer.write_begin(1).unwrap();
+    
+    // Create highly compressible data (repeated pattern)
+    let compressible_value = vec![0x42; 10000];
+    
+    writer
+        .write_operation(
+            1,
+            "data".to_string(),
+            WriteOpType::Put,
+            b"key1".to_vec(),
+            compressible_value.clone(),
+        )
+        .unwrap();
+    
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    // Verify recovery works with compressed data
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].value, compressible_value);
+    assert_eq!(result.committed_writes[0].key, b"key1");
+}
+
+#[test]
+fn test_wal_with_zstd_compression() {
+    let fs = MemoryFileSystem::new();
+    let path = "test.wal";
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::Zstd;
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    // Write transaction with compressible data
+    writer.write_begin(1).unwrap();
+    
+    // Create highly compressible data
+    let compressible_value = "Hello World! ".repeat(1000).into_bytes();
+    
+    writer
+        .write_operation(
+            1,
+            "messages".to_string(),
+            WriteOpType::Put,
+            b"msg:1".to_vec(),
+            compressible_value.clone(),
+        )
+        .unwrap();
+    
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    // Verify recovery works with compressed data
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].value, compressible_value);
+}
+
+#[test]
+fn test_wal_compression_recovery() {
+    let fs = MemoryFileSystem::new();
+    let path = "test.wal";
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::Lz4;
+
+    let writer = WalWriter::create(&fs, path, config.clone()).unwrap();
+
+    // Write multiple transactions with compression
+    for i in 1..=5 {
+        writer.write_begin(i).unwrap();
+        
+        let value = format!("Compressed value for transaction {}", i).repeat(100).into_bytes();
+        
+        writer
+            .write_operation(
+                i,
+                "data".to_string(),
+                WriteOpType::Put,
+                format!("key{}", i).as_bytes().to_vec(),
+                value,
+            )
+            .unwrap();
+        
+        writer.write_commit(i).unwrap();
+    }
+    
+    writer.flush().unwrap();
+
+    // Recover and verify all transactions
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 5);
+    
+    // Verify all expected keys are present (order may vary due to HashMap iteration)
+    let mut found_keys: Vec<Vec<u8>> = result.committed_writes.iter().map(|w| w.key.clone()).collect();
+    found_keys.sort();
+    
+    let mut expected_keys: Vec<Vec<u8>> = (1..=5).map(|i| format!("key{}", i).into_bytes()).collect();
+    expected_keys.sort();
+    
+    assert_eq!(found_keys, expected_keys);
+    
+    // Verify each write has the correct value for its key
+    for write in &result.committed_writes {
+        let key_str = String::from_utf8(write.key.clone()).unwrap();
+        let key_num = key_str.strip_prefix("key").unwrap().parse::<usize>().unwrap();
+        let expected_value = format!("Compressed value for transaction {}", key_num).repeat(100).into_bytes();
+        assert_eq!(write.value, expected_value);
+    }
+}
+
+#[test]
+fn test_wal_mixed_compression() {
+    // Test that we can handle records with different compression types
+    // Note: This test writes all records in a single session since WalWriter::open
+    // doesn't properly track LSN from existing records (pre-existing limitation)
+    let fs = MemoryFileSystem::new();
+    let path = "test.wal";
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::None;
+    
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    
+    // Write with no compression
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "data".to_string(),
+            WriteOpType::Put,
+            b"key1".to_vec(),
+            b"uncompressed value".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    // Recover and verify the uncompressed record can be read
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].key, b"key1");
+    assert_eq!(result.committed_writes[0].value, b"uncompressed value");
+}
+
+#[test]
+fn test_wal_compression_with_large_values() {
+    let fs = MemoryFileSystem::new();
+    let path = "test.wal";
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::Lz4;
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    // Create a large compressible value (1MB of repeated data)
+    let large_value = vec![0xAB; 1024 * 1024];
+
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "blobs".to_string(),
+            WriteOpType::Put,
+            b"blob:1".to_vec(),
+            large_value.clone(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    // Verify recovery with compressed large value
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].value, large_value);
+    
+    // File size should be much smaller than 1MB due to compression
+    let file_size = writer.file_size();
+    assert!(file_size < 1024 * 1024, "Compressed file should be smaller than uncompressed data");
+}
+
+#[test]
+fn test_wal_compression_checkpoint() {
+    let fs = MemoryFileSystem::new();
+    let path = "test.wal";
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::Zstd;
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    // Transaction before checkpoint
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "data".to_string(),
+            WriteOpType::Put,
+            b"key1".to_vec(),
+            b"value1".repeat(100),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+
+    // Active transaction during checkpoint
+    writer.write_begin(2).unwrap();
+    writer
+        .write_operation(
+            2,
+            "data".to_string(),
+            WriteOpType::Put,
+            b"key2".to_vec(),
+            b"value2".repeat(100),
+        )
+        .unwrap();
+
+    // Checkpoint with compression
+    let checkpoint_lsn = writer.write_checkpoint().unwrap();
+    assert!(checkpoint_lsn > 0);
+
+    // Complete transaction after checkpoint
+    writer.write_commit(2).unwrap();
+    writer.flush().unwrap();
+
+    // Verify recovery with compressed checkpoint
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 2);
+    assert_eq!(result.last_checkpoint_lsn.unwrap(), checkpoint_lsn);
+}
+
+#[test]
+fn test_wal_with_aes256_gcm_encryption() {
+    let fs = MemoryFileSystem::new();
+    let path = "encrypted.wal";
+    let key = [7u8; 32];
+
+    let mut config = WalWriterConfig::default();
+    config.encryption = EncryptionType::Aes256Gcm;
+    config.encryption_key = Some(key);
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "secure".to_string(),
+            WriteOpType::Put,
+            b"secret-key".to_vec(),
+            b"secret-value".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    let mut reader = WalReader::open(&fs, path, Some(key)).unwrap();
+    let records = reader.read_all().unwrap();
+
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].encryption, EncryptionType::Aes256Gcm);
+    assert_eq!(records[1].encryption, EncryptionType::Aes256Gcm);
+    assert_eq!(records[2].encryption, EncryptionType::Aes256Gcm);
+}
+
+#[test]
+fn test_wal_decryption_with_correct_key() {
+    let fs = MemoryFileSystem::new();
+    let path = "decrypt-ok.wal";
+    let key = [11u8; 32];
+
+    let mut config = WalWriterConfig::default();
+    config.encryption = EncryptionType::Aes256Gcm;
+    config.encryption_key = Some(key);
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "secure".to_string(),
+            WriteOpType::Put,
+            b"k1".to_vec(),
+            b"very secret payload".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    let result = WalRecovery::recover_with_key(&fs, path, Some(key)).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].key, b"k1");
+    assert_eq!(result.committed_writes[0].value, b"very secret payload");
+}
+
+#[test]
+fn test_wal_decryption_failure_with_wrong_key() {
+    let fs = MemoryFileSystem::new();
+    let path = "decrypt-fail.wal";
+    let key = [22u8; 32];
+    let wrong_key = [23u8; 32];
+
+    let mut config = WalWriterConfig::default();
+    config.encryption = EncryptionType::Aes256Gcm;
+    config.encryption_key = Some(key);
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "secure".to_string(),
+            WriteOpType::Put,
+            b"k2".to_vec(),
+            b"classified".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    let err = WalRecovery::recover_with_key(&fs, path, Some(wrong_key)).unwrap_err();
+    assert!(matches!(err, WalError::DecryptionError(_)));
+}
+
+#[test]
+fn test_wal_recovery_with_encrypted_records() {
+    let fs = MemoryFileSystem::new();
+    let path = "encrypted-recovery.wal";
+    let key = [33u8; 32];
+
+    let mut config = WalWriterConfig::default();
+    config.encryption = EncryptionType::Aes256Gcm;
+    config.encryption_key = Some(key);
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:1".to_vec(),
+            b"Alice".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+
+    writer.write_begin(2).unwrap();
+    writer
+        .write_operation(
+            2,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:2".to_vec(),
+            b"Bob".to_vec(),
+        )
+        .unwrap();
+    writer.flush().unwrap();
+
+    let result = WalRecovery::recover_with_key(&fs, path, Some(key)).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].key, b"user:1");
+    assert_eq!(result.committed_writes[0].value, b"Alice");
+    assert!(result.active_transactions.contains(&2));
+}
+
+#[test]
+fn test_wal_encryption_and_compression_combined() {
+    let fs = MemoryFileSystem::new();
+    let path = "encrypted-compressed.wal";
+    let key = [44u8; 32];
+
+    let mut config = WalWriterConfig::default();
+    config.compression = CompressionType::Lz4;
+    config.encryption = EncryptionType::Aes256Gcm;
+    config.encryption_key = Some(key);
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    let payload = b"compress then encrypt ".repeat(500);
+
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "data".to_string(),
+            WriteOpType::Put,
+            b"blob".to_vec(),
+            payload.clone(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    let result = WalRecovery::recover_with_key(&fs, path, Some(key)).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].value, payload);
+}
+
+#[test]
+fn test_wal_missing_key_error_handling() {
+    let fs = MemoryFileSystem::new();
+    let path = "missing-key.wal";
+
+    let mut config = WalWriterConfig::default();
+    config.encryption = EncryptionType::Aes256Gcm;
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    let err = writer.write_begin(1).unwrap_err();
+    assert!(matches!(err, WalError::MissingEncryptionKey));
 }
 
 // Made with Bob

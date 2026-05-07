@@ -16,6 +16,7 @@
 
 //! WAL writer - Handles writing records to the WAL file
 
+use crate::pager::{CompressionType, EncryptionType};
 use crate::vfs::{File, FileSystem};
 use crate::wal::{Lsn, RecordData, TransactionId, WalError, WalRecord, WalResult};
 use parking_lot::RwLock;
@@ -32,6 +33,12 @@ pub struct WalWriterConfig {
     pub sync_on_write: bool,
     /// Maximum WAL file size (bytes)
     pub max_wal_size: u64,
+    /// Compression type for WAL records
+    pub compression: CompressionType,
+    /// Encryption type for WAL records
+    pub encryption: EncryptionType,
+    /// Encryption key (32 bytes for AES-256)
+    pub encryption_key: Option<[u8; 32]>,
 }
 
 impl Default for WalWriterConfig {
@@ -40,6 +47,9 @@ impl Default for WalWriterConfig {
             buffer_size: 64 * 1024, // 64KB buffer
             sync_on_write: true,    // Sync by default for durability
             max_wal_size: 1024 * 1024 * 1024, // 1GB max
+            compression: CompressionType::None, // No compression by default
+            encryption: EncryptionType::None,
+            encryption_key: None,
         }
     }
 }
@@ -62,6 +72,10 @@ pub struct WalWriter<FS: FileSystem> {
     file: Arc<RwLock<FS::File>>,
     /// Configuration
     config: WalWriterConfig,
+    /// Encryption type
+    encryption: EncryptionType,
+    /// Encryption key
+    encryption_key: Option<[u8; 32]>,
     /// Writer state
     state: Arc<RwLock<WalWriterState>>,
 }
@@ -80,6 +94,8 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         Ok(Self {
             file: Arc::new(RwLock::new(file)),
+            encryption: config.encryption,
+            encryption_key: config.encryption_key,
             config,
             state: Arc::new(RwLock::new(state)),
         })
@@ -103,6 +119,8 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         Ok(Self {
             file: Arc::new(RwLock::new(file)),
+            encryption: config.encryption,
+            encryption_key: config.encryption_key,
             config,
             state: Arc::new(RwLock::new(state)),
         })
@@ -119,7 +137,12 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Create record
         let lsn = state.current_lsn;
-        let record = WalRecord::new(lsn, RecordData::Begin { txn_id });
+        let record = WalRecord::new(
+            lsn,
+            RecordData::Begin { txn_id },
+            self.config.compression,
+            self.encryption,
+        );
 
         // Write record
         self.write_record_internal(&mut state, record)?;
@@ -157,6 +180,8 @@ impl<FS: FileSystem> WalWriter<FS> {
                 key,
                 value,
             },
+            self.config.compression,
+            self.encryption,
         );
 
         // Write record
@@ -176,7 +201,12 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Create record
         let lsn = state.current_lsn;
-        let record = WalRecord::new(lsn, RecordData::Commit { txn_id });
+        let record = WalRecord::new(
+            lsn,
+            RecordData::Commit { txn_id },
+            self.config.compression,
+            self.encryption,
+        );
 
         // Write record
         self.write_record_internal(&mut state, record)?;
@@ -198,7 +228,12 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Create record
         let lsn = state.current_lsn;
-        let record = WalRecord::new(lsn, RecordData::Rollback { txn_id });
+        let record = WalRecord::new(
+            lsn,
+            RecordData::Rollback { txn_id },
+            self.config.compression,
+            self.encryption,
+        );
 
         // Write record
         self.write_record_internal(&mut state, record)?;
@@ -216,7 +251,12 @@ impl<FS: FileSystem> WalWriter<FS> {
         // Create record with current active transactions
         let lsn = state.current_lsn;
         let active_txns: Vec<TransactionId> = state.active_txns.iter().copied().collect();
-        let record = WalRecord::new(lsn, RecordData::Checkpoint { lsn, active_txns });
+        let record = WalRecord::new(
+            lsn,
+            RecordData::Checkpoint { lsn, active_txns },
+            self.config.compression,
+            self.encryption,
+        );
 
         // Write record
         self.write_record_internal(&mut state, record)?;
@@ -231,7 +271,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         record: WalRecord,
     ) -> WalResult<()> {
         // Serialize record
-        let bytes = record.to_bytes()?;
+        let bytes = record.to_bytes(self.encryption_key.as_ref())?;
 
         // Check if WAL is full
         if state.current_offset + bytes.len() as u64 > self.config.max_wal_size {

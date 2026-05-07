@@ -84,8 +84,17 @@ impl WalRecovery {
 
     /// Perform recovery from a WAL file
     pub fn recover<FS: FileSystem>(fs: &FS, wal_path: &str) -> WalResult<RecoveryResult> {
+        Self::recover_with_key(fs, wal_path, None)
+    }
+
+    /// Perform recovery from a WAL file with an optional encryption key
+    pub fn recover_with_key<FS: FileSystem>(
+        fs: &FS,
+        wal_path: &str,
+        encryption_key: Option<[u8; 32]>,
+    ) -> WalResult<RecoveryResult> {
         let mut recovery = Self::new();
-        let mut reader = WalReader::open(fs, wal_path)?;
+        let mut reader = WalReader::open(fs, wal_path, encryption_key)?;
 
         // Read and process all records
         while let Some(record) = reader.read_next()? {

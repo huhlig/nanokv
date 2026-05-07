@@ -13,3 +13,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+
+//! Index Types to Support
+//! 
+//! # Indexes
+//! - B/B+ Tree
+//! - Hash Index
+//! - Adaptive Radix Tree
+//! - LSM Tree Index
+//! 
+//! # Spatial Indexes
+//! - R-Tree
+//! - Quadtree
+//! - Octree
+//! 
+//! # Text Indexes
+//! - Full-Text Search
+//! - Inverted Index
+//! 
+//! # Graph Indexes
+//! - Adjacency List
+//! - Adjacency Matrix
+//! - Edge List
+//! 
+//! # Time Series Indexes
+//! - Time Bucket
+//! - Time Window
+//! - Time Series Database
+//! 
+//! # Geospatial Indexes
+//! - Geohash
+//! - Quadtree
+//! - R-Tree
+//! 
+//! # Vector Indexes
+//! - Vector Database
+//! - ANN (Approximate Nearest Neighbor)
+//! - IVF (Inverted File Index)
+//! - HNSW (Hierarchical Navigable Small World)
+//! 
+//! # Bloom Filters
+//! - Bloom Filter
+//! - Cuckoo Filter
+//! - Count-Min Sketch

@@ -77,6 +77,18 @@ pub enum WalError {
     #[error("Deserialization error: {0}")]
     DeserializationError(String),
 
+    /// Encryption error
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    /// Decryption error
+    #[error("Decryption error: {0}")]
+    DecryptionError(String),
+
+    /// Missing encryption key
+    #[error("Missing encryption key")]
+    MissingEncryptionKey,
+
     /// Internal error
     #[error("Internal error: {0}")]
     InternalError(String),

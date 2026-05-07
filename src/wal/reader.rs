@@ -23,6 +23,8 @@ use crate::wal::{Lsn, WalError, WalRecord, WalResult};
 pub struct WalReader<FS: FileSystem> {
     /// VFS file handle
     file: FS::File,
+    /// Encryption key
+    encryption_key: Option<[u8; 32]>,
     /// Current read offset
     offset: u64,
     /// File size
@@ -31,12 +33,13 @@ pub struct WalReader<FS: FileSystem> {
 
 impl<FS: FileSystem> WalReader<FS> {
     /// Open a WAL file for reading
-    pub fn open(fs: &FS, path: &str) -> WalResult<Self> {
+    pub fn open(fs: &FS, path: &str, encryption_key: Option<[u8; 32]>) -> WalResult<Self> {
         let file = fs.open_file(path)?;
         let file_size = file.get_size()?;
 
         Ok(Self {
             file,
+            encryption_key,
             offset: 0,
             file_size,
         })
@@ -50,11 +53,11 @@ impl<FS: FileSystem> WalReader<FS> {
         }
 
         // Read the record header to determine size
-        // Magic (4) + LSN (8) + Timestamp (8) + Type (1) + Length (4) = 25 bytes minimum
-        let mut header_buf = vec![0u8; 25];
+        // Magic (4) + LSN (8) + Timestamp (8) + Type (1) + Compression (1) + Encryption (1) + Uncompressed (4) + Stored (4) = 31 bytes minimum
+        let mut header_buf = vec![0u8; 31];
         let bytes_read = self.file.read_at_offset(self.offset, &mut header_buf)?;
 
-        if bytes_read < 25 {
+        if bytes_read < 31 {
             // Incomplete record at end of file
             return Ok(None);
         }
@@ -67,11 +70,11 @@ impl<FS: FileSystem> WalReader<FS> {
             )));
         }
 
-        // Extract data length
-        let data_len = u32::from_le_bytes(header_buf[21..25].try_into().unwrap()) as usize;
+        // Extract stored data length (at offset 27-31)
+        let data_len = u32::from_le_bytes(header_buf[27..31].try_into().unwrap()) as usize;
 
-        // Calculate total record size: header (25) + data + checksum (32)
-        let total_size = 25 + data_len + 32;
+        // Calculate total record size: header (31) + data + checksum (32)
+        let total_size = 31 + data_len + 32;
 
         // Read the complete record
         let mut record_buf = vec![0u8; total_size];
@@ -86,7 +89,7 @@ impl<FS: FileSystem> WalReader<FS> {
         }
 
         // Deserialize the record
-        let record = WalRecord::from_bytes(&record_buf)?;
+        let record = WalRecord::from_bytes(&record_buf, self.encryption_key.as_ref())?;
 
         // Update offset
         self.offset += total_size as u64;
@@ -114,7 +117,7 @@ impl<FS: FileSystem> WalReader<FS> {
         while let Some(record) = self.read_next()? {
             if record.lsn == target_lsn {
                 // Move back to the start of this record
-                let record_bytes = record.to_bytes()?;
+                let record_bytes = record.to_bytes(self.encryption_key.as_ref())?;
                 self.offset -= record_bytes.len() as u64;
                 return Ok(());
             }
@@ -216,7 +219,7 @@ mod tests {
     #[test]
     fn test_read_records() {
         let (fs, path) = create_test_wal();
-        let mut reader = WalReader::open(&fs, &path).unwrap();
+        let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
         let records = reader.read_all().unwrap();
         assert_eq!(records.len(), 6); // 2 begin, 2 write, 1 commit, 1 rollback
@@ -252,7 +255,7 @@ mod tests {
     #[test]
     fn test_read_next() {
         let (fs, path) = create_test_wal();
-        let mut reader = WalReader::open(&fs, &path).unwrap();
+        let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
         let record1 = reader.read_next().unwrap().unwrap();
         assert_eq!(record1.lsn, 1);
@@ -267,7 +270,7 @@ mod tests {
     #[test]
     fn test_seek_to_lsn() {
         let (fs, path) = create_test_wal();
-        let mut reader = WalReader::open(&fs, &path).unwrap();
+        let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
         reader.seek_to_lsn(3).unwrap();
         let record = reader.read_next().unwrap().unwrap();
@@ -277,7 +280,7 @@ mod tests {
     #[test]
     fn test_reset() {
         let (fs, path) = create_test_wal();
-        let mut reader = WalReader::open(&fs, &path).unwrap();
+        let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
         // Read some records
         reader.read_next().unwrap();
@@ -292,7 +295,7 @@ mod tests {
     #[test]
     fn test_is_eof() {
         let (fs, path) = create_test_wal();
-        let mut reader = WalReader::open(&fs, &path).unwrap();
+        let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
         assert!(!reader.is_eof());
 
@@ -305,7 +308,7 @@ mod tests {
     #[test]
     fn test_iterator() {
         let (fs, path) = create_test_wal();
-        let reader = WalReader::open(&fs, &path).unwrap();
+        let reader = WalReader::open(&fs, &path, None).unwrap();
         let iter = WalRecordIterator::new(reader);
 
         let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();

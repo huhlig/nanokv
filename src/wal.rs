@@ -264,7 +264,7 @@ mod tests {
             writer.flush().unwrap();
         }
 
-        let reader = WalReader::open(&fs, path).unwrap();
+        let reader = WalReader::open(&fs, path, None).unwrap();
         let iter = WalRecordIterator::new(reader);
         let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
 

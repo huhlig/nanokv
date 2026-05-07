@@ -17,7 +17,11 @@
 //! Page structures and types
 
 use crate::pager::{CompressionType, EncryptionType, PagerError, PagerResult};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, KeyInit};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
+use std::io::Cursor;
 
 /// Page identifier (0-based)
 pub type PageId = u64;
@@ -182,6 +186,7 @@ impl PageHeader {
 /// Page structure
 ///
 /// Layout: [Header: 32B][Data: variable][Checksum: 32B]
+#[derive(Debug)]
 pub struct Page {
     /// Page header
     pub header: PageHeader,
@@ -218,18 +223,69 @@ impl Page {
     }
 
     /// Serialize the page to bytes (with checksum)
-    pub fn to_bytes(&self, page_size: usize) -> Vec<u8> {
+    pub fn to_bytes(&self, page_size: usize, encryption_key: Option<&[u8; 32]>) -> PagerResult<Vec<u8>> {
         let mut bytes = Vec::with_capacity(page_size);
         
         // Update header with actual data size
         let mut header = self.header.clone();
         header.uncompressed_size = self.data.len() as u32;
         
-        // Write header
+        // Compress data if needed
+        let compressed_data = match header.compression {
+            CompressionType::None => {
+                header.compressed_size = self.data.len() as u32;
+                self.data.clone()
+            }
+            CompressionType::Lz4 => {
+                let compressed = lz4_flex::compress_prepend_size(&self.data);
+                header.compressed_size = compressed.len() as u32;
+                compressed
+            }
+            CompressionType::Zstd => {
+                let compressed = zstd::encode_all(Cursor::new(&self.data), 3)
+                    .map_err(|e| PagerError::CompressionError(e.to_string()))?;
+                header.compressed_size = compressed.len() as u32;
+                compressed
+            }
+        };
+        
+        // Encrypt data if needed (after compression)
+        let data_to_write = match header.encryption {
+            EncryptionType::None => compressed_data,
+            EncryptionType::Aes256Gcm => {
+                // Check if encryption key is provided
+                let key = encryption_key.ok_or(PagerError::MissingEncryptionKey)?;
+                
+                // Generate random 12-byte nonce
+                let mut nonce_bytes = [0u8; 12];
+                rand::thread_rng().fill_bytes(&mut nonce_bytes);
+                let nonce = Nonce::from_slice(&nonce_bytes);
+                
+                // Create cipher
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+                
+                // Encrypt the data
+                let encrypted = cipher
+                    .encrypt(nonce, compressed_data.as_ref())
+                    .map_err(|e| PagerError::EncryptionError(e.to_string()))?;
+                
+                // Prepend nonce to encrypted data
+                let mut result = Vec::with_capacity(12 + encrypted.len());
+                result.extend_from_slice(&nonce_bytes);
+                result.extend_from_slice(&encrypted);
+                
+                // Update compressed_size to reflect encrypted data size (including nonce)
+                header.compressed_size = result.len() as u32;
+                
+                result
+            }
+        };
+        
+        // Write header (with updated compressed_size if encrypted)
         bytes.extend_from_slice(&header.to_bytes());
         
-        // Write data
-        bytes.extend_from_slice(&self.data);
+        // Write data (compressed and/or encrypted)
+        bytes.extend_from_slice(&data_to_write);
         
         // Pad to page_size - CHECKSUM_SIZE
         let data_end = page_size - Self::CHECKSUM_SIZE;
@@ -237,19 +293,21 @@ impl Page {
             bytes.resize(data_end, 0);
         }
         
-        // Calculate and append checksum (using updated header)
-        let page_with_header = Self {
-            header,
-            data: self.data.clone(),
+        // Calculate and append checksum on final data
+        let checksum = {
+            let mut hasher = Sha256::new();
+            hasher.update(&header.to_bytes());
+            hasher.update(&(data_to_write.len() as u32).to_le_bytes());
+            hasher.update(&data_to_write);
+            hasher.finalize()
         };
-        let checksum = page_with_header.calculate_checksum();
         bytes.extend_from_slice(&checksum);
         
-        bytes
+        Ok(bytes)
     }
 
     /// Deserialize the page from bytes (with checksum verification)
-    pub fn from_bytes(bytes: &[u8], verify_checksum: bool) -> PagerResult<Self> {
+    pub fn from_bytes(bytes: &[u8], verify_checksum: bool, encryption_key: Option<&[u8; 32]>) -> PagerResult<Self> {
         if bytes.len() < PageHeader::SIZE + Self::CHECKSUM_SIZE {
             return Err(PagerError::InternalError(
                 "Insufficient bytes for page".to_string(),
@@ -259,19 +317,19 @@ impl Page {
         // Parse header
         let header = PageHeader::from_bytes(&bytes[0..PageHeader::SIZE])?;
         let page_id = header.page_id;
-        let data_len = header.uncompressed_size as usize;
+        let compressed_len = header.compressed_size as usize;
 
-        // Extract data (only the actual data, not padding)
+        // Extract data (encrypted and/or compressed, only the actual data, not padding)
         let data_start = PageHeader::SIZE;
-        let data_end = data_start + data_len;
+        let data_end = data_start + compressed_len;
         
         if data_end > bytes.len() - Self::CHECKSUM_SIZE {
             return Err(PagerError::InternalError(
-                "Invalid data length in header".to_string(),
+                "Invalid compressed data length in header".to_string(),
             ));
         }
         
-        let data = bytes[data_start..data_end].to_vec();
+        let encrypted_data = &bytes[data_start..data_end];
 
         // Extract checksum
         let checksum_start = bytes.len() - Self::CHECKSUM_SIZE;
@@ -279,14 +337,70 @@ impl Page {
             PagerError::InternalError("Invalid checksum size".to_string())
         })?;
 
-        let page = Self { header, data };
-
-        // Verify checksum if requested
-        if verify_checksum && !page.verify_checksum(&checksum) {
-            return Err(PagerError::ChecksumMismatch(page_id));
+        // Verify checksum on encrypted data if requested
+        if verify_checksum {
+            let mut hasher = Sha256::new();
+            hasher.update(&header.to_bytes());
+            hasher.update(&(encrypted_data.len() as u32).to_le_bytes());
+            hasher.update(encrypted_data);
+            let actual_checksum: [u8; 32] = hasher.finalize().into();
+            
+            if actual_checksum != checksum {
+                return Err(PagerError::ChecksumMismatch(page_id));
+            }
         }
 
-        Ok(page)
+        // Decrypt data if needed (before decompression)
+        let compressed_data = match header.encryption {
+            EncryptionType::None => encrypted_data.to_vec(),
+            EncryptionType::Aes256Gcm => {
+                // Check if encryption key is provided
+                let key = encryption_key.ok_or(PagerError::MissingEncryptionKey)?;
+                
+                // Extract nonce (first 12 bytes)
+                if encrypted_data.len() < 12 {
+                    return Err(PagerError::DecryptionError(
+                        "Insufficient data for nonce".to_string()
+                    ));
+                }
+                let nonce = Nonce::from_slice(&encrypted_data[0..12]);
+                let ciphertext = &encrypted_data[12..];
+                
+                // Create cipher
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+                
+                // Decrypt the data
+                cipher
+                    .decrypt(nonce, ciphertext)
+                    .map_err(|e| PagerError::DecryptionError(e.to_string()))?
+            }
+        };
+
+        // Decompress data if needed
+        let data = match header.compression {
+            CompressionType::None => {
+                compressed_data
+            }
+            CompressionType::Lz4 => {
+                lz4_flex::decompress_size_prepended(&compressed_data)
+                    .map_err(|e| PagerError::DecompressionError(e.to_string()))?
+            }
+            CompressionType::Zstd => {
+                zstd::decode_all(Cursor::new(&compressed_data))
+                    .map_err(|e| PagerError::DecompressionError(e.to_string()))?
+            }
+        };
+
+        // Verify decompressed size matches header
+        if data.len() != header.uncompressed_size as usize {
+            return Err(PagerError::DecompressionError(format!(
+                "Decompressed size {} does not match expected size {}",
+                data.len(),
+                header.uncompressed_size
+            )));
+        }
+
+        Ok(Self { header, data })
     }
 
     /// Get the page ID
@@ -352,13 +466,176 @@ mod tests {
         let mut page = Page::new(5, PageType::BTreeInternal, 100);
         page.data.extend_from_slice(b"test page data");
         
-        let bytes = page.to_bytes(4096);
+        let bytes = page.to_bytes(4096, None).unwrap();
         assert_eq!(bytes.len(), 4096);
         
-        let deserialized = Page::from_bytes(&bytes, true).unwrap();
+        let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
         assert_eq!(deserialized.page_id(), 5);
         assert_eq!(deserialized.page_type(), PageType::BTreeInternal);
         assert_eq!(deserialized.data(), b"test page data");
+    }
+
+    #[test]
+    fn test_page_compression_lz4() {
+        let mut page = Page::new(10, PageType::BTreeLeaf, 1000);
+        page.header.compression = CompressionType::Lz4;
+        
+        // Add compressible data
+        let test_data = b"This is test data that should compress well. ".repeat(20);
+        page.data.extend_from_slice(&test_data);
+        
+        let bytes = page.to_bytes(4096, None).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        
+        let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
+        assert_eq!(deserialized.page_id(), 10);
+        assert_eq!(deserialized.page_type(), PageType::BTreeLeaf);
+        assert_eq!(deserialized.data(), &test_data[..]);
+        assert_eq!(deserialized.header.compression, CompressionType::Lz4);
+        
+        // Verify compression actually happened
+        assert!(deserialized.header.compressed_size < deserialized.header.uncompressed_size);
+    }
+
+    #[test]
+    fn test_page_compression_zstd() {
+        let mut page = Page::new(11, PageType::BTreeLeaf, 1000);
+        page.header.compression = CompressionType::Zstd;
+        
+        // Add compressible data
+        let test_data = b"Zstd compression test data. ".repeat(30);
+        page.data.extend_from_slice(&test_data);
+        
+        let bytes = page.to_bytes(4096, None).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        
+        let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
+        assert_eq!(deserialized.page_id(), 11);
+        assert_eq!(deserialized.page_type(), PageType::BTreeLeaf);
+        assert_eq!(deserialized.data(), &test_data[..]);
+        assert_eq!(deserialized.header.compression, CompressionType::Zstd);
+        
+        // Verify compression actually happened
+        assert!(deserialized.header.compressed_size < deserialized.header.uncompressed_size);
+    }
+
+    #[test]
+    fn test_page_no_compression() {
+        let mut page = Page::new(12, PageType::BTreeLeaf, 100);
+        page.header.compression = CompressionType::None;
+        page.data.extend_from_slice(b"uncompressed data");
+        
+        let bytes = page.to_bytes(4096, None).unwrap();
+        
+        let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
+        assert_eq!(deserialized.data(), b"uncompressed data");
+        assert_eq!(deserialized.header.compression, CompressionType::None);
+        assert_eq!(deserialized.header.compressed_size, deserialized.header.uncompressed_size);
+    }
+
+    #[test]
+    fn test_page_checksum_with_compression() {
+        let mut page = Page::new(13, PageType::BTreeLeaf, 100);
+        page.header.compression = CompressionType::Lz4;
+        page.data.extend_from_slice(b"test data for checksum");
+        
+        let bytes = page.to_bytes(4096, None).unwrap();
+        
+        // Valid checksum should pass
+        let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
+        assert_eq!(deserialized.data(), b"test data for checksum");
+        
+        // Corrupt the compressed data and verify checksum fails
+        let mut corrupted = bytes.clone();
+        corrupted[PageHeader::SIZE + 5] ^= 0xFF;
+        
+        let result = Page::from_bytes(&corrupted, true, None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PagerError::ChecksumMismatch(_)));
+    }
+
+    #[test]
+    fn test_page_encryption_aes256gcm() {
+        let mut page = Page::new(14, PageType::BTreeLeaf, 100);
+        page.header.encryption = EncryptionType::Aes256Gcm;
+        page.data.extend_from_slice(b"secret data to encrypt");
+        
+        let key = [42u8; 32];
+        let bytes = page.to_bytes(4096, Some(&key)).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        
+        // Decrypt with correct key
+        let deserialized = Page::from_bytes(&bytes, true, Some(&key)).unwrap();
+        assert_eq!(deserialized.page_id(), 14);
+        assert_eq!(deserialized.page_type(), PageType::BTreeLeaf);
+        assert_eq!(deserialized.data(), b"secret data to encrypt");
+        assert_eq!(deserialized.header.encryption, EncryptionType::Aes256Gcm);
+    }
+
+    #[test]
+    fn test_page_encryption_wrong_key() {
+        let mut page = Page::new(15, PageType::BTreeLeaf, 100);
+        page.header.encryption = EncryptionType::Aes256Gcm;
+        page.data.extend_from_slice(b"secret data");
+        
+        let key1 = [42u8; 32];
+        let key2 = [99u8; 32];
+        
+        let bytes = page.to_bytes(4096, Some(&key1)).unwrap();
+        
+        // Try to decrypt with wrong key
+        let result = Page::from_bytes(&bytes, true, Some(&key2));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PagerError::DecryptionError(_)));
+    }
+
+    #[test]
+    fn test_page_encryption_missing_key() {
+        let mut page = Page::new(16, PageType::BTreeLeaf, 100);
+        page.header.encryption = EncryptionType::Aes256Gcm;
+        page.data.extend_from_slice(b"secret data");
+        
+        // Try to encrypt without key
+        let result = page.to_bytes(4096, None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PagerError::MissingEncryptionKey));
+    }
+
+    #[test]
+    fn test_page_encryption_and_compression() {
+        let mut page = Page::new(17, PageType::BTreeLeaf, 1000);
+        page.header.compression = CompressionType::Lz4;
+        page.header.encryption = EncryptionType::Aes256Gcm;
+        
+        // Add compressible data
+        let test_data = b"This data will be compressed then encrypted. ".repeat(20);
+        page.data.extend_from_slice(&test_data);
+        
+        let key = [123u8; 32];
+        let bytes = page.to_bytes(4096, Some(&key)).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        
+        // Decrypt and decompress
+        let deserialized = Page::from_bytes(&bytes, true, Some(&key)).unwrap();
+        assert_eq!(deserialized.page_id(), 17);
+        assert_eq!(deserialized.data(), &test_data[..]);
+        assert_eq!(deserialized.header.compression, CompressionType::Lz4);
+        assert_eq!(deserialized.header.encryption, EncryptionType::Aes256Gcm);
+    }
+
+    #[test]
+    fn test_page_encryption_missing_key_on_read() {
+        let mut page = Page::new(18, PageType::BTreeLeaf, 100);
+        page.header.encryption = EncryptionType::Aes256Gcm;
+        page.data.extend_from_slice(b"secret data");
+        
+        let key = [42u8; 32];
+        let bytes = page.to_bytes(4096, Some(&key)).unwrap();
+        
+        // Try to decrypt without key
+        let result = Page::from_bytes(&bytes, true, None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PagerError::MissingEncryptionKey));
     }
 }
 
