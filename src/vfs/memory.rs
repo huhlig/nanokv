@@ -268,7 +268,13 @@ impl std::fmt::Debug for MemoryFileHandle {
 impl Read for MemoryFileHandle {
     #[tracing::instrument]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let data = self.data.write().unwrap();
+        let data = self.data.read().unwrap();
+        
+        // Handle case where cursor is beyond file size
+        if self.cursor >= data.buffer.len() {
+            return Ok(0);
+        }
+        
         let len = std::cmp::min(buf.len(), data.buffer.len() - self.cursor);
         buf[..len].copy_from_slice(&data.buffer[self.cursor..self.cursor + len]);
         self.cursor += len;
@@ -363,11 +369,17 @@ impl File for MemoryFileHandle {
 
         // Calculate Slice Bounds
         let off = pos as usize; // Lower Slice Bound
+        
+        // Handle case where offset is beyond file size
+        if off >= data.buffer.len() {
+            return Ok(0);
+        }
+        
         let end = std::cmp::min(off + buf.len(), data.buffer.len()); // Upper Slice Bound
         let len = end - off;
 
-        // Read
-        buf.copy_from_slice(&data.buffer[off..end]);
+        // Read only the available bytes into the buffer
+        buf[..len].copy_from_slice(&data.buffer[off..end]);
 
         Ok(len)
     }

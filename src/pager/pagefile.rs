@@ -155,19 +155,26 @@ impl<FS: FileSystem> Pager<FS> {
     /// 1. Reuse a page from the free list, or
     /// 2. Grow the database by allocating a new page
     pub fn allocate_page(&self, _page_type: PageType) -> PagerResult<PageId> {
+        // Hold the free list write lock for the entire allocation to prevent race conditions
+        let mut free_list = self.free_list.write();
+        
         // Check if we can reuse a page from the free list
-        let first_page_id = {
-            let free_list = self.free_list.read();
-            if free_list.is_empty() {
-                None
-            } else {
-                Some(free_list.first_page())
+        if !free_list.is_empty() {
+            let first_page_id = free_list.first_page();
+            
+            // Read the free list page directly while holding the free_list lock
+            // This prevents other threads from seeing the same page
+            let page_size = self.config.page_size.to_u32() as usize;
+            let offset = first_page_id * page_size as u64;
+            let mut buffer = vec![0u8; page_size];
+            
+            {
+                let mut file = self.file.write();
+                file.read_at_offset(offset, &mut buffer)?;
             }
-        };
-
-        if let Some(first_page_id) = first_page_id {
-            // Read the free list page without holding any locks
-            let free_list_page = self.read_free_list_page(first_page_id)?;
+            
+            let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
+            let free_list_page = FreeListPage::from_bytes(page.data())?;
 
             if let Some(page_id) = free_list_page.free_pages.last() {
                 let allocated_page_id = *page_id;
@@ -176,11 +183,7 @@ impl<FS: FileSystem> Pager<FS> {
                 let mut updated_free_list_page = free_list_page;
                 updated_free_list_page.pop_page();
 
-                // Now acquire locks to update state
-                let mut free_list = self.free_list.write();
-                let mut superblock = self.superblock.write();
-
-                // If the free list page is now empty, move to the next one
+                // Update free list state while holding the lock
                 if updated_free_list_page.is_empty() {
                     if updated_free_list_page.next_page != 0 {
                         free_list.set_first_page(updated_free_list_page.next_page);
@@ -190,22 +193,29 @@ impl<FS: FileSystem> Pager<FS> {
                         free_list.set_last_page(0);
                     }
                     // TODO: Free the now-empty free list page itself
+                } else {
+                    // Write back the updated free list page BEFORE releasing the lock
+                    // This ensures no other thread can read the old page with the same IDs
+                    let mut page = Page::new(first_page_id, PageType::FreeList, self.config.page_size.data_size());
+                    page.header.compression = self.config.compression;
+                    page.header.encryption = self.config.encryption;
+                    page.data_mut().extend_from_slice(&updated_free_list_page.to_bytes());
+                    
+                    let buffer = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+                    let mut file = self.file.write();
+                    file.write_to_offset(offset, &buffer)?;
                 }
 
                 free_list.decrement_free();
-                superblock.mark_page_allocated();
-
-                // Get superblock data for writing
-                let superblock_data = superblock.clone();
                 
-                // Release locks before I/O
-                drop(free_list);
+                // Update superblock
+                let mut superblock = self.superblock.write();
+                superblock.mark_page_allocated();
+                let superblock_data = superblock.clone();
                 drop(superblock);
-
-                // Write back the updated free list page if not empty
-                if !updated_free_list_page.is_empty() {
-                    self.write_free_list_page(first_page_id, &updated_free_list_page)?;
-                }
+                
+                // Release free list lock after write
+                drop(free_list);
 
                 // Write updated superblock
                 self.write_superblock(&superblock_data)?;
@@ -213,6 +223,9 @@ impl<FS: FileSystem> Pager<FS> {
                 return Ok(allocated_page_id);
             }
         }
+        
+        // Release free list lock before allocating new page
+        drop(free_list);
 
         // No free pages available, allocate a new one
         let (page_id, total_pages) = {
@@ -245,11 +258,9 @@ impl<FS: FileSystem> Pager<FS> {
             return Err(PagerError::InvalidPageId(page_id));
         }
 
-        // Get the last free list page ID without holding locks
-        let last_page_id = {
-            let free_list = self.free_list.read();
-            free_list.last_page()
-        };
+        // Hold the free list write lock for the entire operation to prevent race conditions
+        let mut free_list = self.free_list.write();
+        let last_page_id = free_list.last_page();
 
         if last_page_id == 0 {
             // No free list pages exist, create the first one
@@ -261,16 +272,16 @@ impl<FS: FileSystem> Pager<FS> {
             let mut new_free_list_page = FreeListPage::new();
             new_free_list_page.add_page(page_id, self.config.page_size.data_size())?;
 
-            // Write the new free list page without holding locks
-            self.write_free_list_page(new_free_list_page_id, &new_free_list_page)?;
+            // Update free list state while holding the lock
+            free_list.set_first_page(new_free_list_page_id);
+            free_list.set_last_page(new_free_list_page_id);
+            free_list.increment_free();
+            
+            // Release lock before I/O
+            drop(free_list);
 
-            // Update free list state
-            {
-                let mut free_list = self.free_list.write();
-                free_list.set_first_page(new_free_list_page_id);
-                free_list.set_last_page(new_free_list_page_id);
-                free_list.increment_free();
-            }
+            // Write the new free list page
+            self.write_free_list_page(new_free_list_page_id, &new_free_list_page)?;
 
             // Update superblock
             {
@@ -278,8 +289,18 @@ impl<FS: FileSystem> Pager<FS> {
                 superblock.mark_page_freed();
             }
         } else {
-            // Read the last free list page without holding locks
-            let mut last_free_list_page = self.read_free_list_page(last_page_id)?;
+            // Read the last free list page directly while holding the free_list lock
+            let page_size = self.config.page_size.to_u32() as usize;
+            let offset = last_page_id * page_size as u64;
+            let mut buffer = vec![0u8; page_size];
+            
+            {
+                let mut file = self.file.write();
+                file.read_at_offset(offset, &mut buffer)?;
+            }
+            
+            let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
+            let mut last_free_list_page = FreeListPage::from_bytes(page.data())?;
 
             if last_free_list_page.is_full(self.config.page_size.data_size()) {
                 // Current page is full, create a new one
@@ -294,16 +315,16 @@ impl<FS: FileSystem> Pager<FS> {
                 // Link the pages
                 last_free_list_page.next_page = new_free_list_page_id;
 
-                // Write both pages without holding locks
+                // Update free list state while holding the lock
+                free_list.set_last_page(new_free_list_page_id);
+                free_list.increment_free();
+                
+                // Release lock before I/O
+                drop(free_list);
+
+                // Write both pages
                 self.write_free_list_page(last_page_id, &last_free_list_page)?;
                 self.write_free_list_page(new_free_list_page_id, &new_free_list_page)?;
-
-                // Update free list state
-                {
-                    let mut free_list = self.free_list.write();
-                    free_list.set_last_page(new_free_list_page_id);
-                    free_list.increment_free();
-                }
 
                 // Update superblock
                 {
@@ -314,14 +335,14 @@ impl<FS: FileSystem> Pager<FS> {
                 // Add to current page
                 last_free_list_page.add_page(page_id, self.config.page_size.data_size())?;
 
-                // Write the updated page without holding locks
-                self.write_free_list_page(last_page_id, &last_free_list_page)?;
+                // Update free list state while holding the lock
+                free_list.increment_free();
+                
+                // Release lock before I/O
+                drop(free_list);
 
-                // Update free list state
-                {
-                    let mut free_list = self.free_list.write();
-                    free_list.increment_free();
-                }
+                // Write the updated page
+                self.write_free_list_page(last_page_id, &last_free_list_page)?;
 
                 // Update superblock
                 {
@@ -332,7 +353,7 @@ impl<FS: FileSystem> Pager<FS> {
         }
 
         // Update header
-        let (_free_pages_count, header_data) = {
+        let header_data = {
             let free_list = self.free_list.read();
             let mut header = self.header.write();
             header.free_pages = free_list.total_free();
@@ -340,7 +361,7 @@ impl<FS: FileSystem> Pager<FS> {
             let header_data = header.clone();
             drop(header);
             drop(free_list);
-            (header_data.free_pages, header_data)
+            header_data
         };
 
         self.write_header(&header_data)?;
