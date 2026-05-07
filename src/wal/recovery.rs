@@ -20,7 +20,7 @@ use crate::vfs::FileSystem;
 use crate::wal::{
     Lsn, RecordData, TransactionId, WalError, WalReader, WalRecord, WalResult, WriteOpType,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 /// Transaction state during recovery
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,9 +62,9 @@ pub struct RecoveryResult {
 /// WAL recovery manager
 pub struct WalRecovery {
     /// Transaction states
-    transactions: HashMap<TransactionId, TransactionState>,
+    transactions: BTreeMap<TransactionId, TransactionState>,
     /// Writes per transaction
-    transaction_writes: HashMap<TransactionId, Vec<RecoveredWrite>>,
+    transaction_writes: BTreeMap<TransactionId, Vec<RecoveredWrite>>,
     /// Last checkpoint LSN
     last_checkpoint_lsn: Option<Lsn>,
     /// Records processed
@@ -75,8 +75,8 @@ impl WalRecovery {
     /// Create a new recovery manager
     pub fn new() -> Self {
         Self {
-            transactions: HashMap::new(),
-            transaction_writes: HashMap::new(),
+            transactions: BTreeMap::new(),
+            transaction_writes: BTreeMap::new(),
             last_checkpoint_lsn: None,
             records_processed: 0,
         }
