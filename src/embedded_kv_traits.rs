@@ -18,6 +18,8 @@
 //! - [`TableEngine`] describes physical table implementations.
 //! - [`PointLookup`], [`OrderedScan`], [`MutableTable`], [`BatchOps`], and
 //!   [`Flushable`] describe table capabilities.
+//! - [`MemoryAware`] and [`EvictableCache`] enable adaptive memory management.
+//! - [`Migratable`] supports format evolution and schema migration.
 //! - [`Index`] is the common metadata/control plane for indexes.
 //! - Specialized traits model ordered, sparse, approximate, full-text, vector,
 //!   graph, geospatial, and time-series indexes.
@@ -25,6 +27,109 @@
 //!   expose compaction, statistics, verification, and repair.
 //! - [`PageStore`], [`ExtentAllocator`], and [`Wal`] define lower-level single-file
 //!   storage services.
+//!
+//! # Zero-Copy Strategy
+//!
+//! This API is designed to minimize memory copies through careful ownership patterns:
+//!
+//! ## Borrowed Data (Zero-Copy Reads)
+//!
+//! - [`KvCursor::key`] and [`KvCursor::value`] return `&[u8]` slices that borrow
+//!   from pinned pages or internal buffers. These are valid until the next cursor
+//!   operation.
+//! - Implementations use page pinning to keep data in memory without copying.
+//! - For long-lived references, callers must copy the data.
+//!
+//! ## Owned Data (Explicit Copies)
+//!
+//! - [`KeyBuf`] and [`ValueBuf`] are owned wrappers around `Vec<u8>`.
+//! - Used for return values from [`PointLookup::get`] and batch operations.
+//! - Callers can convert to/from `&[u8]` as needed.
+//!
+//! ## Cow for Flexibility
+//!
+//! - [`Mutation`] uses `Cow<'a, [u8]>` to accept both borrowed and owned data.
+//! - Allows zero-copy when data is already in the right format.
+//! - Automatically clones when ownership is needed.
+//!
+//! ## Example: Zero-Copy Scan
+//!
+//! ```
+//! # use nanokv::embedded_kv_traits::*;
+//! # fn example(table: &impl OrderedScan) -> Result<(), Box<dyn std::error::Error>> {
+//! let mut cursor = table.scan(ScanBounds::All)?;
+//! cursor.first()?;
+//!
+//! while cursor.valid() {
+//!     // Zero-copy: borrows from pinned page
+//!     if let (Some(key), Some(value)) = (cursor.key(), cursor.value()) {
+//!         // Process without copying
+//!         process_entry(key, value);
+//!     }
+//!     cursor.next()?;
+//! }
+//! # Ok(())
+//! # }
+//! # fn process_entry(key: &[u8], value: &[u8]) {}
+//! ```
+//!
+//! # Consistency Guarantees
+//!
+//! Different components provide different consistency guarantees:
+//!
+//! ## Database Level
+//!
+//! - [`KvDatabase::consistency_guarantees`] documents ACID properties
+//! - Includes isolation level, durability policy, and crash recovery semantics
+//! - Query planners can use this to make informed decisions
+//!
+//! ## Transaction Level
+//!
+//! - [`KvTransaction`] provides snapshot isolation by default
+//! - All reads see a consistent view at the transaction's snapshot LSN
+//! - Writes are atomic: all succeed or all fail
+//!
+//! ## Cursor Level
+//!
+//! - [`KvCursor`] provides snapshot isolation within a transaction
+//! - [`KvCursor::snapshot_lsn`] returns the LSN of the cursor's view
+//! - [`KvCursor::is_valid`] checks if the snapshot is still available
+//! - Cursors are not invalidated by concurrent writers
+//!
+//! ## Example: Checking Guarantees
+//!
+//! ```
+//! # use nanokv::embedded_kv_traits::*;
+//! # fn example(db: &impl KvDatabase) {
+//! let guarantees = db.consistency_guarantees();
+//!
+//! if guarantees.crash_safe {
+//!     println!("Data survives crashes");
+//! }
+//!
+//! match guarantees.isolation {
+//!     IsolationLevel::Serializable => println!("Strongest isolation"),
+//!     IsolationLevel::SnapshotIsolation => println!("Snapshot isolation"),
+//!     _ => println!("Weaker isolation"),
+//! }
+//! # }
+//! ```
+//!
+//! # Memory Management
+//!
+//! Components can implement [`MemoryAware`] and [`EvictableCache`] to participate
+//! in adaptive memory management:
+//!
+//! - [`MemoryAware::memory_usage`] reports current memory consumption
+//! - [`MemoryAware::memory_budget`] reports the configured limit
+//! - [`EvictableCache::evict`] frees memory to reach a target
+//! - [`EvictableCache::on_memory_pressure`] responds to system pressure
+//!
+//! This enables the database to:
+//! - Monitor total memory usage across all components
+//! - Coordinate eviction when approaching limits
+//! - Respond to system-wide memory pressure
+//! - Prevent out-of-memory errors
 //!
 //! The file is intentionally interface-focused. Most types are lightweight
 //! records or placeholders meant to be refined by concrete implementations.
@@ -138,6 +243,57 @@ pub enum IsolationLevel {
     SnapshotIsolation,
 }
 
+/// Memory pressure level for adaptive eviction.
+///
+/// Used by memory-aware components to respond to system memory pressure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MemoryPressure {
+    /// Normal operation, no pressure.
+    None,
+    /// Mild pressure, consider opportunistic eviction.
+    Low,
+    /// Moderate pressure, actively evict to stay within budget.
+    Medium,
+    /// High pressure, aggressively evict to avoid OOM.
+    High,
+    /// Critical pressure, emergency eviction required.
+    Critical,
+}
+
+/// Consistency guarantees provided by a storage component.
+///
+/// This struct documents the ACID properties and crash recovery semantics
+/// of a table or database implementation.
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// let guarantees = ConsistencyGuarantees {
+///     atomicity: true,
+///     consistency: true,
+///     isolation: IsolationLevel::SnapshotIsolation,
+///     durability: Durability::SyncOnCommit,
+///     crash_safe: true,
+///     point_in_time_recovery: true,
+/// };
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsistencyGuarantees {
+    /// Operations are atomic (all-or-nothing).
+    pub atomicity: bool,
+    /// Consistency checks are enforced (constraints, invariants).
+    pub consistency: bool,
+    /// Transaction isolation level.
+    pub isolation: IsolationLevel,
+    /// Durability guarantees for committed transactions.
+    pub durability: Durability,
+    /// Data survives process crashes and can be recovered.
+    pub crash_safe: bool,
+    /// Supports point-in-time recovery to any committed LSN.
+    pub point_in_time_recovery: bool,
+}
+
 /// Table/index mutation type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MutationKind {
@@ -156,6 +312,49 @@ pub struct CommitInfo {
     pub durable_lsn: Option<Lsn>,
 }
 
+/// A named, persistent snapshot of the database at a specific LSN.
+///
+/// Snapshots enable point-in-time queries, backups, and long-running analytics
+/// without blocking writers. They pin the necessary pages/segments in memory
+/// or on disk until explicitly released.
+///
+/// # Lifecycle
+///
+/// 1. Create snapshot with [`KvDatabase::create_snapshot`]
+/// 2. Use snapshot LSN to open read transactions
+/// 3. Release snapshot with [`KvDatabase::release_snapshot`] when done
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// # fn example(db: &impl KvDatabase) -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a snapshot for backup
+/// let snapshot = db.create_snapshot("backup-2024")?;
+///
+/// // Use the snapshot LSN for consistent reads
+/// let tx = db.begin_read_at(snapshot.lsn)?;
+/// // ... perform backup operations ...
+///
+/// // Release when done
+/// db.release_snapshot(snapshot.id)?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Unique snapshot identifier.
+    pub id: SnapshotId,
+    /// User-provided name for the snapshot.
+    pub name: String,
+    /// LSN at which the snapshot was taken.
+    pub lsn: Lsn,
+    /// Timestamp when the snapshot was created.
+    pub created_at: i64,
+    /// Estimated size in bytes (pages/segments pinned).
+    pub size_bytes: u64,
+}
+
 // =============================================================================
 // Database and transaction layer
 // =============================================================================
@@ -166,8 +365,19 @@ pub struct CommitInfo {
 /// and registered table/index engines. ACID semantics should be coordinated at
 /// this layer rather than by independently stacking transactional wrappers around
 /// individual tables.
+///
+/// # Consistency Guarantees
+///
+/// Implementations should document their consistency guarantees via
+/// [`consistency_guarantees`](Self::consistency_guarantees). This includes
+/// ACID properties, crash recovery semantics, and isolation levels.
+///
+/// # Snapshot Management
+///
+/// Databases may support named snapshots for point-in-time queries and backups.
+/// See [`create_snapshot`](Self::create_snapshot) and related methods.
 pub trait KvDatabase {
-    type Error;
+    type Error: Default;
 
     type Tx<'db>: KvTransaction<Error = Self::Error>
     where
@@ -178,6 +388,17 @@ pub trait KvDatabase {
 
     /// Begin a write transaction with the requested durability policy.
     fn begin_write(&self, durability: Durability) -> Result<Self::Tx<'_>, Self::Error>;
+
+    /// Begin a read-only transaction at a specific snapshot LSN.
+    ///
+    /// This is useful for reading from named snapshots or implementing
+    /// time-travel queries. Returns an error if the LSN is not available
+    /// (e.g., too old and already garbage collected).
+    fn begin_read_at(&self, lsn: Lsn) -> Result<Self::Tx<'_>, Self::Error> {
+        // Default implementation for backward compatibility
+        let _ = lsn;
+        Err(Self::Error::default())
+    }
 
     /// Create a logical table using a chosen physical engine.
     fn create_table(&self, name: &str, options: TableOptions) -> Result<TableId, Self::Error>;
@@ -199,6 +420,76 @@ pub trait KvDatabase {
 
     /// Return catalog-visible indexes for a table.
     fn list_indexes(&self, table: TableId) -> Result<Vec<IndexInfo>, Self::Error>;
+
+    /// Create a named snapshot at the current LSN.
+    ///
+    /// The snapshot pins necessary pages/segments to enable consistent reads
+    /// at the snapshot LSN. Snapshots must be explicitly released to free
+    /// resources.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nanokv::embedded_kv_traits::*;
+    /// # fn example(db: &impl KvDatabase) -> Result<(), Box<dyn std::error::Error>> {
+    /// let snapshot = db.create_snapshot("daily-backup")?;
+    /// println!("Created snapshot {} at LSN {}", snapshot.name, snapshot.lsn);
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn create_snapshot(&self, name: &str) -> Result<Snapshot, Self::Error> {
+        // Default implementation for backward compatibility
+        let _ = name;
+        Err(Self::Error::default())
+    }
+
+    /// List all active snapshots.
+    fn list_snapshots(&self) -> Result<Vec<Snapshot>, Self::Error> {
+        // Default implementation for backward compatibility
+        Ok(Vec::new())
+    }
+
+    /// Release a snapshot, allowing its resources to be reclaimed.
+    ///
+    /// After releasing, the snapshot LSN may no longer be available for reads.
+    fn release_snapshot(&self, snapshot_id: SnapshotId) -> Result<(), Self::Error> {
+        // Default implementation for backward compatibility
+        let _ = snapshot_id;
+        Ok(())
+    }
+
+    /// Get the consistency guarantees provided by this database.
+    ///
+    /// This documents the ACID properties, isolation levels, and crash
+    /// recovery semantics. Query planners and applications can use this
+    /// to make informed decisions about transaction boundaries and
+    /// error handling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nanokv::embedded_kv_traits::*;
+    /// # fn example(db: &impl KvDatabase) {
+    /// let guarantees = db.consistency_guarantees();
+    /// if guarantees.crash_safe {
+    ///     println!("Database survives crashes");
+    /// }
+    /// if guarantees.isolation == IsolationLevel::Serializable {
+    ///     println!("Strongest isolation level");
+    /// }
+    /// # }
+    /// ```
+    fn consistency_guarantees(&self) -> ConsistencyGuarantees {
+        // Conservative default for backward compatibility
+        ConsistencyGuarantees {
+            atomicity: true,
+            consistency: true,
+            isolation: IsolationLevel::ReadCommitted,
+            durability: Durability::WalOnly,
+            crash_safe: false,
+            point_in_time_recovery: false,
+        }
+    }
 }
 
 /// Transaction interface.
@@ -237,22 +528,116 @@ pub trait KvTransaction {
 
 /// Ordered cursor over table or index entries.
 ///
-/// Cursors should document invalidation rules. Snapshot cursors are preferred:
-/// once opened, they read from a stable view and are not invalidated by concurrent
-/// writers.
+/// # Snapshot Isolation
+///
+/// Cursors should provide snapshot isolation: once opened, they read from a
+/// stable view at a specific LSN and are not invalidated by concurrent writers.
+/// The cursor sees all committed data up to its snapshot LSN and no data
+/// committed after that point.
+///
+/// # Invalidation Semantics
+///
+/// Cursors may become invalid if:
+/// - The underlying snapshot is released or garbage collected
+/// - The cursor reaches the end of its scan bounds
+/// - An error occurs during iteration
+///
+/// Use [`is_valid`](Self::is_valid) to check if the cursor can still be used.
+/// The [`valid`](Self::valid) method indicates whether the cursor is positioned
+/// at a valid entry (false at end-of-scan), while `is_valid` indicates whether
+/// the cursor itself is still usable.
+///
+/// # Zero-Copy Access
+///
+/// The [`key`](Self::key) and [`value`](Self::value) methods return borrowed
+/// slices that are valid until the next cursor operation. Implementations may
+/// use page-pinning or internal buffering to provide zero-copy access.
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// # fn example(cursor: &mut impl KvCursor) -> Result<(), Box<dyn std::error::Error>> {
+/// // Check cursor is still valid (not invalidated)
+/// if !cursor.is_valid() {
+///     return Err("Cursor invalidated".into());
+/// }
+///
+/// // Iterate while positioned at valid entries
+/// cursor.first()?;
+/// while cursor.valid() {
+///     if let (Some(key), Some(value)) = (cursor.key(), cursor.value()) {
+///         // Process key/value (borrowed, zero-copy)
+///         println!("Key: {:?}, Value: {:?}", key, value);
+///     }
+///     cursor.next()?;
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub trait KvCursor {
     type Error;
 
+    /// Check if the cursor is positioned at a valid entry.
+    ///
+    /// Returns `false` when the cursor has moved past the end of the scan
+    /// bounds or before the beginning. This is distinct from [`is_valid`](Self::is_valid),
+    /// which checks if the cursor itself is still usable.
     fn valid(&self) -> bool;
 
+    /// Check if the cursor is still valid (not invalidated).
+    ///
+    /// Returns `false` if the cursor's snapshot has been released, the
+    /// underlying data has been garbage collected, or an unrecoverable
+    /// error has occurred. Once `is_valid` returns false, all other
+    /// cursor operations will fail.
+    ///
+    /// Most implementations should return `true` for snapshot-isolated
+    /// cursors that pin their data.
+    fn is_valid(&self) -> bool {
+        // Default implementation for backward compatibility
+        // Snapshot-isolated cursors should always be valid
+        true
+    }
+
+    /// Get the snapshot LSN at which this cursor reads.
+    ///
+    /// All data visible to this cursor was committed at or before this LSN.
+    /// This is useful for debugging, monitoring, and implementing time-travel
+    /// queries.
+    fn snapshot_lsn(&self) -> Lsn {
+        // Default implementation for backward compatibility
+        // Implementations should override this to return the actual snapshot LSN
+        0
+    }
+
+    /// Get the key at the current cursor position.
+    ///
+    /// Returns `None` if the cursor is not positioned at a valid entry
+    /// (i.e., [`valid`](Self::valid) returns `false`).
+    ///
+    /// The returned slice is borrowed and valid until the next cursor
+    /// operation. For owned keys, copy the slice.
     fn key(&self) -> Option<&[u8]>;
 
+    /// Get the value at the current cursor position.
+    ///
+    /// Returns `None` if the cursor is not positioned at a valid entry
+    /// (i.e., [`valid`](Self::valid) returns `false`).
+    ///
+    /// The returned slice is borrowed and valid until the next cursor
+    /// operation. For owned values, copy the slice.
     fn value(&self) -> Option<&[u8]>;
 
+    /// Move to the first entry in the scan bounds.
     fn first(&mut self) -> Result<(), Self::Error>;
 
+    /// Move to the last entry in the scan bounds.
     fn last(&mut self) -> Result<(), Self::Error>;
 
+    /// Seek to the first entry with a key greater than or equal to the supplied key.
+    ///
+    /// If no such entry exists, the cursor becomes invalid (positioned past the end).
     fn seek(&mut self, key: &[u8]) -> Result<(), Self::Error>;
 
     /// Seek to the greatest key less than or equal to the supplied key.
@@ -261,8 +646,16 @@ pub trait KvCursor {
     /// version-chain lookups, and descending query plans.
     fn seek_prev(&mut self, key: &[u8]) -> Result<(), Self::Error>;
 
+    /// Move to the next entry.
+    ///
+    /// If the cursor is already at the last entry, it becomes invalid
+    /// (positioned past the end).
     fn next(&mut self) -> Result<(), Self::Error>;
 
+    /// Move to the previous entry.
+    ///
+    /// If the cursor is already at the first entry, it becomes invalid
+    /// (positioned before the beginning).
     fn prev(&mut self) -> Result<(), Self::Error>;
 }
 
@@ -324,6 +717,227 @@ pub trait Flushable {
     type Error;
 
     fn flush(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Memory awareness for adaptive resource management.
+///
+/// Components implementing this trait can report their memory usage and
+/// respond to memory pressure. This enables the database to make informed
+/// decisions about caching, eviction, and resource allocation.
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// # fn example(cache: &impl MemoryAware) {
+/// let usage = cache.memory_usage();
+/// let budget = cache.memory_budget();
+/// let utilization = (usage as f64 / budget as f64) * 100.0;
+///
+/// if utilization > 90.0 && cache.can_evict() {
+///     println!("Cache is {}% full, eviction possible", utilization);
+/// }
+/// # }
+/// ```
+pub trait MemoryAware {
+    /// Get current memory usage in bytes.
+    ///
+    /// This should include all memory owned by the component, including
+    /// buffers, caches, indexes, and internal data structures.
+    fn memory_usage(&self) -> usize;
+
+    /// Get the configured memory budget in bytes.
+    ///
+    /// Returns `usize::MAX` if there is no explicit limit.
+    fn memory_budget(&self) -> usize;
+
+    /// Check if the component can evict data to free memory.
+    ///
+    /// Returns `true` if the component has evictable data (e.g., cached
+    /// pages, buffered writes) that can be safely discarded or flushed.
+    fn can_evict(&self) -> bool {
+        false
+    }
+}
+
+/// Cache eviction capability for memory management.
+///
+/// Components implementing this trait can evict cached data in response to
+/// memory pressure. This is essential for bounded caches, buffer pools, and
+/// memory-resident indexes.
+///
+/// # Eviction Strategies
+///
+/// Implementations may use various eviction strategies:
+/// - LRU (Least Recently Used)
+/// - LFU (Least Frequently Used)
+/// - CLOCK/Second-chance
+/// - ARC (Adaptive Replacement Cache)
+/// - Custom priority-based eviction
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// # fn example(cache: &mut impl EvictableCache) -> Result<(), Box<dyn std::error::Error>> {
+/// // Respond to high memory pressure
+/// cache.on_memory_pressure(MemoryPressure::High)?;
+///
+/// // Or evict a specific amount
+/// let target = 10 * 1024 * 1024; // 10 MB
+/// let evicted = cache.evict(target)?;
+/// println!("Evicted {} bytes", evicted);
+/// # Ok(())
+/// # }
+/// ```
+pub trait EvictableCache: MemoryAware {
+    type Error;
+
+    /// Evict data to reach the target memory usage.
+    ///
+    /// Returns the number of bytes actually evicted. The implementation
+    /// should evict at least enough data to reach the target, but may
+    /// evict more if it's more efficient (e.g., evicting whole pages).
+    ///
+    /// # Arguments
+    ///
+    /// * `target_bytes` - Target memory usage after eviction
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes evicted, which may be more than necessary
+    /// to reach the target.
+    fn evict(&mut self, target_bytes: usize) -> Result<usize, Self::Error>;
+
+    /// Get the eviction priority for a specific key.
+    ///
+    /// Lower values indicate higher priority for eviction. This is useful
+    /// for debugging and monitoring eviction behavior.
+    ///
+    /// Returns `None` if the key is not in the cache or cannot be evicted.
+    fn eviction_priority(&self, key: &[u8]) -> Option<u64> {
+        let _ = key;
+        None
+    }
+
+    /// Respond to memory pressure.
+    ///
+    /// The implementation should evict data based on the pressure level:
+    /// - `Low`: Opportunistic eviction of cold data
+    /// - `Medium`: Active eviction to stay within budget
+    /// - `High`: Aggressive eviction, keep only hot data
+    /// - `Critical`: Emergency eviction, minimal working set
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nanokv::embedded_kv_traits::*;
+    /// # fn example(cache: &mut impl EvictableCache) -> Result<(), Box<dyn std::error::Error>> {
+    /// // System is under memory pressure
+    /// cache.on_memory_pressure(MemoryPressure::High)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn on_memory_pressure(&mut self, pressure: MemoryPressure) -> Result<(), Self::Error> {
+        // Default implementation: evict based on pressure level
+        let current = self.memory_usage();
+        let budget = self.memory_budget();
+        
+        let target = match pressure {
+            MemoryPressure::None => return Ok(()),
+            MemoryPressure::Low => (budget as f64 * 0.90) as usize,
+            MemoryPressure::Medium => (budget as f64 * 0.75) as usize,
+            MemoryPressure::High => (budget as f64 * 0.50) as usize,
+            MemoryPressure::Critical => (budget as f64 * 0.25) as usize,
+        };
+        
+        if current > target {
+            self.evict(target)?;
+        }
+        
+        Ok(())
+    }
+}
+
+/// Format migration capability for schema evolution.
+///
+/// Components implementing this trait can migrate data from older format
+/// versions to newer ones. This is essential for long-lived databases that
+/// need to evolve their on-disk format over time.
+///
+/// # Migration Strategy
+///
+/// Migrations can be:
+/// - **In-place**: Modify data structures directly (fast but risky)
+/// - **Copy-on-write**: Create new structures alongside old ones
+/// - **Lazy**: Migrate data as it's accessed
+/// - **Batch**: Migrate in background with progress tracking
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// # fn example(table: &mut impl Migratable) -> Result<(), Box<dyn std::error::Error>> {
+/// let old_version = 1;
+/// let new_version = 2;
+///
+/// if table.can_migrate_from(old_version) {
+///     let cost = table.migration_cost(old_version);
+///     println!("Migration will take approximately {} operations", cost);
+///
+///     table.migrate(old_version)?;
+///     println!("Migration complete");
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub trait Migratable {
+    type Error;
+
+    /// Get the current format version.
+    fn format_version(&self) -> u32;
+
+    /// Check if migration from the given version is supported.
+    ///
+    /// Returns `true` if the component can migrate data from `from_version`
+    /// to the current version.
+    fn can_migrate_from(&self, from_version: u32) -> bool;
+
+    /// Estimate the cost of migration in arbitrary units.
+    ///
+    /// This can represent:
+    /// - Number of records to migrate
+    /// - Estimated time in milliseconds
+    /// - I/O operations required
+    /// - Memory required
+    ///
+    /// Returns 0 if no migration is needed (same version) or migration
+    /// is not supported.
+    fn migration_cost(&self, from_version: u32) -> u64 {
+        if from_version == self.format_version() {
+            0
+        } else if self.can_migrate_from(from_version) {
+            // Conservative default: assume significant work
+            u64::MAX
+        } else {
+            0
+        }
+    }
+
+    /// Perform migration from the specified version.
+    ///
+    /// This should be idempotent: calling it multiple times should be safe.
+    /// The implementation should validate that the source version matches
+    /// expectations before performing the migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Migration is not supported from `from_version`
+    /// - The data is corrupted or invalid
+    /// - I/O errors occur during migration
+    /// - Insufficient resources (memory, disk space)
+    fn migrate(&mut self, from_version: u32) -> Result<(), Self::Error>;
 }
 
 /// Marker trait for a full ordered key-value table.
