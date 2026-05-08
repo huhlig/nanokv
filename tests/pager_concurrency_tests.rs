@@ -496,6 +496,74 @@ fn test_free_list_contention() {
     );
 }
 
+/// Test concurrent new page allocation (database growth)
+///
+/// This test specifically targets the race condition in Superblock::allocate_new_page()
+/// by ensuring the free list is empty, forcing all allocations to grow the database
+/// using the atomic next_page_id counter.
+#[test]
+fn test_concurrent_new_page_allocation_race_condition() {
+    let pager = create_shared_pager();
+    let thread_count = 32;
+    let allocations_per_thread = 10;
+    
+    // Use a barrier to maximize contention
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+    
+    for thread_id in 0..thread_count {
+        let pager_clone = Arc::clone(&pager);
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = thread::spawn(move || {
+            // Wait for all threads to be ready
+            barrier_clone.wait();
+            
+            let mut allocated = Vec::new();
+            for i in 0..allocations_per_thread {
+                let page_id = pager_clone
+                    .allocate_page(PageType::BTreeLeaf)
+                    .expect(&format!("Thread {} failed to allocate page {}", thread_id, i));
+                allocated.push(page_id);
+            }
+            allocated
+        });
+        handles.push(handle);
+    }
+    
+    let mut all_pages = Vec::new();
+    for handle in handles {
+        let pages = handle.join().expect("Thread panicked");
+        all_pages.extend(pages);
+    }
+    
+    // Verify no duplicates - this is the critical assertion
+    let unique_pages: HashSet<_> = all_pages.iter().collect();
+    assert_eq!(
+        unique_pages.len(),
+        all_pages.len(),
+        "Found {} duplicate page IDs out of {} total allocations - RACE CONDITION DETECTED!",
+        all_pages.len() - unique_pages.len(),
+        all_pages.len()
+    );
+    
+    // Verify we allocated the expected number of pages
+    assert_eq!(
+        all_pages.len(),
+        thread_count * allocations_per_thread,
+        "Should have allocated expected number of pages"
+    );
+    
+    // Verify page IDs are in the expected range (starting from 2, after header and superblock)
+    let min_page_id = *all_pages.iter().min().unwrap();
+    let max_page_id = *all_pages.iter().max().unwrap();
+    assert!(min_page_id >= 2, "Page IDs should start at 2 or higher");
+    assert_eq!(
+        max_page_id - min_page_id + 1,
+        all_pages.len() as u64,
+        "Page IDs should be consecutive (no gaps)"
+    );
+}
+
 /// Test data integrity after concurrent operations
 ///
 /// Validates that data written concurrently is not corrupted and can be

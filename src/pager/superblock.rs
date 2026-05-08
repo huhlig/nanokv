@@ -17,6 +17,8 @@
 //! Superblock - Database state and metadata
 
 use crate::pager::{PageId, PagerError, PagerResult};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Superblock structure (stored in page 1)
 ///
@@ -40,7 +42,7 @@ use crate::pager::{PageId, PagerError, PagerResult};
 /// - Bytes 80-87: Reserved (u64)
 /// - Bytes 88-95: Reserved (u64)
 /// - Bytes 96-127: Reserved (32 bytes)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Superblock {
     /// Magic number for validation
     magic: u64,
@@ -54,14 +56,32 @@ pub struct Superblock {
     pub first_free_list_page: PageId,
     /// Last free list page ID (0 if no free list)
     pub last_free_list_page: PageId,
-    /// Next page ID to allocate (grows the database)
-    pub next_page_id: PageId,
+    /// Next page ID to allocate (grows the database) - ATOMIC for thread safety
+    next_page_id: Arc<AtomicU64>,
     /// Transaction counter (incremented on each transaction)
     pub transaction_counter: u64,
     /// Last checkpoint log sequence number
     pub last_checkpoint_lsn: u64,
     /// Root B-Tree page ID (0 if empty database)
     pub root_btree_page: PageId,
+}
+
+impl Clone for Superblock {
+    fn clone(&self) -> Self {
+        Self {
+            magic: self.magic,
+            version: self.version,
+            total_pages: self.total_pages,
+            free_pages: self.free_pages,
+            first_free_list_page: self.first_free_list_page,
+            last_free_list_page: self.last_free_list_page,
+            // Clone the Arc, not the AtomicU64 - this shares the same atomic counter
+            next_page_id: Arc::clone(&self.next_page_id),
+            transaction_counter: self.transaction_counter,
+            last_checkpoint_lsn: self.last_checkpoint_lsn,
+            root_btree_page: self.root_btree_page,
+        }
+    }
 }
 
 impl Superblock {
@@ -83,11 +103,16 @@ impl Superblock {
             free_pages: 0,
             first_free_list_page: 0,
             last_free_list_page: 0,
-            next_page_id: 2, // Next page to allocate
+            next_page_id: Arc::new(AtomicU64::new(2)), // Next page to allocate
             transaction_counter: 0,
             last_checkpoint_lsn: 0,
             root_btree_page: 0,
         }
+    }
+
+    /// Get the current next page ID (for serialization/inspection)
+    pub fn next_page_id(&self) -> PageId {
+        self.next_page_id.load(Ordering::SeqCst)
     }
 
     /// Serialize the superblock to bytes
@@ -100,7 +125,7 @@ impl Superblock {
         bytes.extend_from_slice(&self.free_pages.to_le_bytes());
         bytes.extend_from_slice(&self.first_free_list_page.to_le_bytes());
         bytes.extend_from_slice(&self.last_free_list_page.to_le_bytes());
-        bytes.extend_from_slice(&self.next_page_id.to_le_bytes());
+        bytes.extend_from_slice(&self.next_page_id.load(Ordering::SeqCst).to_le_bytes());
         bytes.extend_from_slice(&self.transaction_counter.to_le_bytes());
         bytes.extend_from_slice(&self.last_checkpoint_lsn.to_le_bytes());
         bytes.extend_from_slice(&self.root_btree_page.to_le_bytes());
@@ -137,7 +162,7 @@ impl Superblock {
         let free_pages = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
         let first_free_list_page = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
         let last_free_list_page = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
-        let next_page_id = u64::from_le_bytes(bytes[48..56].try_into().unwrap());
+        let next_page_id_value = u64::from_le_bytes(bytes[48..56].try_into().unwrap());
         let transaction_counter = u64::from_le_bytes(bytes[56..64].try_into().unwrap());
         let last_checkpoint_lsn = u64::from_le_bytes(bytes[64..72].try_into().unwrap());
         let root_btree_page = u64::from_le_bytes(bytes[72..80].try_into().unwrap());
@@ -149,7 +174,7 @@ impl Superblock {
             free_pages,
             first_free_list_page,
             last_free_list_page,
-            next_page_id,
+            next_page_id: Arc::new(AtomicU64::new(next_page_id_value)),
             transaction_counter,
             last_checkpoint_lsn,
             root_btree_page,
@@ -167,9 +192,13 @@ impl Superblock {
     }
 
     /// Allocate a new page (grows the database)
+    ///
+    /// This method uses atomic fetch_add to ensure thread-safe page ID generation.
+    /// Multiple threads can call this simultaneously without risk of duplicate page IDs.
     pub fn allocate_new_page(&mut self) -> PageId {
-        let page_id = self.next_page_id;
-        self.next_page_id += 1;
+        // Atomically fetch the current value and increment it
+        // This is the KEY FIX for the race condition - fetch_add is atomic!
+        let page_id = self.next_page_id.fetch_add(1, Ordering::SeqCst);
         self.total_pages += 1;
         page_id
     }
@@ -202,7 +231,7 @@ mod tests {
         let sb = Superblock::new();
         assert_eq!(sb.total_pages, 2);
         assert_eq!(sb.free_pages, 0);
-        assert_eq!(sb.next_page_id, 2);
+        assert_eq!(sb.next_page_id(), 2);
         assert_eq!(sb.transaction_counter, 0);
     }
 
@@ -215,7 +244,7 @@ mod tests {
         let deserialized = Superblock::from_bytes(&bytes).unwrap();
         assert_eq!(deserialized.total_pages, sb.total_pages);
         assert_eq!(deserialized.free_pages, sb.free_pages);
-        assert_eq!(deserialized.next_page_id, sb.next_page_id);
+        assert_eq!(deserialized.next_page_id(), sb.next_page_id());
     }
 
     #[test]
@@ -231,12 +260,12 @@ mod tests {
     #[test]
     fn test_page_allocation() {
         let mut sb = Superblock::new();
-        assert_eq!(sb.next_page_id, 2);
+        assert_eq!(sb.next_page_id(), 2);
         assert_eq!(sb.total_pages, 2);
 
         let page_id = sb.allocate_new_page();
         assert_eq!(page_id, 2);
-        assert_eq!(sb.next_page_id, 3);
+        assert_eq!(sb.next_page_id(), 3);
         assert_eq!(sb.total_pages, 3);
     }
 
