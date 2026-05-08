@@ -238,7 +238,7 @@ fn bench_page_serialization(c: &mut Criterion) {
                 page.data_mut().resize(data_size, 0xAB);
 
                 b.iter(|| {
-                    let bytes = page.to_bytes(page_size.to_u32() as usize);
+                    let bytes = page.to_bytes(page_size.to_u32() as usize, None).unwrap();
                     black_box(bytes);
                 });
             },
@@ -250,10 +250,10 @@ fn bench_page_serialization(c: &mut Criterion) {
             |b, &page_size| {
                 let mut page = Page::new(1, PageType::BTreeLeaf, page_size.data_size());
                 page.data_mut().resize(data_size, 0xAB);
-                let bytes = page.to_bytes(page_size.to_u32() as usize);
+                let bytes = page.to_bytes(page_size.to_u32() as usize, None).unwrap();
 
                 b.iter(|| {
-                    let page = Page::from_bytes(&bytes, true).unwrap();
+                    let page = Page::from_bytes(&bytes, true, None).unwrap();
                     black_box(page);
                 });
             },
@@ -427,7 +427,7 @@ fn bench_compression(c: &mut Criterion) {
             CompressionType::Zstd => "zstd",
         };
 
-        for data_size in [1024, 4096, 16384].iter() {
+        for data_size in [1024, 2048, 4000].iter() {
             group.throughput(Throughput::Bytes(*data_size as u64));
 
             group.bench_with_input(
@@ -505,7 +505,7 @@ fn bench_encryption(c: &mut Criterion) {
             "unencrypted"
         };
 
-        for data_size in [1024, 4096, 16384].iter() {
+        for data_size in [1024, 2048, 4000].iter() {
             group.throughput(Throughput::Bytes(*data_size as u64));
 
             group.bench_with_input(
@@ -571,7 +571,7 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression_and_encryption");
 
     let encryption_key = [0x42u8; 32];
-    let data_size = 4096;
+    let data_size = 4000;
 
     group.throughput(Throughput::Bytes(data_size as u64));
 
@@ -650,10 +650,9 @@ criterion_group!(
     bench_page_serialization,
     bench_bulk_operations,
     bench_free_list_operations,
-    // Uncomment when compression/encryption are implemented:
-    // bench_compression,
-    // bench_encryption,
-    // bench_compression_and_encryption,
+    bench_compression,
+    bench_encryption,
+    bench_compression_and_encryption,
 );
 
 criterion_main!(benches);
