@@ -22,16 +22,6 @@
 //! - No data corruption occurs during concurrent operations
 //! - Free list management is thread-safe
 //! - Race conditions are properly handled
-//!
-//! ## Known Issues
-//!
-//! Some tests currently fail due to race conditions in the pager implementation:
-//! 1. `test_free_list_contention` - Duplicate page IDs allocated under high contention
-//! 2. `test_concurrent_allocation_deallocation` - Data corruption when reading freed pages
-//! 3. `test_concurrent_free_list_operations` - Invalid compression type errors
-//!
-//! These failures indicate real concurrency bugs that need to be fixed in the pager.
-//! The tests are working correctly by exposing these issues.
 
 use nanokv::pager::{Page, PageType, Pager, PagerConfig};
 use nanokv::vfs::MemoryFileSystem;
@@ -381,12 +371,7 @@ fn test_concurrent_mixed_read_write() {
 ///
 /// Validates that pages can be allocated and freed concurrently without
 /// free list corruption or lost pages.
-///
-/// **Currently ignored**: This test exposes a race condition where reading
-/// pages that were recently freed can return corrupted data with invalid
-/// compression types. This is a real bug in the pager that needs to be fixed.
 #[test]
-#[ignore = "Exposes race condition in free list - pages freed by one thread can be read with corrupted data by another"]
 fn test_concurrent_allocation_deallocation() {
     let pager = create_shared_pager();
     let thread_count = 8;
@@ -454,13 +439,7 @@ fn test_concurrent_allocation_deallocation() {
 ///
 /// Uses a barrier to ensure all threads start simultaneously, creating
 /// maximum contention on the free list.
-///
-/// **Currently ignored**: This test exposes a critical bug where duplicate
-/// page IDs are allocated under high contention. In one run, only 41 unique
-/// pages were allocated out of 320 total allocations, indicating severe
-/// race conditions in the allocation logic.
 #[test]
-#[ignore = "Exposes critical bug: duplicate page IDs allocated under contention"]
 fn test_free_list_contention() {
     let pager = create_shared_pager();
     let thread_count = 16;
@@ -672,12 +651,7 @@ fn test_concurrent_allocation_different_page_types() {
 ///
 /// Validates that the free list can handle concurrent additions and
 /// removals without corruption.
-///
-/// **Currently ignored**: This test exposes race conditions where pages
-/// can be read with corrupted headers showing invalid compression types.
-/// This indicates unsafe concurrent access to the free list or page data.
 #[test]
-#[ignore = "Exposes race condition causing invalid compression type errors"]
 fn test_concurrent_free_list_operations() {
     let pager = create_shared_pager();
     let thread_count = 8;

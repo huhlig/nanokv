@@ -174,15 +174,18 @@ impl<FS: FileSystem> Pager<FS> {
     /// 1. Reuse a page from the free list, or
     /// 2. Grow the database by allocating a new page
     pub fn allocate_page(&self, page_type: PageType) -> PagerResult<PageId> {
-        let page_id = if let Some(page_id) = self.free_list.write().pop_page() {
-            {
-                let mut superblock = self.superblock.write();
-                superblock.mark_page_allocated();
-            }
-            page_id
-        } else {
+        // CRITICAL: Hold both locks atomically to prevent race conditions
+        // where multiple threads could get the same page ID
+        let page_id = {
+            let mut free_list = self.free_list.write();
             let mut superblock = self.superblock.write();
-            superblock.allocate_new_page()
+            
+            if let Some(page_id) = free_list.pop_page() {
+                superblock.mark_page_allocated();
+                page_id
+            } else {
+                superblock.allocate_new_page()
+            }
         };
 
         let mut page = Page::new(page_id, page_type, self.config.page_size.data_size());
@@ -260,13 +263,11 @@ impl<FS: FileSystem> Pager<FS> {
             file.write_to_offset(offset, &free_page_bytes)?;
         }
 
+        // CRITICAL: Hold both locks atomically to prevent race conditions
         {
             let mut free_list = self.free_list.write();
-            free_list.push_page(page_id);
-        }
-
-        {
             let mut superblock = self.superblock.write();
+            free_list.push_page(page_id);
             superblock.mark_page_freed();
         }
 
