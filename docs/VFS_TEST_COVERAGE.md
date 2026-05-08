@@ -18,11 +18,11 @@ The VFS test suite is organized into multiple test files:
 
 ## Test Statistics
 
-- **Total Test Count**: 73+ tests
+- **Total Test Count**: 91+ tests
 - **Unit Tests**: 2
 - **Integration Tests**: 21
-- **Edge Case Tests**: 25
-- **Property-Based Tests**: 17
+- **Edge Case Tests**: 31
+- **Property-Based Tests**: 34 (15 property tests + 3 edge cases × 2 implementations)
 - **Concurrency Tests**: 8
 
 ## Coverage by Component
@@ -207,19 +207,38 @@ These tests specifically validate:
 
 ### 10. Property-Based Tests
 
-Tests using proptest for randomized inputs:
+Tests using proptest for randomized inputs (100 cases per test):
 
+**MemoryFileSystem Property Tests (15 tests):**
 - Write/read roundtrip consistency
 - File size accuracy
 - Seek/read consistency
 - Multiple write accumulation
 - Resize operations
-- Offset operation correctness
-- Path lifecycle
+- Read at offset preserves cursor
+- Write to offset preserves cursor
+- Path lifecycle (exists/create/remove)
 - File/directory exclusivity
+- Filesize accuracy
+- Truncate zeros size
+- Open preserves content
+- Write at offset correctness
+- Multiple handles consistency
+
+**LocalFileSystem Property Tests (15 tests):**
+- All the same property tests as MemoryFileSystem
+- Tests real filesystem operations with temporary directories
+- Validates platform-specific behavior
+- Ensures behavioral consistency across implementations
+
+**Edge Case Tests (6 tests):**
+- Empty file operations (both implementations)
+- Large file operations (1MB, both implementations)
+- Boundary seek positions (both implementations)
 
 **Test Files**: `vfs_property_tests.rs`
-**Test Count**: 17 tests
+**Test Count**: 34 tests (15 property tests + 3 edge cases × 2 implementations)
+**Total Test Cases**: 3,400+ (34 tests × 100 cases each)
 
 ### 11. Stress Tests
 
@@ -257,8 +276,10 @@ Tests boundary conditions:
 - ✅ In-memory data persistence
 - ✅ Directory hierarchy
 - ✅ File locking simulation
+- ✅ 15 property-based tests (1,500 test cases)
+- ✅ 3 edge case tests
 
-**Test Count**: 32+ tests
+**Test Count**: 45+ tests (including 1,500+ property test cases)
 
 ### LocalFileSystem
 
@@ -268,8 +289,11 @@ Tests boundary conditions:
 - ✅ Platform-specific paths
 - ✅ Actual file locking (fs2)
 - ✅ Nested directory creation
+- ✅ 15 property-based tests (1,500 test cases)
+- ✅ 3 edge case tests
+- ✅ Temporary directory cleanup
 
-**Test Count**: 32+ tests
+**Test Count**: 46+ tests (including 1,500+ property test cases)
 
 ### Cross-Implementation Tests
 
@@ -362,14 +386,17 @@ cargo test vfs -- --nocapture
 
 ## Summary
 
-The VFS library has comprehensive test coverage with 73+ tests covering:
+The VFS library has comprehensive test coverage with 91+ tests covering:
 - ✅ All public APIs
 - ✅ Both implementations (Memory and Local)
 - ✅ Error conditions
 - ✅ Edge cases
-- ✅ Property-based testing
+- ✅ Property-based testing (34 tests, 3,400+ test cases)
 - ✅ Stress testing
 - ✅ Multi-threaded concurrency testing
 - ✅ Cross-implementation compatibility
+- ✅ Platform-specific behavior (LocalFileSystem)
 
 All tests pass successfully on Windows, and the test suite provides confidence in the correctness and reliability of the VFS abstraction layer. The addition of 8 comprehensive concurrency tests validates thread-safety and exposes potential race conditions in file operations, directory operations, and lock contention scenarios.
+
+**Key Achievement**: LocalFileSystem now has the same 15 property-based tests as MemoryFileSystem, providing 1,500 additional test cases that validate behavioral consistency across implementations and catch platform-specific issues.
