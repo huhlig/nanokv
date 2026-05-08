@@ -17,7 +17,7 @@
 //! Pager implementation - Main page management logic
 
 use crate::pager::{
-    FileHeader, FreeList, FreeListPage, Page,
+    CacheConfig, FileHeader, FreeList, FreeListPage, Page, PageCache,
     PageId, PageSize, PageType, PagerConfig, PagerError, PagerResult, Superblock,
 };
 use crate::vfs::{File, FileSystem};
@@ -32,6 +32,7 @@ use std::sync::Arc;
 /// - Free list management
 /// - Optional compression and encryption
 /// - Superblock management
+/// - LRU page cache for performance
 pub struct Pager<FS: FileSystem> {
     /// VFS file handle
     file: Arc<RwLock<FS::File>>,
@@ -43,6 +44,8 @@ pub struct Pager<FS: FileSystem> {
     superblock: Arc<RwLock<Superblock>>,
     /// Free list manager
     free_list: Arc<RwLock<FreeList>>,
+    /// Page cache (optional)
+    cache: Option<PageCache>,
 }
 
 impl<FS: FileSystem> Pager<FS> {
@@ -81,12 +84,23 @@ impl<FS: FileSystem> Pager<FS> {
         // Create free list
         let free_list = FreeList::new();
 
+        // Create cache if enabled
+        let cache = if config.cache_capacity > 0 {
+            let cache_config = CacheConfig::new()
+                .with_capacity(config.cache_capacity)
+                .with_write_back(config.cache_write_back);
+            Some(PageCache::new(cache_config))
+        } else {
+            None
+        };
+
         Ok(Self {
             file: Arc::new(RwLock::new(file)),
             config,
             header: Arc::new(RwLock::new(header)),
             superblock: Arc::new(RwLock::new(superblock)),
             free_list: Arc::new(RwLock::new(free_list)),
+            cache,
         })
     }
 
@@ -116,6 +130,8 @@ impl<FS: FileSystem> Pager<FS> {
             encryption: header.encryption,
             encryption_key: None, // Will need to be provided separately for encrypted databases
             enable_checksums: true,
+            cache_capacity: 1000, // Default cache capacity
+            cache_write_back: true, // Default to write-back
         };
 
         // Initialize free list from persisted free-list pages
@@ -144,12 +160,23 @@ impl<FS: FileSystem> Pager<FS> {
             free_list.set_free_pages(all_free_pages);
         }
 
+        // Create cache if enabled
+        let cache = if config.cache_capacity > 0 {
+            let cache_config = CacheConfig::new()
+                .with_capacity(config.cache_capacity)
+                .with_write_back(config.cache_write_back);
+            Some(PageCache::new(cache_config))
+        } else {
+            None
+        };
+
         Ok(Self {
             file: Arc::new(RwLock::new(file)),
             config,
             header: Arc::new(RwLock::new(header)),
             superblock: Arc::new(RwLock::new(superblock)),
             free_list: Arc::new(RwLock::new(free_list)),
+            cache,
         })
     }
 
@@ -309,12 +336,20 @@ impl<FS: FileSystem> Pager<FS> {
         Ok(())
     }
 
-    /// Read a page from disk
+    /// Read a page from disk (with caching)
     pub fn read_page(&self, page_id: PageId) -> PagerResult<Page> {
         if page_id >= self.total_pages() {
             return Err(PagerError::PageNotFound(page_id));
         }
 
+        // Try cache first
+        if let Some(cache) = &self.cache {
+            if let Some(page) = cache.get(page_id) {
+                return Ok(page);
+            }
+        }
+
+        // Cache miss - read from disk
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page_id * page_size as u64;
 
@@ -322,11 +357,43 @@ impl<FS: FileSystem> Pager<FS> {
         let mut file = self.file.write();
         file.read_at_offset(offset, &mut buffer)?;
 
-        Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())
+        let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
+
+        // Add to cache
+        if let Some(cache) = &self.cache {
+            // If evicted page is dirty, write it to disk
+            if let Some(evicted_page) = cache.put(page.clone(), false) {
+                self.write_page_to_disk(&evicted_page)?;
+            }
+        }
+
+        Ok(page)
     }
 
-    /// Write a page to disk
+    /// Write a page to disk (with caching)
     pub fn write_page(&self, page: &Page) -> PagerResult<()> {
+        if let Some(cache) = &self.cache {
+            // If write-back mode, just update cache
+            if self.config.cache_write_back {
+                // If evicted page is dirty, write it to disk
+                if let Some(evicted_page) = cache.put(page.clone(), true) {
+                    self.write_page_to_disk(&evicted_page)?;
+                }
+                return Ok(());
+            } else {
+                // Write-through mode: write to disk and update cache
+                self.write_page_to_disk(page)?;
+                cache.put(page.clone(), false);
+                return Ok(());
+            }
+        }
+
+        // No cache - write directly to disk
+        self.write_page_to_disk(page)
+    }
+
+    /// Write a page directly to disk (bypassing cache)
+    fn write_page_to_disk(&self, page: &Page) -> PagerResult<()> {
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page.page_id() * page_size as u64;
 
@@ -337,8 +404,40 @@ impl<FS: FileSystem> Pager<FS> {
         Ok(())
     }
 
+    /// Flush all dirty pages from cache to disk
+    pub fn flush_cache(&self) -> PagerResult<()> {
+        if let Some(cache) = &self.cache {
+            let dirty_pages = cache.get_dirty_pages();
+            for (page_id, page) in dirty_pages {
+                self.write_page_to_disk(&page)?;
+                cache.mark_clean(page_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get cache statistics
+    pub fn cache_stats(&self) -> Option<crate::pager::CacheStats> {
+        self.cache.as_ref().map(|c| c.stats())
+    }
+
+    /// Clear the cache
+    pub fn clear_cache(&self) -> PagerResult<()> {
+        if let Some(cache) = &self.cache {
+            let dirty_pages = cache.clear();
+            // Write any dirty pages to disk
+            for (_, page) in dirty_pages {
+                self.write_page_to_disk(&page)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Sync all changes to disk
     pub fn sync(&self) -> PagerResult<()> {
+        // Flush cache first
+        self.flush_cache()?;
+        
         let mut file = self.file.write();
         file.sync_all()?;
         Ok(())

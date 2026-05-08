@@ -188,7 +188,7 @@ impl PageHeader {
 /// Page structure
 ///
 /// Layout: [Header: 32B][Data: variable][Checksum: 32B]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Page {
     /// Page header
     pub header: PageHeader,

@@ -25,6 +25,7 @@
 //! - SHA-256 checksums for integrity
 //! - Superblock for database metadata
 
+mod cache;
 mod config;
 mod error;
 mod file_header;
@@ -33,6 +34,7 @@ mod page;
 mod pagefile;
 mod superblock;
 
+pub use self::cache::{CacheConfig, CacheStats, PageCache};
 pub use self::config::{CompressionType, EncryptionType, PageSize, PagerConfig};
 pub use self::error::{PagerError, PagerResult};
 pub use self::file_header::FileHeader;

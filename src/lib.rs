@@ -15,7 +15,6 @@
 //
 
 mod api;
-mod cache;
 pub mod pager;
 mod rest;
 mod table;

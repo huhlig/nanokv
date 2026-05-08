@@ -134,6 +134,10 @@ pub struct PagerConfig {
     pub encryption_key: Option<[u8; 32]>,
     /// Enable checksums (SHA-256)
     pub enable_checksums: bool,
+    /// Cache capacity (number of pages, 0 to disable cache)
+    pub cache_capacity: usize,
+    /// Enable write-back caching (true) or write-through (false)
+    pub cache_write_back: bool,
 }
 
 impl Default for PagerConfig {
@@ -144,6 +148,8 @@ impl Default for PagerConfig {
             encryption: EncryptionType::None,
             encryption_key: None,
             enable_checksums: true,
+            cache_capacity: 1000, // Default to 1000 pages
+            cache_write_back: true, // Default to write-back for better performance
         }
     }
 }
@@ -176,6 +182,18 @@ impl PagerConfig {
     /// Enable or disable checksums
     pub fn with_checksums(mut self, enable: bool) -> Self {
         self.enable_checksums = enable;
+        self
+    }
+
+    /// Set the cache capacity (0 to disable cache)
+    pub fn with_cache_capacity(mut self, capacity: usize) -> Self {
+        self.cache_capacity = capacity;
+        self
+    }
+
+    /// Enable or disable write-back caching
+    pub fn with_cache_write_back(mut self, write_back: bool) -> Self {
+        self.cache_write_back = write_back;
         self
     }
 
