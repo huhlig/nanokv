@@ -486,7 +486,7 @@ For complete documentation including:
 - Troubleshooting guide
 - API reference
 
-See: [`docs/COMPRESSION_ENCRYPTION.md`](./COMPRESSION_ENCRYPTION.md)
+See: [`docs/COMPRESSION_ENCRYPTION.md`](COMPRESSION_ENCRYPTION.md)
 
 ---
 

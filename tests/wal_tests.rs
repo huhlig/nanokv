@@ -1198,4 +1198,4 @@ fn test_wal_encryption_key_rotation_failure_is_detected() {
     assert!(matches!(err, WalError::DecryptionError(_)));
 }
 
-// Made with Bob
+

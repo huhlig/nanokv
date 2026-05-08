@@ -57,28 +57,16 @@
 //! - Cuckoo Filter
 //! - Count-Min Sketch
 
-/// Logical index identifier assigned by the catalog.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct IndexId(u64);
+mod error;
+mod traits;
 
-impl IndexId {
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    pub fn to_bytes(&self) -> [u8; 8] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl std::fmt::Display for IndexId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IndexId({})", self.0)
-    }
-}
-
-impl From<u64> for IndexId {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
+pub use self::error::{IndexError, IndexResult};
+pub use self::traits::{
+    ApproximateMembershipIndex, CandidateSet, CostEstimate, DenseOrderedIndex, EdgeRef,
+    FullTextIndex, GeoHit, GeoPoint, GeoSpatialIndex, GeometryRef, GraphAdjacencyIndex, HnswIndex,
+    Index, IndexCapabilities, IndexConsistency, IndexCursor, IndexField, IndexId, IndexInfo,
+    IndexKind, IndexOptions, IndexSourceError, IndexSourceVisitor, IndexStats, IvfIndex,
+    PhysicalRange, Predicate, QueryBudget, QueryableIndex, RebuildBudget, RebuildProgress,
+    RebuildableIndex, ScoredDocument, SparseIndex, SparseQuery, TextField, TextQuery, TimePointRef,
+    TimeSeriesIndex, VectorHit, VectorIndex, VectorMetric, VectorSearchOptions,
+};

@@ -14,30 +14,14 @@
 // limitations under the License.
 //
 
+//! Large binary object (blob) storage.
+//!
+//! Blobs are stored as linked pages in the pager for values that are too large
+//! to fit efficiently in table pages. This provides unified storage management
+//! while supporting arbitrarily large values.
 
-/// Owned key buffer.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct KeyBuf(pub Vec<u8>);
+mod error;
+mod store;
 
-impl AsRef<[u8]> for KeyBuf {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-/// Owned value buffer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValueBuf(pub Vec<u8>);
-
-impl AsRef<[u8]> for ValueBuf {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-/// A key-value entry returned by owned iterators or batch operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub key: KeyBuf,
-    pub value: ValueBuf,
-}
+pub use self::error::{BlobError, BlobResult};
+pub use self::store::{BlobRef, BlobStore};

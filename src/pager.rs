@@ -28,8 +28,8 @@
 mod cache;
 mod config;
 mod error;
-mod file_header;
-mod free_list;
+mod header;
+mod freelist;
 mod page;
 mod pagefile;
 mod pin_table;
@@ -38,11 +38,18 @@ mod superblock;
 pub use self::cache::{CacheConfig, CacheStats, PageCache};
 pub use self::config::{CompressionType, EncryptionType, PageSize, PagerConfig};
 pub use self::error::{PagerError, PagerResult};
-pub use self::file_header::FileHeader;
-pub use self::free_list::{FreeList, FreeListPage};
+pub use self::header::FileHeader;
+pub use self::freelist::{FreeList, FreeListPage};
 pub use self::page::{Page, PageHeader, PageId, PageType};
 pub use self::pagefile::Pager;
 pub use self::pin_table::{PinGuard, PinTable};
 pub use self::superblock::Superblock;
 
-// Made with Bob
+/// Physical location within the database file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalLocation {
+    pub page_id: PageId,
+    pub offset: u32,
+    pub length: u32,
+}
+

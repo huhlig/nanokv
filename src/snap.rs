@@ -16,6 +16,7 @@
 
 use std::fmt::Formatter;
 use crate::wal::LogSequenceNumber;
+use crate::txn::TransactionId;
 
 /// Snapshot identifier.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -76,4 +77,27 @@ pub struct Snapshot {
     pub created_at: i64,
     /// Estimated size in bytes (pages/segments pinned).
     pub size_bytes: u64,
+    // TODO(MVCC): Add visibility information for MVCC
+    // Transactions that were active when this snapshot was created.
+    // Used to determine version visibility: a version is visible if it was
+    // committed before this snapshot's LSN AND was not created by a transaction
+    // in the active_txns list.
+    /// Transactions active at snapshot creation time
+    pub active_txns: Vec<TransactionId>,
+}
+
+impl Snapshot {
+    // TODO(MVCC): Implement visibility check
+    // Determines if a version is visible to this snapshot based on:
+    // 1. Version was committed before snapshot LSN
+    // 2. Version was not created by an active transaction at snapshot time
+    //
+    // pub fn is_visible(&self, version_lsn: LogSequenceNumber, created_by: TransactionId) -> bool {
+    //     // Version must be committed before this snapshot
+    //     if version_lsn > self.lsn {
+    //         return false;
+    //     }
+    //     // Version must not be from a transaction that was active at snapshot time
+    //     !self.active_txns.contains(&created_by)
+    // }
 }

@@ -703,9 +703,9 @@ pub struct WalWriterConfig {
 
 ### Related Documentation
 
-- [Pager Implementation](../src/pager/page.rs) - Page compression and encryption implementation
-- [WAL Records](../src/wal/record.rs) - WAL record compression and encryption
-- [Integration Tests](../tests/compression_encryption_integration_tests.rs) - Comprehensive test suite
+- [Pager Implementation](../../src/pager/page.rs) - Page compression and encryption implementation
+- [WAL Records](../../src/wal/record.rs) - WAL record compression and encryption
+- [Integration Tests](../../tests/compression_encryption_integration_tests.rs) - Comprehensive test suite
 
 ---
 

@@ -14,16 +14,13 @@
 // limitations under the License.
 //
 
-pub mod blob;
-pub mod types;
-pub mod index;
-pub mod kvdb;
-pub mod pager;
-mod rest;
-pub mod snap;
-pub mod table;
-pub mod txn;
-pub mod vfs;
-pub mod wal;
+/// Index Result Type
+pub type IndexResult<T> = Result<T, IndexError>;
 
-pub mod prelude {}
+/// Index error types
+#[derive(Debug, thiserror::Error)]
+pub enum IndexError {
+    /// Other Index Error
+    #[error("Index error: {0}")]
+    Other(String),
+}

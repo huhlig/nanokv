@@ -14,50 +14,12 @@
 // limitations under the License.
 //
 
-use crate::wal::LogSequenceNumber;
-use std::fmt::Formatter;
+mod conflict;
+mod cursor;
+mod error;
+mod transaction;
 
-/// Transaction ID type
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct TransactionId(u64);
-
-impl TransactionId {
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-    pub fn to_bytes(&self) -> [u8; 8] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl From<u64> for TransactionId {
-    fn from(value: u64) -> Self {
-        TransactionId(value)
-    }
-}
-
-impl PartialEq<u64> for TransactionId {
-    fn eq(&self, other: &u64) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<TransactionId> for u64 {
-    fn eq(&self, other: &TransactionId) -> bool {
-        *self == other.0
-    }
-}
-
-impl std::fmt::Display for TransactionId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TransactionId({})", self.0)
-    }
-}
-
-/// Result of a successful commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommitInfo {
-    pub tx_id: TransactionId,
-    pub commit_lsn: LogSequenceNumber,
-    pub durable_lsn: Option<LogSequenceNumber>,
-}
+pub use self::conflict::{ConflictDetector, ConflictType};
+pub use self::cursor::Cursor;
+pub use self::error::{CursorError, CursorResult, TransactionError, TransactionResult};
+pub use self::transaction::{CommitInfo, Transaction, TransactionId};

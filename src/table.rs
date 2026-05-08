@@ -14,31 +14,18 @@
 // limitations under the License.
 //
 mod btree;
+mod error;
 mod lsm;
-mod types;
+mod traits;
 
-/// Logical table identifier assigned by the catalog.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct TableId(u64);
-
-impl TableId {
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    pub fn to_bytes(&self) -> [u8; 8] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl std::fmt::Display for TableId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IndexId({})", self.0)
-    }
-}
-
-impl From<u64> for TableId {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
+pub use self::error::{TableError, TableResult};
+pub use self::traits::{
+    BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
+    ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
+    Histogram, HistogramBucket, KeyStatistics, Maintainable, MemoryAware, Migratable, MutableTable,
+    Mutation, OrderedKvTable, OrderedScan, PointLookup, PrefixScan, RepairAction, RepairPlan,
+    RepairReport, Severity, StatisticsProvider, TableCapabilities, TableCursor, TableEngine,
+    TableEngineKind, TableId, TableInfo, TableOptions, TableReader, TableStatistics, TableWriter,
+    VacuumOptions, VacuumReport, ValueStatistics, VerificationReport, VerifyScope, WorkBudget,
+    WriteBatch,
+};
