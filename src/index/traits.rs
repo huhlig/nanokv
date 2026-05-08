@@ -172,6 +172,28 @@ pub trait IndexCursor {
     fn seek(&mut self, index_key: &[u8]) -> Result<(), Self::Error>;
 }
 
+/// Cursor over time-series data points.
+pub trait TimeSeriesCursor {
+    type Error;
+
+    fn valid(&self) -> bool;
+
+    fn current(&self) -> Option<TimePointRef>;
+
+    fn next(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Cursor over graph edges.
+pub trait EdgeCursor {
+    type Error;
+
+    fn valid(&self) -> bool;
+
+    fn current(&self) -> Option<EdgeRef>;
+
+    fn next(&mut self) -> Result<(), Self::Error>;
+}
+
 /// Dense index: one or more index entries per logical record.
 pub trait DenseOrderedIndex: Index {
     type Cursor<'a>: IndexCursor<Error = Self::Error>
@@ -266,6 +288,10 @@ pub trait IvfIndex: VectorIndex {
 
 /// Graph adjacency index optimized for incoming/outgoing edge traversal.
 pub trait GraphAdjacencyIndex: Index {
+    type EdgeCursor<'a>: EdgeCursor<Error = Self::Error>
+    where
+        Self: 'a;
+
     fn add_edge(
         &mut self,
         source: &[u8],
@@ -282,13 +308,17 @@ pub trait GraphAdjacencyIndex: Index {
         edge_id: &[u8],
     ) -> Result<(), Self::Error>;
 
-    fn outgoing(&self, source: &[u8], label: Option<&[u8]>) -> Result<Vec<EdgeRef>, Self::Error>;
+    fn outgoing(&self, source: &[u8], label: Option<&[u8]>) -> Result<Self::EdgeCursor<'_>, Self::Error>;
 
-    fn incoming(&self, target: &[u8], label: Option<&[u8]>) -> Result<Vec<EdgeRef>, Self::Error>;
+    fn incoming(&self, target: &[u8], label: Option<&[u8]>) -> Result<Self::EdgeCursor<'_>, Self::Error>;
 }
 
 /// Time-series index optimized for append, range, retention, and latest-before queries.
 pub trait TimeSeriesIndex: Index {
+    type TimeSeriesCursor<'a>: TimeSeriesCursor<Error = Self::Error>
+    where
+        Self: 'a;
+
     fn append_point(
         &mut self,
         series_key: &[u8],
@@ -301,7 +331,7 @@ pub trait TimeSeriesIndex: Index {
         series_key: &[u8],
         start_ts: i64,
         end_ts: i64,
-    ) -> Result<Vec<TimePointRef>, Self::Error>;
+    ) -> Result<Self::TimeSeriesCursor<'_>, Self::Error>;
 
     fn latest_before(
         &self,
