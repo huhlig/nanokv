@@ -604,4 +604,327 @@ fn test_concurrent_truncate() {
     assert!(writer.file_size() > 0);
 }
 
+/// Test concurrent recovery - simulate crash and recovery with active transactions
+#[test]
+fn test_concurrent_recovery() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "concurrent_recovery.wal";
+    let config = WalWriterConfig::default();
+
+    let writer = Arc::new(WalWriter::create(&*fs, path, config).unwrap());
+
+    // Spawn multiple threads that write concurrently
+    let num_threads = 8;
+    let writes_per_thread = 10;
+    let mut handles = vec![];
+
+    for thread_id in 0..num_threads {
+        let writer_clone = Arc::clone(&writer);
+        let handle = thread::spawn(move || {
+            for i in 0..writes_per_thread {
+                let txn_id = (thread_id * writes_per_thread + i) as u64;
+
+                writer_clone.write_begin(txn_id).unwrap();
+                writer_clone
+                    .write_operation(
+                        txn_id,
+                        format!("table_{}", thread_id),
+                        WriteOpType::Put,
+                        format!("key_{}_{}", thread_id, i).into_bytes(),
+                        format!("value_{}_{}", thread_id, i).into_bytes(),
+                    )
+                    .unwrap();
+
+                // Only commit half of the transactions to simulate crash
+                if i < writes_per_thread / 2 {
+                    writer_clone.write_commit(txn_id).unwrap();
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Flush to ensure all writes are persisted
+    writer.flush().unwrap();
+
+    // Drop writer to simulate crash
+    drop(writer);
+
+    // Perform recovery
+    let result = WalRecovery::recover(&*fs, path).unwrap();
+
+    // Verify recovery results
+    // Should have committed writes from first half of each thread
+    assert_eq!(
+        result.committed_writes.len(),
+        (num_threads * writes_per_thread / 2) as usize
+    );
+
+    // Should have active transactions from second half of each thread
+    assert_eq!(
+        result.active_transactions.len(),
+        (num_threads * writes_per_thread / 2) as usize
+    );
+
+    // Verify all committed writes are present
+    for thread_id in 0..num_threads {
+        for i in 0..(writes_per_thread / 2) {
+            let txn_id = (thread_id * writes_per_thread + i) as u64;
+            let found = result.committed_writes.iter().any(|w| {
+                w.table == format!("table_{}", thread_id)
+                    && w.key == format!("key_{}_{}", thread_id, i).into_bytes()
+                    && w.value == format!("value_{}_{}", thread_id, i).into_bytes()
+            });
+            assert!(
+                found,
+                "Missing committed write for txn {} (thread {}, write {})",
+                txn_id, thread_id, i
+            );
+        }
+    }
+
+    // Verify all active transactions are present
+    for thread_id in 0..num_threads {
+        for i in (writes_per_thread / 2)..writes_per_thread {
+            let txn_id = (thread_id * writes_per_thread + i) as u64;
+            assert!(
+                result.active_transactions.contains(&txn_id),
+                "Missing active transaction {} (thread {}, write {})",
+                txn_id,
+                thread_id,
+                i
+            );
+        }
+    }
+}
+
+/// Test concurrent recovery with checkpoint
+#[test]
+fn test_concurrent_recovery_with_checkpoint() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "concurrent_recovery_checkpoint.wal";
+    let config = WalWriterConfig::default();
+
+    let writer = Arc::new(WalWriter::create(&*fs, path, config).unwrap());
+
+    // Phase 1: Write and commit some transactions
+    let num_threads = 5;
+    let mut handles = vec![];
+
+    for thread_id in 0..num_threads {
+        let writer_clone = Arc::clone(&writer);
+        let handle = thread::spawn(move || {
+            let txn_id = thread_id as u64;
+            writer_clone.write_begin(txn_id).unwrap();
+            writer_clone
+                .write_operation(
+                    txn_id,
+                    "data".to_string(),
+                    WriteOpType::Put,
+                    format!("key_{}", thread_id).into_bytes(),
+                    format!("value_{}", thread_id).into_bytes(),
+                )
+                .unwrap();
+            writer_clone.write_commit(txn_id).unwrap();
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Write checkpoint
+    writer.write_checkpoint().unwrap();
+
+    // Phase 2: Start new transactions but don't commit (simulate crash)
+    let mut handles = vec![];
+    for thread_id in num_threads..(num_threads * 2) {
+        let writer_clone = Arc::clone(&writer);
+        let handle = thread::spawn(move || {
+            let txn_id = thread_id as u64;
+            writer_clone.write_begin(txn_id).unwrap();
+            writer_clone
+                .write_operation(
+                    txn_id,
+                    "data".to_string(),
+                    WriteOpType::Put,
+                    format!("key_{}", thread_id).into_bytes(),
+                    format!("value_{}", thread_id).into_bytes(),
+                )
+                .unwrap();
+            // Don't commit - simulate crash
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    writer.flush().unwrap();
+    drop(writer);
+
+    // Perform recovery
+    let result = WalRecovery::recover(&*fs, path).unwrap();
+
+    // Should have checkpoint
+    assert!(result.last_checkpoint_lsn.is_some());
+
+    // Should have committed writes from phase 1
+    assert_eq!(result.committed_writes.len(), num_threads as usize);
+
+    // Should have active transactions from phase 2
+    assert_eq!(result.active_transactions.len(), num_threads as usize);
+
+    // Verify active transactions are from phase 2
+    for thread_id in num_threads..(num_threads * 2) {
+        assert!(result.active_transactions.contains(&(thread_id as u64)));
+    }
+}
+
+/// Test recovery with concurrent readers during recovery
+#[test]
+fn test_concurrent_recovery_with_readers() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "concurrent_recovery_readers.wal";
+    let config = WalWriterConfig::default();
+
+    // Write some test data
+    {
+        let writer = WalWriter::create(&*fs, path, config).unwrap();
+        for i in 0..20 {
+            writer.write_begin(i).unwrap();
+            writer
+                .write_operation(
+                    i,
+                    "data".to_string(),
+                    WriteOpType::Put,
+                    format!("key{}", i).into_bytes(),
+                    format!("value{}", i).into_bytes(),
+                )
+                .unwrap();
+            if i % 2 == 0 {
+                writer.write_commit(i).unwrap();
+            }
+            // Leave odd transactions uncommitted
+        }
+        writer.flush().unwrap();
+    }
+
+    // Spawn multiple threads that perform recovery concurrently
+    let num_threads = 10;
+    let mut handles = vec![];
+
+    for _ in 0..num_threads {
+        let fs_clone = Arc::clone(&fs);
+        let path_clone = path.to_string();
+        let handle = thread::spawn(move || {
+            let result = WalRecovery::recover(&*fs_clone, &path_clone).unwrap();
+            (
+                result.committed_writes.len(),
+                result.active_transactions.len(),
+            )
+        });
+        handles.push(handle);
+    }
+
+    // Collect results from all threads
+    let mut results = vec![];
+    for handle in handles {
+        results.push(handle.join().unwrap());
+    }
+
+    // All recovery attempts should produce the same result
+    let first_result = results[0];
+    for result in &results {
+        assert_eq!(
+            *result, first_result,
+            "All recovery attempts should produce identical results"
+        );
+    }
+
+    // Verify the expected counts
+    assert_eq!(first_result.0, 10); // 10 committed transactions (even numbers)
+    assert_eq!(first_result.1, 10); // 10 active transactions (odd numbers)
+}
+
+/// Test LSN monotonicity under extreme concurrency
+#[test]
+fn test_lsn_monotonicity_stress() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "lsn_monotonicity_stress.wal";
+    let config = WalWriterConfig::default();
+
+    let writer = Arc::new(WalWriter::create(&*fs, path, config).unwrap());
+
+    // Very high contention scenario
+    let num_threads = 100;
+    let writes_per_thread = 5;
+    let mut handles = vec![];
+
+    for thread_id in 0..num_threads {
+        let writer_clone = Arc::clone(&writer);
+        let handle = thread::spawn(move || {
+            let mut lsns = vec![];
+            for i in 0..writes_per_thread {
+                let txn_id = (thread_id * writes_per_thread + i) as u64;
+                let lsn = writer_clone.write_begin(txn_id).unwrap();
+                lsns.push(lsn);
+                writer_clone
+                    .write_operation(
+                        txn_id,
+                        "data".to_string(),
+                        WriteOpType::Put,
+                        format!("k{}", txn_id).into_bytes(),
+                        format!("v{}", txn_id).into_bytes(),
+                    )
+                    .unwrap();
+                writer_clone.write_commit(txn_id).unwrap();
+            }
+            lsns
+        });
+        handles.push(handle);
+    }
+
+    // Collect all LSNs
+    let mut all_lsns = vec![];
+    for handle in handles {
+        let lsns = handle.join().unwrap();
+        all_lsns.extend(lsns);
+    }
+
+    writer.flush().unwrap();
+
+    // Verify all LSNs are unique and monotonically increasing
+    all_lsns.sort();
+    let original_len = all_lsns.len();
+    all_lsns.dedup();
+    assert_eq!(
+        all_lsns.len(),
+        original_len,
+        "All LSNs must be unique (no duplicates)"
+    );
+
+    // Verify LSNs are sequential (no gaps in this test since we control all writes)
+    for i in 1..all_lsns.len() {
+        assert!(
+            all_lsns[i] > all_lsns[i - 1],
+            "LSNs must be strictly increasing"
+        );
+    }
+
+    // Verify recovery produces correct number of writes
+    let result = WalRecovery::recover(&*fs, path).unwrap();
+    assert_eq!(
+        result.committed_writes.len(),
+        (num_threads * writes_per_thread) as usize
+    );
+}
+
 // Made with Bob
