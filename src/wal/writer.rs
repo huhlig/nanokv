@@ -18,6 +18,7 @@
 
 use crate::pager::{CompressionType, EncryptionType};
 use crate::vfs::{File, FileSystem};
+use crate::wal::group_commit::{GroupCommitConfig, GroupCommitCoordinator};
 use crate::wal::{Lsn, RecordData, TransactionId, WalError, WalRecord, WalResult};
 use parking_lot::RwLock;
 use std::collections::HashSet;
@@ -29,7 +30,7 @@ use std::sync::Arc;
 pub struct WalWriterConfig {
     /// Buffer size for batching writes (bytes)
     pub buffer_size: usize,
-    /// Whether to sync after each write
+    /// Whether to sync after each write (ignored if group commit is enabled)
     pub sync_on_write: bool,
     /// Maximum WAL file size (bytes)
     pub max_wal_size: u64,
@@ -39,6 +40,8 @@ pub struct WalWriterConfig {
     pub encryption: EncryptionType,
     /// Encryption key (32 bytes for AES-256)
     pub encryption_key: Option<[u8; 32]>,
+    /// Group commit configuration
+    pub group_commit: GroupCommitConfig,
 }
 
 impl Default for WalWriterConfig {
@@ -50,6 +53,7 @@ impl Default for WalWriterConfig {
             compression: CompressionType::None, // No compression by default
             encryption: EncryptionType::None,
             encryption_key: None,
+            group_commit: GroupCommitConfig::default(),
         }
     }
 }
@@ -78,6 +82,8 @@ pub struct WalWriter<FS: FileSystem> {
     encryption_key: Option<[u8; 32]>,
     /// Writer state
     state: Arc<RwLock<WalWriterState>>,
+    /// Group commit coordinator (if enabled)
+    group_commit: Option<Arc<GroupCommitCoordinator>>,
 }
 
 impl<FS: FileSystem> WalWriter<FS> {
@@ -92,12 +98,46 @@ impl<FS: FileSystem> WalWriter<FS> {
             buffer: Vec::with_capacity(config.buffer_size),
         };
 
+        let file_arc = Arc::new(RwLock::new(file));
+        let state_arc = Arc::new(RwLock::new(state));
+
+        // Create group commit coordinator if enabled
+        let group_commit = if config.group_commit.enabled {
+            let file_clone = file_arc.clone();
+            let state_clone = state_arc.clone();
+            let sync_on_write = config.sync_on_write;
+            
+            let coordinator = GroupCommitCoordinator::new(
+                config.group_commit.clone(),
+                move || {
+                    let mut state = state_clone.write();
+                    if state.buffer.is_empty() {
+                        return Ok(());
+                    }
+
+                    let mut file = file_clone.write();
+                    file.write_all(&state.buffer).map_err(WalError::IoError)?;
+                    
+                    if sync_on_write {
+                        file.sync_data()?;
+                    }
+                    
+                    state.buffer.clear();
+                    Ok(())
+                },
+            );
+            Some(Arc::new(coordinator))
+        } else {
+            None
+        };
+
         Ok(Self {
-            file: Arc::new(RwLock::new(file)),
+            file: file_arc,
             encryption: config.encryption,
             encryption_key: config.encryption_key,
             config,
-            state: Arc::new(RwLock::new(state)),
+            state: state_arc,
+            group_commit,
         })
     }
 
@@ -117,12 +157,46 @@ impl<FS: FileSystem> WalWriter<FS> {
             buffer: Vec::with_capacity(config.buffer_size),
         };
 
+        let file_arc = Arc::new(RwLock::new(file));
+        let state_arc = Arc::new(RwLock::new(state));
+
+        // Create group commit coordinator if enabled
+        let group_commit = if config.group_commit.enabled {
+            let file_clone = file_arc.clone();
+            let state_clone = state_arc.clone();
+            let sync_on_write = config.sync_on_write;
+            
+            let coordinator = GroupCommitCoordinator::new(
+                config.group_commit.clone(),
+                move || {
+                    let mut state = state_clone.write();
+                    if state.buffer.is_empty() {
+                        return Ok(());
+                    }
+
+                    let mut file = file_clone.write();
+                    file.write_all(&state.buffer).map_err(WalError::IoError)?;
+                    
+                    if sync_on_write {
+                        file.sync_data()?;
+                    }
+                    
+                    state.buffer.clear();
+                    Ok(())
+                },
+            );
+            Some(Arc::new(coordinator))
+        } else {
+            None
+        };
+
         Ok(Self {
-            file: Arc::new(RwLock::new(file)),
+            file: file_arc,
             encryption: config.encryption,
             encryption_key: config.encryption_key,
             config,
-            state: Arc::new(RwLock::new(state)),
+            state: state_arc,
+            group_commit,
         })
     }
 
@@ -192,27 +266,39 @@ impl<FS: FileSystem> WalWriter<FS> {
 
     /// Write a COMMIT record
     pub fn write_commit(&self, txn_id: TransactionId) -> WalResult<Lsn> {
-        let mut state = self.state.write();
+        let lsn = {
+            let mut state = self.state.write();
 
-        // Check if transaction exists
-        if !state.active_txns.contains(&txn_id) {
-            return Err(WalError::TransactionNotFound(txn_id));
+            // Check if transaction exists
+            if !state.active_txns.contains(&txn_id) {
+                return Err(WalError::TransactionNotFound(txn_id));
+            }
+
+            // Create record
+            let lsn = state.current_lsn;
+            let record = WalRecord::new(
+                lsn,
+                RecordData::Commit { txn_id },
+                self.config.compression,
+                self.encryption,
+            );
+
+            // Write record to buffer
+            self.write_record_internal(&mut state, record)?;
+
+            // Remove from active transactions
+            state.active_txns.remove(&txn_id);
+
+            lsn
+        };
+
+        // If group commit is enabled, submit to coordinator
+        // Otherwise, flush immediately
+        if let Some(coordinator) = &self.group_commit {
+            coordinator.submit_commit(txn_id, lsn)?;
+        } else if self.config.sync_on_write {
+            self.flush()?;
         }
-
-        // Create record
-        let lsn = state.current_lsn;
-        let record = WalRecord::new(
-            lsn,
-            RecordData::Commit { txn_id },
-            self.config.compression,
-            self.encryption,
-        );
-
-        // Write record
-        self.write_record_internal(&mut state, record)?;
-
-        // Remove from active transactions
-        state.active_txns.remove(&txn_id);
 
         Ok(lsn)
     }
@@ -354,6 +440,16 @@ impl<FS: FileSystem> WalWriter<FS> {
         state.current_offset = 0;
 
         Ok(())
+    }
+
+    /// Get group commit metrics (if enabled)
+    pub fn group_commit_metrics(&self) -> Option<&crate::wal::GroupCommitMetrics> {
+        self.group_commit.as_ref().map(|gc| gc.metrics())
+    }
+
+    /// Check if group commit is enabled
+    pub fn is_group_commit_enabled(&self) -> bool {
+        self.group_commit.is_some()
     }
 }
 

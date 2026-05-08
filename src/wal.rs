@@ -83,12 +83,14 @@
 //! ```
 
 mod error;
+mod group_commit;
 mod reader;
 mod record;
 mod recovery;
 mod writer;
 
 pub use self::error::{WalError, WalResult};
+pub use self::group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitMetrics};
 pub use self::reader::{WalReader, WalRecordIterator};
 pub use self::record::{Lsn, RecordData, RecordType, TransactionId, WalRecord, WriteOpType};
 pub use self::recovery::{RecoveredWrite, RecoveryResult, WalRecovery};

@@ -20,9 +20,11 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use nanokv::pager::{CompressionType, EncryptionType};
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
-    WalReader, WalRecordIterator, WalRecovery, WalWriter, WalWriterConfig, WriteOpType,
+    GroupCommitConfig, WalReader, WalRecordIterator, WalRecovery, WalWriter, WalWriterConfig, WriteOpType,
 };
 use std::hint::black_box;
+use std::sync::Arc;
+use std::thread;
 
 // ============================================================================
 // WAL Writer Creation Benchmarks
@@ -845,6 +847,256 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
 }
 
 
+// ============================================================================
+// Group Commit Benchmarks
+// ============================================================================
+
+fn bench_group_commit_single_thread(c: &mut Criterion) {
+    let mut group = c.benchmark_group("group_commit_single_thread");
+
+    // Benchmark without group commit
+    group.bench_function("memory_fs_no_group_commit", |b| {
+        let fs = MemoryFileSystem::new();
+        let mut config = WalWriterConfig::default();
+        config.group_commit.enabled = false;
+        let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+        let mut txn_id = 1;
+
+        b.iter(|| {
+            writer.write_begin(txn_id).unwrap();
+            writer
+                .write_operation(
+                    txn_id,
+                    "test".to_string(),
+                    WriteOpType::Put,
+                    b"key".to_vec(),
+                    b"value".to_vec(),
+                )
+                .unwrap();
+            writer.write_commit(txn_id).unwrap();
+            txn_id += 1;
+        });
+    });
+
+    // Benchmark with group commit
+    group.bench_function("memory_fs_with_group_commit", |b| {
+        let fs = MemoryFileSystem::new();
+        let mut config = WalWriterConfig::default();
+        config.group_commit = GroupCommitConfig::high_throughput();
+        let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+        let mut txn_id = 1;
+
+        b.iter(|| {
+            writer.write_begin(txn_id).unwrap();
+            writer
+                .write_operation(
+                    txn_id,
+                    "test".to_string(),
+                    WriteOpType::Put,
+                    b"key".to_vec(),
+                    b"value".to_vec(),
+                )
+                .unwrap();
+            writer.write_commit(txn_id).unwrap();
+            txn_id += 1;
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_group_commit_concurrent(c: &mut Criterion) {
+    let mut group = c.benchmark_group("group_commit_concurrent");
+
+    for num_threads in [2, 4, 8, 16].iter() {
+        // Benchmark without group commit
+        group.bench_with_input(
+            BenchmarkId::new("memory_fs_no_group_commit", num_threads),
+            num_threads,
+            |b, &num_threads| {
+                b.iter(|| {
+                    let fs = Arc::new(MemoryFileSystem::new());
+                    let mut config = WalWriterConfig::default();
+                    config.group_commit.enabled = false;
+                    let writer = Arc::new(WalWriter::create(&*fs, "/bench.wal", config).unwrap());
+
+                    let mut handles = vec![];
+                    for thread_id in 0..num_threads {
+                        let writer_clone = writer.clone();
+                        let handle = thread::spawn(move || {
+                            for i in 0..10 {
+                                let txn_id = (thread_id * 10 + i) as u64 + 1;
+                                writer_clone.write_begin(txn_id).unwrap();
+                                writer_clone
+                                    .write_operation(
+                                        txn_id,
+                                        "test".to_string(),
+                                        WriteOpType::Put,
+                                        format!("key{}", txn_id).into_bytes(),
+                                        b"value".to_vec(),
+                                    )
+                                    .unwrap();
+                                writer_clone.write_commit(txn_id).unwrap();
+                            }
+                        });
+                        handles.push(handle);
+                    }
+
+                    for handle in handles {
+                        handle.join().unwrap();
+                    }
+                });
+            },
+        );
+
+        // Benchmark with group commit
+        group.bench_with_input(
+            BenchmarkId::new("memory_fs_with_group_commit", num_threads),
+            num_threads,
+            |b, &num_threads| {
+                b.iter(|| {
+                    let fs = Arc::new(MemoryFileSystem::new());
+                    let mut config = WalWriterConfig::default();
+                    config.group_commit = GroupCommitConfig::high_throughput();
+                    let writer = Arc::new(WalWriter::create(&*fs, "/bench.wal", config).unwrap());
+
+                    let mut handles = vec![];
+                    for thread_id in 0..num_threads {
+                        let writer_clone = writer.clone();
+                        let handle = thread::spawn(move || {
+                            for i in 0..10 {
+                                let txn_id = (thread_id * 10 + i) as u64 + 1;
+                                writer_clone.write_begin(txn_id).unwrap();
+                                writer_clone
+                                    .write_operation(
+                                        txn_id,
+                                        "test".to_string(),
+                                        WriteOpType::Put,
+                                        format!("key{}", txn_id).into_bytes(),
+                                        b"value".to_vec(),
+                                    )
+                                    .unwrap();
+                                writer_clone.write_commit(txn_id).unwrap();
+                            }
+                        });
+                        handles.push(handle);
+                    }
+
+                    for handle in handles {
+                        handle.join().unwrap();
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_group_commit_throughput(c: &mut Criterion) {
+    let mut group = c.benchmark_group("group_commit_throughput");
+    group.throughput(Throughput::Elements(100));
+
+    // Benchmark without group commit
+    group.bench_function("memory_fs_no_group_commit_100_txns", |b| {
+        b.iter(|| {
+            let fs = MemoryFileSystem::new();
+            let mut config = WalWriterConfig::default();
+            config.group_commit.enabled = false;
+            let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+
+            for txn_id in 1..=100 {
+                writer.write_begin(txn_id).unwrap();
+                writer
+                    .write_operation(
+                        txn_id,
+                        "test".to_string(),
+                        WriteOpType::Put,
+                        format!("key{}", txn_id).into_bytes(),
+                        b"value".to_vec(),
+                    )
+                    .unwrap();
+                writer.write_commit(txn_id).unwrap();
+            }
+        });
+    });
+
+    // Benchmark with group commit
+    group.bench_function("memory_fs_with_group_commit_100_txns", |b| {
+        b.iter(|| {
+            let fs = MemoryFileSystem::new();
+            let mut config = WalWriterConfig::default();
+            config.group_commit = GroupCommitConfig::high_throughput();
+            let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+
+            for txn_id in 1..=100 {
+                writer.write_begin(txn_id).unwrap();
+                writer
+                    .write_operation(
+                        txn_id,
+                        "test".to_string(),
+                        WriteOpType::Put,
+                        format!("key{}", txn_id).into_bytes(),
+                        b"value".to_vec(),
+                    )
+                    .unwrap();
+                writer.write_commit(txn_id).unwrap();
+            }
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_group_commit_configs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("group_commit_configs");
+
+    let configs = vec![
+        ("low_latency", GroupCommitConfig::low_latency()),
+        ("balanced", GroupCommitConfig::balanced()),
+        ("high_throughput", GroupCommitConfig::high_throughput()),
+    ];
+
+    for (name, config) in configs {
+        group.bench_function(format!("memory_fs_{}", name), |b| {
+            let fs = Arc::new(MemoryFileSystem::new());
+            let mut wal_config = WalWriterConfig::default();
+            wal_config.group_commit = config.clone();
+            let writer = Arc::new(WalWriter::create(&*fs, "/bench.wal", wal_config).unwrap());
+
+            b.iter(|| {
+                let mut handles = vec![];
+                for thread_id in 0..4 {
+                    let writer_clone = writer.clone();
+                    let handle = thread::spawn(move || {
+                        for i in 0..25 {
+                            let txn_id = (thread_id * 25 + i) as u64 + 1;
+                            writer_clone.write_begin(txn_id).unwrap();
+                            writer_clone
+                                .write_operation(
+                                    txn_id,
+                                    "test".to_string(),
+                                    WriteOpType::Put,
+                                    format!("key{}", txn_id).into_bytes(),
+                                    b"value".to_vec(),
+                                )
+                                .unwrap();
+                            writer_clone.write_commit(txn_id).unwrap();
+                        }
+                    });
+                    handles.push(handle);
+                }
+
+                for handle in handles {
+                    handle.join().unwrap();
+                }
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_wal_writer_creation,
@@ -858,6 +1110,10 @@ criterion_group!(
     bench_compression,
     bench_encryption,
     bench_compression_and_encryption,
+    bench_group_commit_single_thread,
+    bench_group_commit_concurrent,
+    bench_group_commit_throughput,
+    bench_group_commit_configs,
 );
 
 criterion_main!(benches);
