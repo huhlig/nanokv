@@ -406,11 +406,7 @@ fn bench_free_list_operations(c: &mut Criterion) {
 // ============================================================================
 // Compression Benchmarks
 // ============================================================================
-// NOTE: Compression is not yet implemented in the pager.
-// These benchmarks are placeholders for when compression is added.
-// Uncomment when LZ4/Zstd compression is implemented.
 
-#[allow(dead_code)]
 fn bench_compression(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression");
 
@@ -487,11 +483,7 @@ fn bench_compression(c: &mut Criterion) {
 // ============================================================================
 // Encryption Benchmarks
 // ============================================================================
-// NOTE: Encryption is not yet implemented in the pager.
-// These benchmarks are placeholders for when encryption is added.
-// Uncomment when AES-256-GCM encryption is implemented.
 
-#[allow(dead_code)]
 fn bench_encryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("encryption");
 
@@ -562,11 +554,7 @@ fn bench_encryption(c: &mut Criterion) {
 // ============================================================================
 // Combined Compression + Encryption Benchmarks
 // ============================================================================
-// NOTE: Combined compression and encryption not yet implemented.
-// These benchmarks are placeholders for when both features are added.
-// Uncomment when both compression and encryption are implemented.
 
-#[allow(dead_code)]
 fn bench_compression_and_encryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression_and_encryption");
 
