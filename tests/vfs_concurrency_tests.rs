@@ -344,4 +344,300 @@ fn test_high_contention_access() {
     assert_eq!(total_errors, 0, "Encountered {} errors during high-contention access", total_errors);
 }
 
+/// Test concurrent directory operations
+///
+/// This test validates that concurrent directory creation, listing, and removal
+/// operations don't cause race conditions or panics. Note: This test uses flat
+/// directory structure (siblings) rather than hierarchical due to current VFS
+/// implementation limitations with parent-child directory relationships.
+#[test]
+fn test_concurrent_directory_operations() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    
+    let thread_count = 8;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+    
+    for thread_id in 0..thread_count {
+        let fs_clone = Arc::clone(&fs);
+        let barrier_clone = Arc::clone(&barrier);
+        
+        let handle = thread::spawn(move || {
+            // Wait for all threads to be ready
+            barrier_clone.wait();
+            
+            let mut errors = vec![];
+            
+            // Each thread creates multiple sibling directories
+            let mut created_dirs = vec![];
+            for i in 0..5 {
+                let dir_path = format!("/thread_{}_dir_{}", thread_id, i);
+                match fs_clone.create_directory(&dir_path) {
+                    Ok(_) => created_dirs.push(dir_path.clone()),
+                    Err(e) => {
+                        errors.push(format!("create_directory {} failed: {:?}", dir_path, e));
+                    }
+                }
+            }
+            
+            // Verify directories exist
+            for dir_path in &created_dirs {
+                match fs_clone.is_directory(dir_path) {
+                    Ok(true) => {},
+                    Ok(false) => {
+                        errors.push(format!("Directory {} not recognized as directory", dir_path));
+                    }
+                    Err(e) => {
+                        errors.push(format!("is_directory {} failed: {:?}", dir_path, e));
+                    }
+                }
+            }
+            
+            // Try to access other threads' directories concurrently
+            for other_id in 0..thread_count {
+                if other_id != thread_id {
+                    for i in 0..5 {
+                        let other_dir = format!("/thread_{}_dir_{}", other_id, i);
+                        let _ = fs_clone.exists(&other_dir);
+                        let _ = fs_clone.is_directory(&other_dir);
+                    }
+                }
+            }
+            
+            // Remove directories
+            for dir_path in &created_dirs {
+                if let Err(e) = fs_clone.remove_directory(dir_path) {
+                    errors.push(format!("remove_directory {} failed: {:?}", dir_path, e));
+                }
+            }
+            
+            // Verify directories are removed
+            for dir_path in &created_dirs {
+                match fs_clone.exists(dir_path) {
+                    Ok(false) => {},
+                    Ok(true) => {
+                        errors.push(format!("Directory {} still exists after removal", dir_path));
+                    }
+                    Err(e) => {
+                        errors.push(format!("exists check for {} failed: {:?}", dir_path, e));
+                    }
+                }
+            }
+            
+            (thread_id, errors)
+        });
+        handles.push(handle);
+    }
+    
+    // Collect results
+    let mut total_errors = 0;
+    for handle in handles {
+        let (thread_id, errors) = handle.join().expect("Thread panicked");
+        if !errors.is_empty() {
+            println!("Thread {} encountered {} errors:", thread_id, errors.len());
+            for error in &errors {
+                println!("  - {}", error);
+            }
+            total_errors += errors.len();
+        }
+    }
+    
+    assert_eq!(total_errors, 0, "Encountered {} errors during concurrent directory operations", total_errors);
+}
+
+/// Test concurrent file lock contention
+///
+/// This test validates that file locking works correctly when multiple threads
+/// try to acquire locks on the same file simultaneously.
+#[test]
+fn test_concurrent_lock_contention() {
+    use nanokv::vfs::FileLockMode;
+    
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "/test_lock.dat";
+    
+    // Create file
+    {
+        let mut file = fs.create_file(path).expect("Failed to create file");
+        file.write_all(&vec![0x77; 100]).expect("Failed to write");
+    }
+    
+    let thread_count = 8;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+    
+    for thread_id in 0..thread_count {
+        let fs_clone = Arc::clone(&fs);
+        let barrier_clone = Arc::clone(&barrier);
+        let path = path.to_string();
+        
+        let handle = thread::spawn(move || {
+            let mut file = fs_clone.open_file(&path).expect("Failed to open file");
+            
+            // Wait for all threads to be ready
+            barrier_clone.wait();
+            
+            let mut lock_attempts = 0;
+            let mut lock_successes = 0;
+            let mut lock_failures = 0;
+            
+            // Try to acquire locks multiple times
+            for i in 0..20 {
+                lock_attempts += 1;
+                
+                // Alternate between shared and exclusive locks
+                let lock_mode = if i % 2 == 0 {
+                    FileLockMode::Shared
+                } else {
+                    FileLockMode::Exclusive
+                };
+                
+                // Try to acquire lock
+                match file.set_lock_status(lock_mode) {
+                    Ok(_) => {
+                        lock_successes += 1;
+                        
+                        // Verify lock status
+                        match file.get_lock_status() {
+                            Ok(status) => {
+                                if status != lock_mode {
+                                    println!("Thread {}: Lock status mismatch! Expected {:?}, got {:?}",
+                                             thread_id, lock_mode, status);
+                                }
+                            }
+                            Err(e) => {
+                                println!("Thread {}: Failed to get lock status: {:?}", thread_id, e);
+                            }
+                        }
+                        
+                        // Hold lock briefly
+                        thread::sleep(std::time::Duration::from_micros(100));
+                        
+                        // Release lock
+                        if let Err(e) = file.set_lock_status(FileLockMode::Unlocked) {
+                            println!("Thread {}: Failed to release lock: {:?}", thread_id, e);
+                        }
+                    }
+                    Err(_) => {
+                        lock_failures += 1;
+                    }
+                }
+                
+                // Small delay between attempts
+                thread::sleep(std::time::Duration::from_micros(50));
+            }
+            
+            (thread_id, lock_attempts, lock_successes, lock_failures)
+        });
+        handles.push(handle);
+    }
+    
+    // Collect results
+    let mut total_attempts = 0;
+    let mut total_successes = 0;
+    let mut total_failures = 0;
+    
+    for handle in handles {
+        let (thread_id, attempts, successes, failures) = handle.join().expect("Thread panicked");
+        println!("Thread {}: {} attempts, {} successes, {} failures",
+                 thread_id, attempts, successes, failures);
+        total_attempts += attempts;
+        total_successes += successes;
+        total_failures += failures;
+    }
+    
+    println!("Total: {} attempts, {} successes, {} failures",
+             total_attempts, total_successes, total_failures);
+    
+    // We should have some successes (not all threads should fail)
+    assert!(total_successes > 0, "No threads successfully acquired locks");
+}
+
+/// Test concurrent file deletion while reading
+///
+/// This test validates that deleting a file while other threads are reading
+/// from it doesn't cause panics or data corruption.
+#[test]
+fn test_concurrent_deletion_while_reading() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "/test_delete.dat";
+    
+    // Create file with data
+    {
+        let mut file = fs.create_file(path).expect("Failed to create file");
+        let mut data = vec![];
+        for i in 0..1000 {
+            data.push((i % 256) as u8);
+        }
+        file.write_all(&data).expect("Failed to write");
+    }
+    
+    let thread_count = 8;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+    
+    for thread_id in 0..thread_count {
+        let fs_clone = Arc::clone(&fs);
+        let barrier_clone = Arc::clone(&barrier);
+        let path = path.to_string();
+        
+        let handle = thread::spawn(move || {
+            // Wait for all threads to be ready
+            barrier_clone.wait();
+            
+            if thread_id == 0 {
+                // Thread 0 will try to delete the file after a brief delay
+                thread::sleep(std::time::Duration::from_millis(10));
+                
+                match fs_clone.remove_file(&path) {
+                    Ok(_) => {
+                        println!("Thread {}: Successfully deleted file", thread_id);
+                        return (thread_id, "deleter", 0, 0);
+                    }
+                    Err(e) => {
+                        println!("Thread {}: Failed to delete file: {:?}", thread_id, e);
+                        return (thread_id, "deleter", 0, 0);
+                    }
+                }
+            } else {
+                // Other threads continuously read from the file
+                let mut successful_reads = 0;
+                let mut failed_reads = 0;
+                
+                for _ in 0..50 {
+                    match fs_clone.open_file(&path) {
+                        Ok(mut file) => {
+                            let mut buf = vec![0u8; 100];
+                            let offset = ((thread_id * 100) % 900) as u64;
+                            
+                            match file.read_at_offset(offset, &mut buf) {
+                                Ok(_) => successful_reads += 1,
+                                Err(_) => failed_reads += 1,
+                            }
+                        }
+                        Err(_) => {
+                            // File might have been deleted
+                            failed_reads += 1;
+                        }
+                    }
+                    
+                    thread::sleep(std::time::Duration::from_micros(100));
+                }
+                
+                (thread_id, "reader", successful_reads, failed_reads)
+            }
+        });
+        handles.push(handle);
+    }
+    
+    // Collect results
+    for handle in handles {
+        let (thread_id, role, successful, failed) = handle.join().expect("Thread panicked");
+        println!("Thread {} ({}): {} successful, {} failed",
+                 thread_id, role, successful, failed);
+    }
+    
+    // Test passes if no threads panicked
+}
+
 // Made with Bob

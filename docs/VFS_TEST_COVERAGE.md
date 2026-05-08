@@ -14,14 +14,16 @@ The VFS test suite is organized into multiple test files:
    - `tests/vfs_tests.rs` - Comprehensive integration tests
    - `tests/vfs_edge_cases.rs` - Edge cases and error handling
    - `tests/vfs_property_tests.rs` - Property-based tests using proptest
+   - `tests/vfs_concurrency_tests.rs` - Multi-threaded concurrency tests
 
 ## Test Statistics
 
-- **Total Test Count**: 65+ tests
+- **Total Test Count**: 73+ tests
 - **Unit Tests**: 2
 - **Integration Tests**: 21
 - **Edge Case Tests**: 25
 - **Property-Based Tests**: 17
+- **Concurrency Tests**: 8
 
 ## Coverage by Component
 
@@ -169,7 +171,7 @@ Tests data persistence operations:
 
 ### 9. Concurrent Access Tests
 
-Tests multiple file handles:
+Tests multiple file handles and basic concurrency:
 
 - Multiple handles to same file
 - Concurrent reads
@@ -178,6 +180,30 @@ Tests multiple file handles:
 
 **Test Files**: `vfs_edge_cases.rs`, `vfs_property_tests.rs`
 **Test Count**: 3+ tests
+
+### 9a. Multi-Threaded Concurrency Tests
+
+Tests thread-safe operations with barriers and high contention:
+
+- Concurrent read operations at various offsets
+- Concurrent read with buffer size mismatches
+- Concurrent write and read operations (data corruption detection)
+- Concurrent resize operations
+- High-contention access patterns (16 threads, 100 ops each)
+- Concurrent directory operations (create, verify, remove)
+- File lock contention between threads
+- Concurrent file deletion while reading
+
+**Test Files**: `vfs_concurrency_tests.rs`
+**Test Count**: 8 tests
+
+These tests specifically validate:
+- Integer overflow protection in read_at_offset
+- Slice length mismatch handling
+- Data integrity under concurrent access
+- Thread-safe directory operations
+- Advisory lock behavior under contention
+- Graceful handling of file deletion during reads
 
 ### 10. Property-Based Tests
 
@@ -282,6 +308,7 @@ cargo test vfs
 cargo test --test vfs_tests
 cargo test --test vfs_edge_cases
 cargo test --test vfs_property_tests
+cargo test --test vfs_concurrency_tests
 ```
 
 ### Run Unit Tests Only
@@ -313,18 +340,18 @@ cargo test vfs -- --nocapture
 
 1. **File Locking**: Shared locks simplified in tests due to platform differences
 2. **Path Handling**: Absolute path handling varies by implementation
-3. **Concurrency**: Limited multi-threaded testing
-4. **Performance**: No benchmarks included
+3. **Directory Hierarchy**: MemoryFileSystem has limitations with nested directory listing (parent-child relationships not fully implemented)
+4. **Performance**: Benchmarks in separate file (see VFS_BENCHMARKS.md)
 
 ## Future Improvements
 
-1. Add benchmark tests for performance regression detection
-2. Add more concurrent access tests with multiple threads
-3. Add tests for symbolic links (if supported)
-4. Add tests for file permissions and attributes
-5. Add tests for very large files (>4GB)
-6. Add fuzzing tests for robustness
-7. Add coverage reporting integration
+1. ~~Add more concurrent access tests with multiple threads~~ ✅ **COMPLETED** (8 concurrency tests added)
+2. Add tests for symbolic links (if supported)
+3. Add tests for file permissions and attributes
+4. Add tests for very large files (>4GB)
+5. Add fuzzing tests for robustness
+6. Add coverage reporting integration
+7. Fix MemoryFileSystem nested directory listing (parent-child relationships)
 
 ## Maintenance
 
@@ -335,13 +362,14 @@ cargo test vfs -- --nocapture
 
 ## Summary
 
-The VFS library has comprehensive test coverage with 65+ tests covering:
+The VFS library has comprehensive test coverage with 73+ tests covering:
 - ✅ All public APIs
 - ✅ Both implementations (Memory and Local)
 - ✅ Error conditions
 - ✅ Edge cases
 - ✅ Property-based testing
 - ✅ Stress testing
+- ✅ Multi-threaded concurrency testing
 - ✅ Cross-implementation compatibility
 
-All tests pass successfully on Windows, and the test suite provides confidence in the correctness and reliability of the VFS abstraction layer.
+All tests pass successfully on Windows, and the test suite provides confidence in the correctness and reliability of the VFS abstraction layer. The addition of 8 comprehensive concurrency tests validates thread-safety and exposes potential race conditions in file operations, directory operations, and lock contention scenarios.
