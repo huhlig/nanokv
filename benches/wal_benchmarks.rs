@@ -17,6 +17,7 @@
 //! Benchmarks for WAL (Write-Ahead Log) implementation
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use nanokv::pager::{CompressionType, EncryptionType};
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
     WalReader, WalRecordIterator, WalRecovery, WalWriter, WalWriterConfig, WriteOpType,
@@ -525,6 +526,324 @@ fn bench_complete_transactions(c: &mut Criterion) {
 
     group.finish();
 }
+// ============================================================================
+// Compression Benchmarks
+// ============================================================================
+
+fn bench_compression(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compression");
+
+    for compression in [
+        CompressionType::None,
+        CompressionType::Lz4,
+        CompressionType::Zstd,
+    ]
+    .iter()
+    {
+        let compression_name = match compression {
+            CompressionType::None => "none",
+            CompressionType::Lz4 => "lz4",
+            CompressionType::Zstd => "zstd",
+        };
+
+        for value_size in [256, 1024, 4096].iter() {
+            group.throughput(Throughput::Bytes(*value_size as u64));
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("memory_fs_write_{}", compression_name), value_size),
+                &(*compression, *value_size),
+                |b, &(compression, value_size)| {
+                    let fs = MemoryFileSystem::new();
+                    let mut config = WalWriterConfig::default();
+                    config.compression = compression;
+                    let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+                    
+                    // Create compressible data (repeated pattern)
+                    let pattern = b"The quick brown fox jumps over the lazy dog. ";
+                    let mut value = Vec::new();
+                    for _ in 0..(value_size / pattern.len() + 1) {
+                        value.extend_from_slice(pattern);
+                    }
+                    value.truncate(value_size);
+                    
+                    let mut counter = 0;
+                    writer.write_begin(1).unwrap();
+
+                    b.iter(|| {
+                        let key = format!("key_{}", counter).into_bytes();
+                        counter += 1;
+                        writer
+                            .write_operation(
+                                1,
+                                "test".to_string(),
+                                WriteOpType::Put,
+                                key,
+                                value.clone(),
+                            )
+                            .unwrap();
+                    });
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("memory_fs_read_{}", compression_name), value_size),
+                &(*compression, *value_size),
+                |b, &(compression, value_size)| {
+                    let fs = MemoryFileSystem::new();
+                    let mut config = WalWriterConfig::default();
+                    config.compression = compression;
+                    let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+                    
+                    // Create compressible data
+                    let pattern = b"The quick brown fox jumps over the lazy dog. ";
+                    let mut value = Vec::new();
+                    for _ in 0..(value_size / pattern.len() + 1) {
+                        value.extend_from_slice(pattern);
+                    }
+                    value.truncate(value_size);
+                    
+                    // Write test data
+                    for i in 0..10 {
+                        writer.write_begin(i as u64).unwrap();
+                        writer
+                            .write_operation(
+                                i as u64,
+                                "test".to_string(),
+                                WriteOpType::Put,
+                                format!("key_{}", i).into_bytes(),
+                                value.clone(),
+                            )
+                            .unwrap();
+                        writer.write_commit(i as u64).unwrap();
+                    }
+                    writer.flush().unwrap();
+                    drop(writer);
+
+                    b.iter(|| {
+                        let reader = WalReader::open(&fs, "/bench.wal", None).unwrap();
+                        let iter = WalRecordIterator::new(reader);
+                        let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
+                        black_box(records);
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Encryption Benchmarks
+// ============================================================================
+
+fn bench_encryption(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encryption");
+
+    // Generate a test encryption key
+    let encryption_key = [0x42u8; 32];
+
+    for encrypted in [false, true].iter() {
+        let encryption_name = if *encrypted {
+            "encrypted"
+        } else {
+            "unencrypted"
+        };
+
+        for value_size in [256, 1024, 4096].iter() {
+            group.throughput(Throughput::Bytes(*value_size as u64));
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("memory_fs_write_{}", encryption_name), value_size),
+                &(*encrypted, *value_size),
+                |b, &(encrypted, value_size)| {
+                    let fs = MemoryFileSystem::new();
+                    let mut config = WalWriterConfig::default();
+                    if encrypted {
+                        config.encryption = EncryptionType::Aes256Gcm;
+                        config.encryption_key = Some(encryption_key);
+                    }
+                    let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+                    
+                    let value = vec![0xAB; value_size];
+                    let mut counter = 0;
+                    writer.write_begin(1).unwrap();
+
+                    b.iter(|| {
+                        let key = format!("key_{}", counter).into_bytes();
+                        counter += 1;
+                        writer
+                            .write_operation(
+                                1,
+                                "test".to_string(),
+                                WriteOpType::Put,
+                                key,
+                                value.clone(),
+                            )
+                            .unwrap();
+                    });
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("memory_fs_read_{}", encryption_name), value_size),
+                &(*encrypted, *value_size),
+                |b, &(encrypted, value_size)| {
+                    let fs = MemoryFileSystem::new();
+                    let mut config = WalWriterConfig::default();
+                    let key = if encrypted {
+                        config.encryption = EncryptionType::Aes256Gcm;
+                        config.encryption_key = Some(encryption_key);
+                        Some(encryption_key)
+                    } else {
+                        None
+                    };
+                    let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+                    
+                    let value = vec![0xAB; value_size];
+                    
+                    // Write test data
+                    for i in 0..10 {
+                        writer.write_begin(i as u64).unwrap();
+                        writer
+                            .write_operation(
+                                i as u64,
+                                "test".to_string(),
+                                WriteOpType::Put,
+                                format!("key_{}", i).into_bytes(),
+                                value.clone(),
+                            )
+                            .unwrap();
+                        writer.write_commit(i as u64).unwrap();
+                    }
+                    writer.flush().unwrap();
+                    drop(writer);
+
+                    b.iter(|| {
+                        let reader = WalReader::open(&fs, "/bench.wal", key).unwrap();
+                        let iter = WalRecordIterator::new(reader);
+                        let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
+                        black_box(records);
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Combined Compression + Encryption Benchmarks
+// ============================================================================
+
+fn bench_compression_and_encryption(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compression_and_encryption");
+
+    let encryption_key = [0x42u8; 32];
+    let value_size = 4096;
+
+    group.throughput(Throughput::Bytes(value_size as u64));
+
+    for compression in [
+        CompressionType::None,
+        CompressionType::Lz4,
+        CompressionType::Zstd,
+    ]
+    .iter()
+    {
+        let compression_name = match compression {
+            CompressionType::None => "none",
+            CompressionType::Lz4 => "lz4",
+            CompressionType::Zstd => "zstd",
+        };
+
+        group.bench_function(
+            format!("memory_fs_write_{}_encrypted", compression_name),
+            |b| {
+                let fs = MemoryFileSystem::new();
+                let mut config = WalWriterConfig::default();
+                config.compression = *compression;
+                config.encryption = EncryptionType::Aes256Gcm;
+                config.encryption_key = Some(encryption_key);
+                let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+                
+                // Create compressible data
+                let pattern = b"The quick brown fox jumps over the lazy dog. ";
+                let mut value = Vec::new();
+                for _ in 0..(value_size / pattern.len() + 1) {
+                    value.extend_from_slice(pattern);
+                }
+                value.truncate(value_size);
+                
+                let mut counter = 0;
+                writer.write_begin(1).unwrap();
+
+                b.iter(|| {
+                    let key = format!("key_{}", counter).into_bytes();
+                    counter += 1;
+                    writer
+                        .write_operation(
+                            1,
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            key,
+                            value.clone(),
+                        )
+                        .unwrap();
+                });
+            },
+        );
+
+        group.bench_function(
+            format!("memory_fs_read_{}_encrypted", compression_name),
+            |b| {
+                let fs = MemoryFileSystem::new();
+                let mut config = WalWriterConfig::default();
+                config.compression = *compression;
+                config.encryption = EncryptionType::Aes256Gcm;
+                config.encryption_key = Some(encryption_key);
+                let key = Some(encryption_key);
+                let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
+                
+                // Create compressible data
+                let pattern = b"The quick brown fox jumps over the lazy dog. ";
+                let mut value = Vec::new();
+                for _ in 0..(value_size / pattern.len() + 1) {
+                    value.extend_from_slice(pattern);
+                }
+                value.truncate(value_size);
+                
+                // Write test data
+                for i in 0..10 {
+                    writer.write_begin(i as u64).unwrap();
+                    writer
+                        .write_operation(
+                            i as u64,
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            format!("key_{}", i).into_bytes(),
+                            value.clone(),
+                        )
+                        .unwrap();
+                    writer.write_commit(i as u64).unwrap();
+                }
+                writer.flush().unwrap();
+                drop(writer);
+
+                b.iter(|| {
+                    let reader = WalReader::open(&fs, "/bench.wal", key).unwrap();
+                    let iter = WalRecordIterator::new(reader);
+                    let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
+                    black_box(records);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 
 criterion_group!(
     benches,
@@ -536,6 +855,9 @@ criterion_group!(
     bench_recovery,
     bench_checkpoint,
     bench_complete_transactions,
+    bench_compression,
+    bench_encryption,
+    bench_compression_and_encryption,
 );
 
 criterion_main!(benches);
