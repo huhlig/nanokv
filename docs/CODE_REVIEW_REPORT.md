@@ -218,6 +218,33 @@ Total:            ~20 tests
 - ⚠️ Page cache integration
 - ⚠️ Corruption recovery scenarios
 
+#### Additional Concurrency Findings (2026-05-07)
+
+🔴 **CRITICAL** - Pager free-list lifecycle is not concurrency-safe under allocation/deallocation races
+
+- **Files**: `src/pager/pagefile.rs`, `tests/pager_concurrency_tests.rs`
+- **Affected tests**:
+  - `test_concurrent_allocation_deallocation`
+  - `test_free_list_contention`
+  - `test_concurrent_free_list_operations`
+- **Observed failures**:
+  - `ChecksumMismatch(0)` while allocating or freeing pages
+  - `Invalid compression type: 16` when parsing pages pulled from the free list
+  - duplicate/invalid page reuse under contention
+- **Root cause summary**:
+  - newly allocated pages were not always materialized on disk before later free/read operations
+  - freed pages and reused pages could be observed in intermediate states that were not valid serialized pager pages
+  - the current implementation mixes free-list metadata updates and page-state transitions without a single durable lifecycle invariant
+- **Implication**:
+  - pager free-list correctness currently depends on timing, so concurrent allocate/free operations are not safe
+- **Recommended fix direction**:
+  - establish a strict page lifecycle invariant:
+    1. every allocated page must exist on disk as a valid serialized page immediately
+    2. every freed page must transition to a valid `PageType::Free` representation atomically with free-list publication
+    3. free-list mutation and reusable-page state transitions should be serialized through a single critical section or redesigned metadata protocol
+  - add regression coverage by un-ignoring the current pager concurrency tests once invariants are enforced
+- **Status**: investigation complete, refactor in progress
+
 ---
 
 ### 4. Table Layer

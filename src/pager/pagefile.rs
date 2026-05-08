@@ -118,12 +118,31 @@ impl<FS: FileSystem> Pager<FS> {
             enable_checksums: true,
         };
 
-        // Initialize free list from superblock
-        let free_list = FreeList::from_state(
+        // Initialize free list from persisted free-list pages
+        let mut free_list = FreeList::from_state(
             superblock.first_free_list_page,
             superblock.last_free_list_page,
             superblock.free_pages,
         );
+
+        if superblock.free_pages > 0 && superblock.first_free_list_page != 0 {
+            let mut all_free_pages = Vec::new();
+            let mut current_page_id = superblock.first_free_list_page;
+
+            while current_page_id != 0 {
+                let offset = current_page_id * page_size as u64;
+                let mut free_list_page_data = vec![0u8; page_size];
+                file.read_at_offset(offset, &mut free_list_page_data)?;
+
+                let page = Page::from_bytes(&free_list_page_data, true, None)?;
+                let free_list_page = FreeListPage::from_bytes(page.data())?;
+
+                all_free_pages.extend(free_list_page.free_pages.iter().copied());
+                current_page_id = free_list_page.next_page;
+            }
+
+            free_list.set_free_pages(all_free_pages);
+        }
 
         Ok(Self {
             file: Arc::new(RwLock::new(file)),
@@ -154,100 +173,60 @@ impl<FS: FileSystem> Pager<FS> {
     /// This will either:
     /// 1. Reuse a page from the free list, or
     /// 2. Grow the database by allocating a new page
-    pub fn allocate_page(&self, _page_type: PageType) -> PagerResult<PageId> {
-        // Hold the free list write lock for the entire allocation to prevent race conditions
-        let mut free_list = self.free_list.write();
-        
-        // Check if we can reuse a page from the free list
-        if !free_list.is_empty() {
-            let first_page_id = free_list.first_page();
-            
-            // Read the free list page directly while holding the free_list lock
-            // This prevents other threads from seeing the same page
-            let page_size = self.config.page_size.to_u32() as usize;
-            let offset = first_page_id * page_size as u64;
-            let mut buffer = vec![0u8; page_size];
-            
+    pub fn allocate_page(&self, page_type: PageType) -> PagerResult<PageId> {
+        let page_id = if let Some(page_id) = self.free_list.write().pop_page() {
             {
-                let mut file = self.file.write();
-                file.read_at_offset(offset, &mut buffer)?;
-            }
-            
-            let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
-            let free_list_page = FreeListPage::from_bytes(page.data())?;
-
-            if let Some(page_id) = free_list_page.free_pages.last() {
-                let allocated_page_id = *page_id;
-
-                // Prepare the updated free list page
-                let mut updated_free_list_page = free_list_page;
-                updated_free_list_page.pop_page();
-
-                // Update free list state while holding the lock
-                if updated_free_list_page.is_empty() {
-                    if updated_free_list_page.next_page != 0 {
-                        free_list.set_first_page(updated_free_list_page.next_page);
-                    } else {
-                        // No more free list pages
-                        free_list.set_first_page(0);
-                        free_list.set_last_page(0);
-                    }
-                    // TODO: Free the now-empty free list page itself
-                } else {
-                    // Write back the updated free list page BEFORE releasing the lock
-                    // This ensures no other thread can read the old page with the same IDs
-                    let mut page = Page::new(first_page_id, PageType::FreeList, self.config.page_size.data_size());
-                    page.header.compression = self.config.compression;
-                    page.header.encryption = self.config.encryption;
-                    page.data_mut().extend_from_slice(&updated_free_list_page.to_bytes());
-                    
-                    let buffer = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
-                    let mut file = self.file.write();
-                    file.write_to_offset(offset, &buffer)?;
-                }
-
-                free_list.decrement_free();
-                
-                // Update superblock
                 let mut superblock = self.superblock.write();
                 superblock.mark_page_allocated();
-                let superblock_data = superblock.clone();
-                drop(superblock);
-                
-                // Release free list lock after write
-                drop(free_list);
-
-                // Write updated superblock
-                self.write_superblock(&superblock_data)?;
-
-                return Ok(allocated_page_id);
             }
-        }
-        
-        // Release free list lock before allocating new page
-        drop(free_list);
-
-        // No free pages available, allocate a new one
-        let (page_id, total_pages) = {
+            page_id
+        } else {
             let mut superblock = self.superblock.write();
-            let page_id = superblock.allocate_new_page();
-            let total_pages = superblock.total_pages;
-            (page_id, total_pages)
+            superblock.allocate_new_page()
         };
 
-        // Update header without holding superblock lock
-        {
-            let mut header = self.header.write();
-            header.total_pages = total_pages;
-            header.update_modified_timestamp();
-            let header_data = header.clone();
-            drop(header);
-            self.write_header(&header_data)?;
-        }
+        let mut page = Page::new(page_id, page_type, self.config.page_size.data_size());
+        page.header.compression = self.config.compression;
+        page.header.encryption = self.config.encryption;
 
-        // Write updated superblock
-        let superblock_data = self.superblock.read().clone();
-        self.write_superblock(&superblock_data)?;
+        let page_size = self.config.page_size.to_u32() as usize;
+        let page_bytes = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+
+        let (header_data, superblock_data) = {
+            let free_pages = self.free_list.read().total_free();
+
+            let superblock_data = {
+                let superblock = self.superblock.read();
+                superblock.clone()
+            };
+
+            let header_data = {
+                let mut header = self.header.write();
+                header.total_pages = superblock_data.total_pages;
+                header.free_pages = free_pages;
+                header.first_free_list_page_id = 0;
+                header.update_modified_timestamp();
+                header.clone()
+            };
+
+            (header_data, superblock_data)
+        };
+
+        {
+            let mut file = self.file.write();
+            file.write_to_offset(page_id * page_size as u64, &page_bytes)?;
+            let header_bytes = header_data.to_bytes();
+            let mut page0_data = vec![0u8; page_size];
+            page0_data[0..FileHeader::SIZE].copy_from_slice(&header_bytes);
+            file.write_to_offset(0, &page0_data)?;
+
+            let mut superblock_page = Page::new(1, PageType::Superblock, self.config.page_size.data_size());
+            superblock_page.header.compression = self.config.compression;
+            superblock_page.header.encryption = self.config.encryption;
+            superblock_page.data_mut().extend_from_slice(&superblock_data.to_bytes());
+            let superblock_bytes = superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+            file.write_to_offset(page_size as u64, &superblock_bytes)?;
+        }
 
         Ok(page_id)
     }
@@ -258,117 +237,73 @@ impl<FS: FileSystem> Pager<FS> {
             return Err(PagerError::InvalidPageId(page_id));
         }
 
-        // Hold the free list write lock for the entire operation to prevent race conditions
-        let mut free_list = self.free_list.write();
-        let last_page_id = free_list.last_page();
+        let page_size = self.config.page_size.to_u32() as usize;
+        let offset = page_id * page_size as u64;
 
-        if last_page_id == 0 {
-            // No free list pages exist, create the first one
-            let new_free_list_page_id = {
-                let mut superblock = self.superblock.write();
-                superblock.allocate_new_page()
-            };
-
-            let mut new_free_list_page = FreeListPage::new();
-            new_free_list_page.add_page(page_id, self.config.page_size.data_size())?;
-
-            // Update free list state while holding the lock
-            free_list.set_first_page(new_free_list_page_id);
-            free_list.set_last_page(new_free_list_page_id);
-            free_list.increment_free();
-            
-            // Release lock before I/O
-            drop(free_list);
-
-            // Write the new free list page
-            self.write_free_list_page(new_free_list_page_id, &new_free_list_page)?;
-
-            // Update superblock
-            {
-                let mut superblock = self.superblock.write();
-                superblock.mark_page_freed();
-            }
-        } else {
-            // Read the last free list page directly while holding the free_list lock
-            let page_size = self.config.page_size.to_u32() as usize;
-            let offset = last_page_id * page_size as u64;
+        {
+            let mut file = self.file.write();
             let mut buffer = vec![0u8; page_size];
-            
-            {
-                let mut file = self.file.write();
-                file.read_at_offset(offset, &mut buffer)?;
+            file.read_at_offset(offset, &mut buffer)?;
+            let page = Page::from_bytes(
+                &buffer,
+                self.config.enable_checksums,
+                self.config.encryption_key.as_ref(),
+            )?;
+            if page.page_type() == PageType::Free || page.page_type() == PageType::FreeList {
+                return Err(PagerError::PageAlreadyFree(page_id));
             }
-            
-            let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
-            let mut last_free_list_page = FreeListPage::from_bytes(page.data())?;
 
-            if last_free_list_page.is_full(self.config.page_size.data_size()) {
-                // Current page is full, create a new one
-                let new_free_list_page_id = {
-                    let mut superblock = self.superblock.write();
-                    superblock.allocate_new_page()
-                };
-
-                let mut new_free_list_page = FreeListPage::new();
-                new_free_list_page.add_page(page_id, self.config.page_size.data_size())?;
-
-                // Link the pages
-                last_free_list_page.next_page = new_free_list_page_id;
-
-                // Update free list state while holding the lock
-                free_list.set_last_page(new_free_list_page_id);
-                free_list.increment_free();
-                
-                // Release lock before I/O
-                drop(free_list);
-
-                // Write both pages
-                self.write_free_list_page(last_page_id, &last_free_list_page)?;
-                self.write_free_list_page(new_free_list_page_id, &new_free_list_page)?;
-
-                // Update superblock
-                {
-                    let mut superblock = self.superblock.write();
-                    superblock.mark_page_freed();
-                }
-            } else {
-                // Add to current page
-                last_free_list_page.add_page(page_id, self.config.page_size.data_size())?;
-
-                // Update free list state while holding the lock
-                free_list.increment_free();
-                
-                // Release lock before I/O
-                drop(free_list);
-
-                // Write the updated page
-                self.write_free_list_page(last_page_id, &last_free_list_page)?;
-
-                // Update superblock
-                {
-                    let mut superblock = self.superblock.write();
-                    superblock.mark_page_freed();
-                }
-            }
+            let mut free_page = Page::new(page_id, PageType::Free, self.config.page_size.data_size());
+            free_page.header.compression = self.config.compression;
+            free_page.header.encryption = self.config.encryption;
+            let free_page_bytes = free_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+            file.write_to_offset(offset, &free_page_bytes)?;
         }
 
-        // Update header
-        let header_data = {
-            let free_list = self.free_list.read();
-            let mut header = self.header.write();
-            header.free_pages = free_list.total_free();
-            header.update_modified_timestamp();
-            let header_data = header.clone();
-            drop(header);
-            drop(free_list);
-            header_data
+        {
+            let mut free_list = self.free_list.write();
+            free_list.push_page(page_id);
+        }
+
+        {
+            let mut superblock = self.superblock.write();
+            superblock.mark_page_freed();
+        }
+
+        let (header_data, superblock_data) = {
+            let free_pages = self.free_list.read().total_free();
+
+            let superblock_data = {
+                let superblock = self.superblock.read();
+                superblock.clone()
+            };
+
+            let header_data = {
+                let mut header = self.header.write();
+                header.total_pages = superblock_data.total_pages;
+                header.free_pages = free_pages;
+                header.first_free_list_page_id = 0;
+                header.update_modified_timestamp();
+                header.clone()
+            };
+
+            (header_data, superblock_data)
         };
 
-        self.write_header(&header_data)?;
+        {
+            let mut file = self.file.write();
+            let header_bytes = header_data.to_bytes();
+            let mut page0_data = vec![0u8; page_size];
+            page0_data[0..FileHeader::SIZE].copy_from_slice(&header_bytes);
+            file.write_to_offset(0, &page0_data)?;
 
-        // Write updated superblock
-        let superblock_data = self.superblock.read().clone();
-        self.write_superblock(&superblock_data)?;
+            let mut superblock_page = Page::new(1, PageType::Superblock, self.config.page_size.data_size());
+            superblock_page.header.compression = self.config.compression;
+            superblock_page.header.encryption = self.config.encryption;
+            superblock_page.data_mut().extend_from_slice(&superblock_data.to_bytes());
+            let superblock_bytes = superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+            file.write_to_offset(page_size as u64, &superblock_bytes)?;
+        }
 
         Ok(())
     }

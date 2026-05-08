@@ -144,12 +144,14 @@ impl Default for FreeListPage {
 /// Manages the chain of free list pages and provides
 /// efficient allocation and deallocation of pages.
 pub struct FreeList {
-    /// First free list page ID (0 if no free pages)
+    /// First free list page ID persisted in metadata (0 if none)
     first_page: PageId,
-    /// Last free list page ID (0 if no free pages)
+    /// Last free list page ID persisted in metadata (0 if none)
     last_page: PageId,
-    /// Total number of free pages across all free list pages
+    /// Total number of free pages available for reuse
     total_free: u64,
+    /// In-memory stack of reusable page IDs
+    free_pages: Vec<PageId>,
 }
 
 impl FreeList {
@@ -159,6 +161,7 @@ impl FreeList {
             first_page: 0,
             last_page: 0,
             total_free: 0,
+            free_pages: Vec::new(),
         }
     }
 
@@ -168,6 +171,7 @@ impl FreeList {
             first_page,
             last_page,
             total_free,
+            free_pages: Vec::new(),
         }
     }
 
@@ -204,6 +208,34 @@ impl FreeList {
         self.last_page = page_id;
         if self.first_page == 0 {
             self.first_page = page_id;
+        }
+    }
+
+    /// Push a page ID onto the reusable stack
+    pub fn push_page(&mut self, page_id: PageId) {
+        self.free_pages.push(page_id);
+        self.total_free = self.free_pages.len() as u64;
+    }
+
+    /// Pop a page ID from the reusable stack
+    pub fn pop_page(&mut self) -> Option<PageId> {
+        let page_id = self.free_pages.pop();
+        self.total_free = self.free_pages.len() as u64;
+        if self.total_free == 0 {
+            self.first_page = 0;
+            self.last_page = 0;
+        }
+        page_id
+    }
+
+    /// Replace the in-memory free page stack from persistent state
+    pub fn set_free_pages(&mut self, mut free_pages: Vec<PageId>) {
+        free_pages.sort_unstable();
+        self.total_free = free_pages.len() as u64;
+        self.free_pages = free_pages;
+        if self.total_free == 0 {
+            self.first_page = 0;
+            self.last_page = 0;
         }
     }
 
