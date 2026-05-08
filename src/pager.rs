@@ -32,6 +32,7 @@ mod file_header;
 mod free_list;
 mod page;
 mod pagefile;
+mod pin_table;
 mod superblock;
 
 pub use self::cache::{CacheConfig, CacheStats, PageCache};
@@ -41,6 +42,7 @@ pub use self::file_header::FileHeader;
 pub use self::free_list::{FreeList, FreeListPage};
 pub use self::page::{Page, PageHeader, PageId, PageType};
 pub use self::pagefile::Pager;
+pub use self::pin_table::{PinGuard, PinTable};
 pub use self::superblock::Superblock;
 
 // Made with Bob

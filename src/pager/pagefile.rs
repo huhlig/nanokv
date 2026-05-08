@@ -18,7 +18,7 @@
 
 use crate::pager::{
     CacheConfig, FileHeader, FreeList, FreeListPage, Page, PageCache,
-    PageId, PageSize, PageType, PagerConfig, PagerError, PagerResult, Superblock,
+    PageId, PageSize, PageType, PagerConfig, PagerError, PagerResult, PinTable, Superblock,
 };
 use crate::vfs::{File, FileSystem};
 use parking_lot::RwLock;
@@ -33,6 +33,7 @@ use std::sync::Arc;
 /// - Optional compression and encryption
 /// - Superblock management
 /// - LRU page cache for performance
+/// - Page pinning to prevent concurrent free/read corruption
 pub struct Pager<FS: FileSystem> {
     /// VFS file handle
     file: Arc<RwLock<FS::File>>,
@@ -46,6 +47,8 @@ pub struct Pager<FS: FileSystem> {
     free_list: Arc<RwLock<FreeList>>,
     /// Page cache (optional)
     cache: Option<PageCache>,
+    /// Pin table for reference counting
+    pin_table: PinTable,
 }
 
 impl<FS: FileSystem> Pager<FS> {
@@ -101,6 +104,7 @@ impl<FS: FileSystem> Pager<FS> {
             superblock: Arc::new(RwLock::new(superblock)),
             free_list: Arc::new(RwLock::new(free_list)),
             cache,
+            pin_table: PinTable::new(),
         })
     }
 
@@ -177,6 +181,7 @@ impl<FS: FileSystem> Pager<FS> {
             superblock: Arc::new(RwLock::new(superblock)),
             free_list: Arc::new(RwLock::new(free_list)),
             cache,
+            pin_table: PinTable::new(),
         })
     }
 
@@ -267,6 +272,12 @@ impl<FS: FileSystem> Pager<FS> {
             return Err(PagerError::InvalidPageId(page_id));
         }
 
+        // CRITICAL: Check if page is pinned before freeing
+        // This prevents freeing pages that are currently being read
+        if self.pin_table.is_pinned(page_id) {
+            return Err(PagerError::PagePinned(page_id));
+        }
+
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page_id * page_size as u64;
 
@@ -349,25 +360,36 @@ impl<FS: FileSystem> Pager<FS> {
             }
         }
 
+        // CRITICAL: Pin the page before reading to prevent concurrent free
+        // This ensures the page cannot be freed and reallocated while we're reading it
+        self.pin_table.pin(page_id);
+
         // Cache miss - read from disk
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page_id * page_size as u64;
 
-        let mut buffer = vec![0u8; page_size];
-        let mut file = self.file.write();
-        file.read_at_offset(offset, &mut buffer)?;
+        let result = (|| {
+            let mut buffer = vec![0u8; page_size];
+            let mut file = self.file.write();
+            file.read_at_offset(offset, &mut buffer)?;
 
-        let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
+            let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
 
-        // Add to cache
-        if let Some(cache) = &self.cache {
-            // If evicted page is dirty, write it to disk
-            if let Some(evicted_page) = cache.put(page.clone(), false) {
-                self.write_page_to_disk(&evicted_page)?;
+            // Add to cache
+            if let Some(cache) = &self.cache {
+                // If evicted page is dirty, write it to disk
+                if let Some(evicted_page) = cache.put(page.clone(), false) {
+                    self.write_page_to_disk(&evicted_page)?;
+                }
             }
-        }
 
-        Ok(page)
+            Ok(page)
+        })();
+
+        // CRITICAL: Always unpin the page, even if an error occurred
+        self.pin_table.unpin(page_id);
+
+        result
     }
 
     /// Write a page to disk (with caching)

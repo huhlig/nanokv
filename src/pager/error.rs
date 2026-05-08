@@ -89,6 +89,10 @@ pub enum PagerError {
     #[error("Page {0} is already free")]
     PageAlreadyFree(u64),
 
+    /// Page is pinned (cannot be freed while in use)
+    #[error("Page {0} is pinned and cannot be freed")]
+    PagePinned(u64),
+
     /// Invalid page type
     #[error("Invalid page type: {0}")]
     InvalidPageType(u8),
