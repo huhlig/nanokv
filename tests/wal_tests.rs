@@ -17,9 +17,12 @@
 //! Integration tests for WAL (Write-Ahead Log)
 
 use nanokv::pager::{CompressionType, EncryptionType};
-use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
+use nanokv::vfs::{File, FileSystem, LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{WalError, WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
+use std::thread;
 use tempfile::TempDir;
 
 #[test]
@@ -892,6 +895,282 @@ fn test_wal_missing_key_error_handling() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
     let err = writer.write_begin(1).unwrap_err();
     assert!(matches!(err, WalError::MissingEncryptionKey));
+}
+
+fn overwrite_record_lsn(fs: &MemoryFileSystem, path: &str, record_offset: u64, lsn: u64) {
+    let mut file = fs.open_file(path).unwrap();
+    file.seek(SeekFrom::Start(record_offset + 4)).unwrap();
+    file.write_all(&lsn.to_le_bytes()).unwrap();
+}
+
+fn overwrite_record_type(fs: &MemoryFileSystem, path: &str, record_offset: u64, record_type: u8) {
+    let mut file = fs.open_file(path).unwrap();
+    file.seek(SeekFrom::Start(record_offset + 20)).unwrap();
+    file.write_all(&[record_type]).unwrap();
+}
+
+fn find_record_offsets(fs: &MemoryFileSystem, path: &str) -> Vec<u64> {
+    let mut file = fs.open_file(path).unwrap();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+
+    let mut offsets = Vec::new();
+    let mut idx = 0usize;
+    while idx + 4 <= bytes.len() {
+        if &bytes[idx..idx + 4] == b"WALR" {
+            offsets.push(idx as u64);
+        }
+        idx += 1;
+    }
+
+    offsets
+}
+
+fn remove_middle_record(fs: &MemoryFileSystem, path: &str, record_index: usize) {
+    let mut file = fs.open_file(path).unwrap();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+
+    let offsets = find_record_offsets(fs, path);
+    let start = offsets[record_index] as usize;
+    let end = if record_index + 1 < offsets.len() {
+        offsets[record_index + 1] as usize
+    } else {
+        bytes.len()
+    };
+
+    bytes.drain(start..end);
+
+    let mut rewritten = fs.open_file(path).unwrap();
+    rewritten.truncate().unwrap();
+    rewritten.write_all(&bytes).unwrap();
+}
+
+#[test]
+fn test_wal_partial_record_write_stops_recovery_at_tail() {
+    let fs = MemoryFileSystem::new();
+    let path = "partial-tail.wal";
+    let mut config = WalWriterConfig::default();
+    config.sync_on_write = false;
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:1".to_vec(),
+            b"Alice".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+
+    writer.write_begin(2).unwrap();
+    writer
+        .write_operation(
+            2,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:2".to_vec(),
+            b"Bob".to_vec(),
+        )
+        .unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+
+    let original_size = fs.filesize(path).unwrap();
+    let mut file = fs.open_file(path).unwrap();
+    file.set_size(original_size - 10).unwrap();
+    drop(file);
+
+    let result = WalRecovery::recover(&fs, path).unwrap_err();
+    assert!(matches!(result, WalError::CorruptedWal(_) | WalError::InvalidRecord(_)));
+}
+
+#[test]
+fn test_wal_corrupted_lsn_sequence_does_not_drop_committed_data() {
+    let fs = MemoryFileSystem::new();
+    let path = "corrupted-lsn.wal";
+    let config = WalWriterConfig::default();
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:1".to_vec(),
+            b"Alice".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+
+    let offsets = find_record_offsets(&fs, path);
+    overwrite_record_lsn(&fs, path, offsets[1], 99);
+
+    let err = WalRecovery::recover(&fs, path).unwrap_err();
+    assert!(matches!(err, WalError::ChecksumMismatch(99)));
+}
+
+#[test]
+fn test_wal_missing_middle_record_causes_recovery_error() {
+    let fs = MemoryFileSystem::new();
+    let path = "missing-middle.wal";
+    let config = WalWriterConfig::default();
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:1".to_vec(),
+            b"Alice".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+
+    remove_middle_record(&fs, path, 1);
+
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert!(result.committed_writes.is_empty());
+    assert!(result.active_transactions.is_empty());
+    assert_eq!(result.records_processed, 2);
+}
+
+#[test]
+fn test_wal_recovery_with_active_and_committed_transactions() {
+    let fs = MemoryFileSystem::new();
+    let path = "mixed-recovery.wal";
+    let config = WalWriterConfig::default();
+
+    let writer = WalWriter::create(&fs, path, config).unwrap();
+
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:1".to_vec(),
+            b"Alice".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+
+    writer.write_begin(2).unwrap();
+    writer
+        .write_operation(
+            2,
+            "users".to_string(),
+            WriteOpType::Put,
+            b"user:2".to_vec(),
+            b"Bob".to_vec(),
+        )
+        .unwrap();
+
+    writer.write_begin(3).unwrap();
+    writer
+        .write_operation(
+            3,
+            "users".to_string(),
+            WriteOpType::Delete,
+            b"user:3".to_vec(),
+            vec![],
+        )
+        .unwrap();
+    writer.write_rollback(3).unwrap();
+
+    writer.flush().unwrap();
+
+    let result = WalRecovery::recover(&fs, path).unwrap();
+    assert_eq!(result.committed_writes.len(), 1);
+    assert_eq!(result.committed_writes[0].key, b"user:1");
+    assert!(result.active_transactions.contains(&2));
+    assert!(!result.active_transactions.contains(&1));
+    assert!(!result.active_transactions.contains(&3));
+}
+
+#[test]
+fn test_wal_concurrent_corruption_scenario_reports_failure() {
+    let fs = Arc::new(MemoryFileSystem::new());
+    let path = "concurrent-corruption.wal";
+    let mut config = WalWriterConfig::default();
+    config.sync_on_write = false;
+
+    let writer = Arc::new(WalWriter::create(fs.as_ref(), path, config).unwrap());
+
+    let writer_thread = {
+        let writer = Arc::clone(&writer);
+        thread::spawn(move || {
+            writer.write_begin(1).unwrap();
+            writer
+                .write_operation(
+                    1,
+                    "users".to_string(),
+                    WriteOpType::Put,
+                    b"user:1".to_vec(),
+                    vec![0xAA; 4096],
+                )
+                .unwrap();
+            writer.write_commit(1).unwrap();
+            writer.flush().unwrap();
+        })
+    };
+
+    writer_thread.join().unwrap();
+
+    let corruptor_thread = {
+        let fs = Arc::clone(&fs);
+        thread::spawn(move || {
+            let offsets = find_record_offsets(fs.as_ref(), path);
+            if offsets.len() > 1 {
+                overwrite_record_type(fs.as_ref(), path, offsets[1], 0xFF);
+            }
+        })
+    };
+
+    corruptor_thread.join().unwrap();
+
+    let result = WalRecovery::recover(fs.as_ref(), path);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_wal_encryption_key_rotation_failure_is_detected() {
+    let fs = MemoryFileSystem::new();
+    let path = "key-rotation.wal";
+    let old_key = [0x11u8; 32];
+    let new_key = [0x22u8; 32];
+
+    let mut old_config = WalWriterConfig::default();
+    old_config.encryption = EncryptionType::Aes256Gcm;
+    old_config.encryption_key = Some(old_key);
+
+    let writer = WalWriter::create(&fs, path, old_config).unwrap();
+    writer.write_begin(1).unwrap();
+    writer
+        .write_operation(
+            1,
+            "secure".to_string(),
+            WriteOpType::Put,
+            b"k1".to_vec(),
+            b"encrypted payload".to_vec(),
+        )
+        .unwrap();
+    writer.write_commit(1).unwrap();
+    writer.flush().unwrap();
+
+    let err = WalRecovery::recover_with_key(&fs, path, Some(new_key)).unwrap_err();
+    assert!(matches!(err, WalError::DecryptionError(_)));
 }
 
 // Made with Bob
