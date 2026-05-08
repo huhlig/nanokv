@@ -77,7 +77,6 @@ fn test_sequential_allocation_1000_pages() {
 ///
 /// Larger scale test to ensure system scales well.
 #[test]
-#[ignore] // Run with --ignored flag for longer tests
 fn test_sequential_allocation_5000_pages() {
     let pager = create_test_pager();
     let page_count = 5000;
