@@ -72,9 +72,10 @@ impl EncryptionType {
 }
 
 /// Page size options (must be power of 2)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PageSize {
     /// 4KB pages (default)
+    #[default]
     Size4KB = 4096,
     /// 8KB pages
     Size8KB = 8192,
@@ -117,12 +118,6 @@ impl PageSize {
     /// Get the usable data size for this page size
     pub fn data_size(self) -> usize {
         self.to_u32() as usize - Self::header_size() - Self::checksum_size()
-    }
-}
-
-impl Default for PageSize {
-    fn default() -> Self {
-        PageSize::Size4KB
     }
 }
 

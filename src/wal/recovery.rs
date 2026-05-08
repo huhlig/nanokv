@@ -213,6 +213,7 @@ impl WalRecovery {
     ) -> WalResult<()> {
         self.last_checkpoint_lsn = Some(lsn);
 
+        // TODO: Beads issue nanokv-7l2
         // Note: We don't remove any transaction state or writes here.
         // The checkpoint just marks a point in time. All committed transactions
         // before and after the checkpoint should still be recovered.

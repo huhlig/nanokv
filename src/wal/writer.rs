@@ -44,9 +44,9 @@ pub struct WalWriterConfig {
 impl Default for WalWriterConfig {
     fn default() -> Self {
         Self {
-            buffer_size: 64 * 1024, // 64KB buffer
-            sync_on_write: true,    // Sync by default for durability
-            max_wal_size: 1024 * 1024 * 1024, // 1GB max
+            buffer_size: 64 * 1024,             // 64KB buffer
+            sync_on_write: true,                // Sync by default for durability
+            max_wal_size: 1024 * 1024 * 1024,   // 1GB max
             compression: CompressionType::None, // No compression by default
             encryption: EncryptionType::None,
             encryption_key: None,
@@ -84,7 +84,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     /// Create a new WAL writer
     pub fn create(fs: &FS, path: &str, config: WalWriterConfig) -> WalResult<Self> {
         let file = fs.create_file(path)?;
-        
+
         let state = WalWriterState {
             current_lsn: 1, // Start from LSN 1
             current_offset: 0,
@@ -103,11 +103,11 @@ impl<FS: FileSystem> WalWriter<FS> {
 
     /// Open an existing WAL file
     pub fn open(fs: &FS, path: &str, config: WalWriterConfig) -> WalResult<Self> {
-        let mut file = fs.open_file(path)?;
-        
+        let file = fs.open_file(path)?;
+
         // Get file size to determine current offset
         let file_size = file.get_size()?;
-        
+
         // TODO: Scan the file to find the last LSN and active transactions
         // For now, we'll start from LSN 1 and assume no active transactions
         let state = WalWriterState {
@@ -470,10 +470,7 @@ mod tests {
 
         writer.write_begin(1).unwrap();
         let result = writer.write_begin(1);
-        assert!(matches!(
-            result,
-            Err(WalError::TransactionAlreadyExists(1))
-        ));
+        assert!(matches!(result, Err(WalError::TransactionAlreadyExists(1))));
     }
 }
 

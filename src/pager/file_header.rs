@@ -74,17 +74,23 @@ impl FileHeader {
     pub const SIZE: usize = 256;
 
     /// Create a new file header with default values
-    pub fn new(page_size: PageSize, compression: CompressionType, encryption: EncryptionType) -> Self {
+    pub fn new(
+        page_size: PageSize,
+        compression: CompressionType,
+        encryption: EncryptionType,
+    ) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         // Generate a simple UUID (in production, use a proper UUID library)
         let mut uuid = [0u8; 32];
-        uuid[0..8].copy_from_slice(&SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_le_bytes()[0..8]);
-        
+        uuid[0..8].copy_from_slice(
+            &SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .to_le_bytes()[0..8],
+        );
+
         // Get current timestamp
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -160,7 +166,7 @@ impl FileHeader {
         }
 
         // Verify magic number
-        if &bytes[0..4] != &MAGIC {
+        if bytes[0..4] != MAGIC {
             return Err(PagerError::InvalidFileHeader(
                 "Invalid magic number".to_string(),
             ));
@@ -169,9 +175,10 @@ impl FileHeader {
         // Parse version
         let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
         if version != VERSION {
-            return Err(PagerError::InvalidFileHeader(
-                format!("Unsupported version: {}", version),
-            ));
+            return Err(PagerError::InvalidFileHeader(format!(
+                "Unsupported version: {}",
+                version
+            )));
         }
 
         // Parse page size
@@ -180,16 +187,14 @@ impl FileHeader {
             .ok_or_else(|| PagerError::InvalidPageSize(page_size_value))?;
 
         // Parse compression type
-        let compression = CompressionType::from_u8(bytes[12])
-            .ok_or_else(|| PagerError::InvalidFileHeader(
-                format!("Invalid compression type: {}", bytes[12]),
-            ))?;
+        let compression = CompressionType::from_u8(bytes[12]).ok_or_else(|| {
+            PagerError::InvalidFileHeader(format!("Invalid compression type: {}", bytes[12]))
+        })?;
 
         // Parse encryption type
-        let encryption = EncryptionType::from_u8(bytes[13])
-            .ok_or_else(|| PagerError::InvalidFileHeader(
-                format!("Invalid encryption type: {}", bytes[13]),
-            ))?;
+        let encryption = EncryptionType::from_u8(bytes[13]).ok_or_else(|| {
+            PagerError::InvalidFileHeader(format!("Invalid encryption type: {}", bytes[13]))
+        })?;
 
         // Parse counts
         let total_pages = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
@@ -220,12 +225,12 @@ impl FileHeader {
     /// Update the last modified timestamp
     pub fn update_modified_timestamp(&mut self) {
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         self.modified_at = [0u8; 32];
         self.modified_at[0..8].copy_from_slice(&now.to_le_bytes());
     }
@@ -265,24 +270,30 @@ mod tests {
 
         let result = FileHeader::from_bytes(&bytes);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PagerError::InvalidFileHeader(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            PagerError::InvalidFileHeader(_)
+        ));
     }
 
     #[test]
     fn test_invalid_page_size() {
-        let mut header = FileHeader::new(
+        let header = FileHeader::new(
             PageSize::Size4KB,
             CompressionType::None,
             EncryptionType::None,
         );
-        
+
         let mut bytes = header.to_bytes();
         // Set invalid page size
         bytes[8..12].copy_from_slice(&12345u32.to_le_bytes());
 
         let result = FileHeader::from_bytes(&bytes);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PagerError::InvalidPageSize(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            PagerError::InvalidPageSize(_)
+        ));
     }
 
     #[test]
@@ -294,12 +305,12 @@ mod tests {
         );
 
         let original_timestamp = header.modified_at;
-        
+
         // Sleep to ensure timestamp changes (1 second for reliable test)
         std::thread::sleep(std::time::Duration::from_secs(1));
-        
+
         header.update_modified_timestamp();
-        
+
         // Timestamps should be different
         assert_ne!(header.modified_at, original_timestamp);
     }

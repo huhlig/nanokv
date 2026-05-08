@@ -367,15 +367,18 @@ impl File for MemoryFileHandle {
     fn read_at_offset(&mut self, pos: u64, buf: &mut [u8]) -> FileSystemResult<usize> {
         let data = self.data.read().expect("Poisoned Lock");
 
-        // Calculate Slice Bounds
-        let off = pos as usize; // Lower Slice Bound
+        // Calculate Slice Bounds with overflow protection
+        let off = usize::try_from(pos).map_err(|_| {
+            FileSystemError::InternalError("Position exceeds addressable memory".to_string())
+        })?;
         
         // Handle case where offset is beyond file size
         if off >= data.buffer.len() {
             return Ok(0);
         }
         
-        let end = std::cmp::min(off + buf.len(), data.buffer.len()); // Upper Slice Bound
+        // Use saturating_add to prevent overflow, then clamp to buffer length
+        let end = off.saturating_add(buf.len()).min(data.buffer.len());
         let len = end - off;
 
         // Read only the available bytes into the buffer
@@ -387,9 +390,15 @@ impl File for MemoryFileHandle {
     fn write_to_offset(&mut self, pos: u64, buf: &[u8]) -> FileSystemResult<usize> {
         let mut data = self.data.write().unwrap();
 
-        // Calculate Slice Bounds
-        let off = usize::try_from(pos).expect("Position Too Large"); // Lower Slice Bound
-        let end = off + buf.len(); // Upper Slice Bound
+        // Calculate Slice Bounds with overflow protection
+        let off = usize::try_from(pos).map_err(|_| {
+            FileSystemError::InternalError("Position exceeds addressable memory".to_string())
+        })?;
+        
+        // Use checked_add to detect overflow
+        let end = off.checked_add(buf.len()).ok_or_else(|| {
+            FileSystemError::InternalError("Write operation would overflow address space".to_string())
+        })?;
 
         // Resize if array capacity too small
         if end > data.buffer.len() {
