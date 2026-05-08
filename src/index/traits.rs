@@ -418,16 +418,14 @@ pub struct QueryBudget {
 // =============================================================================
 
 /// Source abstraction used to rebuild indexes.
+///
+/// Returns an iterator over (primary_key, value) pairs, enabling pausable
+/// iteration for incremental rebuilds with budget constraints.
 pub trait IndexSource {
     fn scan_rows(
         &self,
         bounds: ScanBounds,
-        visitor: &mut dyn IndexSourceVisitor,
-    ) -> Result<(), IndexSourceError>;
-}
-
-pub trait IndexSourceVisitor {
-    fn visit(&mut self, primary_key: &[u8], value: &[u8]) -> Result<(), IndexSourceError>;
+    ) -> Result<Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>), IndexSourceError>> + '_>, IndexSourceError>;
 }
 
 #[derive(Debug)]
