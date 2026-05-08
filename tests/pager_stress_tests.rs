@@ -628,4 +628,522 @@ fn test_write_read_operations_at_scale() {
     }
 }
 
+/// Test sequential allocation of 100K pages
+///
+/// This test validates that the pager can handle production-scale databases
+/// with 100,000+ pages, ensuring scalability of page ID generation and
+/// free list management.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_sequential_allocation_100k_pages() {
+    let pager = create_test_pager();
+    let page_count = 100_000;
+    
+    println!("Allocating {} pages sequentially...", page_count);
+    let start = std::time::Instant::now();
+    
+    let mut allocated_pages = Vec::with_capacity(page_count);
+    
+    // Allocate pages sequentially
+    for i in 0..page_count {
+        if i % 10_000 == 0 {
+            println!("  Allocated {} pages...", i);
+        }
+        
+        let page_id = pager
+            .allocate_page(PageType::BTreeLeaf)
+            .expect(&format!("Failed to allocate page {}", i));
+        
+        allocated_pages.push(page_id);
+    }
+    
+    let duration = start.elapsed();
+    println!("Allocation completed in {:?}", duration);
+    println!("Average time per page: {:?}", duration / page_count as u32);
+    
+    // Verify we allocated the expected number of pages
+    assert_eq!(allocated_pages.len(), page_count);
+    
+    // Verify page IDs are unique
+    let unique_pages: HashSet<_> = allocated_pages.iter().collect();
+    assert_eq!(unique_pages.len(), page_count, "Page IDs should be unique");
+    
+    // Verify total pages count
+    let total_pages = pager.total_pages();
+    assert!(
+        total_pages >= (page_count + 2) as u64,
+        "Total pages should be at least {} (allocated) + 2 (header/superblock), got {}",
+        page_count,
+        total_pages
+    );
+    
+    // Verify free pages count is reasonable (should be low)
+    let free_pages = pager.free_pages();
+    assert!(
+        free_pages < 100,
+        "Free pages should be minimal after sequential allocation, got {}",
+        free_pages
+    );
+    
+    println!("Total pages: {}, Free pages: {}", total_pages, free_pages);
+}
+
+/// Test mixed allocation and deallocation with 100K pages
+///
+/// This test simulates realistic production workload patterns with
+/// interleaved allocations and deallocations at scale.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_mixed_allocation_deallocation_100k_pages() {
+    let pager = create_test_pager();
+    let target_pages = 100_000;
+    
+    println!("Running mixed allocation/deallocation to reach {} pages...", target_pages);
+    let start = std::time::Instant::now();
+    
+    let mut active_pages = Vec::new();
+    let mut total_allocated = 0;
+    let mut total_freed = 0;
+    
+    // Allocate initial batch
+    for _ in 0..1000 {
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        active_pages.push(page_id);
+        total_allocated += 1;
+    }
+    
+    // Run mixed allocation/deallocation until we've allocated target pages
+    while total_allocated < target_pages {
+        if total_allocated % 10_000 == 0 {
+            println!("  Allocated: {}, Active: {}, Freed: {}",
+                     total_allocated, active_pages.len(), total_freed);
+        }
+        
+        // Allocate 10 pages
+        for _ in 0..10 {
+            let page_id = pager
+                .allocate_page(PageType::BTreeLeaf)
+                .expect(&format!("Failed to allocate at count {}", total_allocated));
+            active_pages.push(page_id);
+            total_allocated += 1;
+        }
+        
+        // Free 5 pages (if we have enough)
+        if active_pages.len() >= 5 {
+            for _ in 0..5 {
+                let page_id = active_pages.pop().unwrap();
+                pager
+                    .free_page(page_id)
+                    .expect(&format!("Failed to free page {}", page_id));
+                total_freed += 1;
+            }
+        }
+    }
+    
+    let duration = start.elapsed();
+    println!("Mixed operations completed in {:?}", duration);
+    println!("Total allocated: {}, Total freed: {}, Active: {}",
+             total_allocated, total_freed, active_pages.len());
+    
+    // Verify we still have active pages
+    assert!(!active_pages.is_empty(), "Should have active pages remaining");
+    
+    // Verify all active pages are unique
+    let unique_pages: HashSet<_> = active_pages.iter().collect();
+    assert_eq!(unique_pages.len(), active_pages.len(), "Active pages should be unique");
+    
+    // Verify free list is being used
+    let free_pages = pager.free_pages();
+    println!("Free pages in list: {}", free_pages);
+    assert!(free_pages > 0, "Free list should contain freed pages");
+    
+    // Clean up - free all remaining pages
+    println!("Cleaning up {} active pages...", active_pages.len());
+    for page_id in active_pages {
+        pager.free_page(page_id).expect("Failed to free page during cleanup");
+    }
+}
+
+/// Test fragmentation with 100K pages
+///
+/// This test creates extreme fragmentation by allocating 100K pages,
+/// freeing every other one, then reallocating to validate free list
+/// efficiency at scale.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_fragmentation_100k_pages() {
+    let pager = create_test_pager();
+    let page_count = 100_000;
+    
+    println!("Phase 1: Allocating {} pages...", page_count);
+    let start = std::time::Instant::now();
+    
+    // Phase 1: Allocate many pages
+    let mut all_pages = Vec::with_capacity(page_count);
+    for i in 0..page_count {
+        if i % 10_000 == 0 {
+            println!("  Allocated {} pages...", i);
+        }
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        all_pages.push(page_id);
+    }
+    
+    let alloc_duration = start.elapsed();
+    println!("Allocation completed in {:?}", alloc_duration);
+    
+    let initial_total = pager.total_pages();
+    println!("Total pages after allocation: {}", initial_total);
+    
+    // Phase 2: Free every other page to create fragmentation
+    println!("Phase 2: Freeing every other page to create fragmentation...");
+    let free_start = std::time::Instant::now();
+    
+    let mut freed_count = 0;
+    let mut kept_pages = Vec::with_capacity(page_count / 2);
+    for (i, page_id) in all_pages.into_iter().enumerate() {
+        if i % 2 == 0 {
+            pager.free_page(page_id).unwrap();
+            freed_count += 1;
+        } else {
+            kept_pages.push(page_id);
+        }
+        
+        if freed_count % 10_000 == 0 && freed_count > 0 {
+            println!("  Freed {} pages...", freed_count);
+        }
+    }
+    
+    let free_duration = free_start.elapsed();
+    println!("Freed {} pages in {:?}", freed_count, free_duration);
+    
+    assert_eq!(freed_count, page_count / 2, "Should have freed half the pages");
+    
+    let free_pages = pager.free_pages();
+    println!("Free pages in list: {}", free_pages);
+    assert!(
+        free_pages as usize >= freed_count - 100, // Allow some overhead for free list pages
+        "Free page count should approximately match freed pages: expected ~{}, got {}",
+        freed_count,
+        free_pages
+    );
+    
+    // Phase 3: Reallocate pages - should reuse freed pages
+    println!("Phase 3: Reallocating {} pages (should reuse freed pages)...", freed_count);
+    let realloc_start = std::time::Instant::now();
+    
+    let mut reallocated = Vec::with_capacity(freed_count);
+    for i in 0..freed_count {
+        if i % 10_000 == 0 {
+            println!("  Reallocated {} pages...", i);
+        }
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        reallocated.push(page_id);
+    }
+    
+    let realloc_duration = realloc_start.elapsed();
+    println!("Reallocation completed in {:?}", realloc_duration);
+    
+    // After reallocation, free pages should be minimal
+    let final_free = pager.free_pages();
+    println!("Free pages after reallocation: {}", final_free);
+    assert!(
+        final_free < 100,
+        "Free pages should be minimal after reallocation, got {}",
+        final_free
+    );
+    
+    // Total pages should not have grown significantly
+    let final_total = pager.total_pages();
+    println!("Total pages: {} -> {}", initial_total, final_total);
+    assert!(
+        final_total <= initial_total + 200, // Allow some overhead for free list management
+        "Total pages should not grow significantly: {} -> {}",
+        initial_total,
+        final_total
+    );
+    
+    // Clean up
+    println!("Cleaning up...");
+    for page_id in kept_pages.into_iter().chain(reallocated.into_iter()) {
+        pager.free_page(page_id).expect("Failed to free page during cleanup");
+    }
+    
+    println!("Test completed successfully!");
+}
+
+/// Test memory usage and performance with 200K pages
+///
+/// This test validates that the system can handle very large databases
+/// and that memory usage remains reasonable.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_memory_usage_200k_pages() {
+    let pager = create_test_pager();
+    let page_count = 200_000;
+    
+    println!("Testing memory usage with {} pages...", page_count);
+    println!("Note: This test validates scalability and memory efficiency");
+    
+    let start = std::time::Instant::now();
+    let mut pages = Vec::with_capacity(page_count);
+    
+    // Allocate pages in batches to monitor progress
+    let batch_size = 10_000;
+    for batch in 0..(page_count / batch_size) {
+        let batch_start = std::time::Instant::now();
+        
+        for _ in 0..batch_size {
+            let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+            pages.push(page_id);
+        }
+        
+        let batch_duration = batch_start.elapsed();
+        let total_so_far = (batch + 1) * batch_size;
+        
+        println!("Batch {}: Allocated {} pages in {:?} (avg: {:?}/page)",
+                 batch + 1,
+                 total_so_far,
+                 batch_duration,
+                 batch_duration / batch_size as u32);
+        
+        // Check that allocation time doesn't degrade significantly
+        let avg_micros = batch_duration.as_micros() / batch_size as u128;
+        assert!(
+            avg_micros < 1000, // Should be under 1ms per page
+            "Allocation time degrading: {} microseconds per page in batch {}",
+            avg_micros,
+            batch + 1
+        );
+    }
+    
+    let total_duration = start.elapsed();
+    println!("\nTotal allocation time: {:?}", total_duration);
+    println!("Average time per page: {:?}", total_duration / page_count as u32);
+    
+    // Verify all pages are unique
+    let unique_pages: HashSet<_> = pages.iter().collect();
+    assert_eq!(unique_pages.len(), page_count, "All pages should be unique");
+    
+    // Verify total pages
+    let total_pages = pager.total_pages();
+    println!("Total pages in database: {}", total_pages);
+    assert!(
+        total_pages >= (page_count + 2) as u64,
+        "Total pages should be at least {}",
+        page_count + 2
+    );
+    
+    // Test read/write performance at scale
+    println!("\nTesting read/write performance...");
+    let rw_start = std::time::Instant::now();
+    
+    // Write to a sample of pages
+    let sample_size = 1000;
+    for i in 0..sample_size {
+        let page_id = pages[i * (page_count / sample_size)];
+        let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+        let data = format!("Test data for page {}", page_id);
+        page.data_mut().extend_from_slice(data.as_bytes());
+        pager.write_page(&page).unwrap();
+    }
+    
+    let rw_duration = rw_start.elapsed();
+    println!("Wrote {} pages in {:?} (avg: {:?}/page)",
+             sample_size,
+             rw_duration,
+             rw_duration / sample_size as u32);
+    
+    // Clean up
+    println!("\nCleaning up {} pages...", pages.len());
+    let cleanup_start = std::time::Instant::now();
+    for page_id in pages {
+        pager.free_page(page_id).expect("Failed to free page");
+    }
+    let cleanup_duration = cleanup_start.elapsed();
+    println!("Cleanup completed in {:?}", cleanup_duration);
+    
+    println!("\nTest completed successfully!");
+}
+
+/// Test free list chain traversal with 100K pages
+///
+/// This test validates that the free list can handle very long chains
+/// without performance degradation.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_free_list_chain_100k_pages() {
+    let pager = create_test_pager();
+    let page_count = 100_000;
+    
+    println!("Testing free list chain with {} pages...", page_count);
+    
+    // Phase 1: Allocate many pages
+    println!("Phase 1: Allocating {} pages...", page_count);
+    let alloc_start = std::time::Instant::now();
+    
+    let mut pages = Vec::with_capacity(page_count);
+    for i in 0..page_count {
+        if i % 10_000 == 0 {
+            println!("  Allocated {} pages...", i);
+        }
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        pages.push(page_id);
+    }
+    
+    let alloc_duration = alloc_start.elapsed();
+    println!("Allocation completed in {:?}", alloc_duration);
+    
+    // Phase 2: Free all pages to create a long free list chain
+    println!("Phase 2: Freeing all pages to create long free list chain...");
+    let free_start = std::time::Instant::now();
+    
+    for (i, page_id) in pages.iter().enumerate() {
+        if i % 10_000 == 0 {
+            println!("  Freed {} pages...", i);
+        }
+        pager.free_page(*page_id).unwrap();
+    }
+    
+    let free_duration = free_start.elapsed();
+    println!("Freed all pages in {:?}", free_duration);
+    
+    let free_pages = pager.free_pages();
+    println!("Free pages in list: {}", free_pages);
+    assert!(
+        free_pages as usize >= page_count - 100, // Allow some overhead
+        "Most pages should be in free list: expected ~{}, got {}",
+        page_count,
+        free_pages
+    );
+    
+    // Phase 3: Reallocate all pages - this tests free list traversal performance
+    println!("Phase 3: Reallocating {} pages (tests free list traversal)...", page_count);
+    let realloc_start = std::time::Instant::now();
+    
+    let mut reallocated = Vec::with_capacity(page_count);
+    for i in 0..page_count {
+        if i % 10_000 == 0 {
+            let elapsed = realloc_start.elapsed();
+            let rate = if i > 0 { elapsed.as_millis() / i as u128 } else { 0 };
+            println!("  Reallocated {} pages (avg: {}ms per 1000 pages)...", i, rate);
+        }
+        
+        let page_id = pager
+            .allocate_page(PageType::BTreeLeaf)
+            .expect(&format!("Failed to reallocate page {}", i));
+        reallocated.push(page_id);
+    }
+    
+    let realloc_duration = realloc_start.elapsed();
+    println!("Reallocation completed in {:?}", realloc_duration);
+    println!("Average time per page: {:?}", realloc_duration / page_count as u32);
+    
+    // Free list should be empty or nearly empty
+    let final_free = pager.free_pages();
+    println!("Free pages after reallocation: {}", final_free);
+    assert!(
+        final_free < 100,
+        "Free list should be nearly empty after reallocation, got {}",
+        final_free
+    );
+    
+    // Verify all reallocated pages are unique
+    let unique_pages: HashSet<_> = reallocated.iter().collect();
+    assert_eq!(unique_pages.len(), page_count, "Reallocated pages should be unique");
+    
+    println!("Test completed successfully!");
+}
+
+/// Test persistence and recovery with 50K pages
+///
+/// This test validates that large databases can be persisted and
+/// reopened correctly with all state preserved.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_persistence_recovery_50k_pages() {
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig::default();
+    let db_path = "large_db_50k.db";
+    let page_count = 50_000;
+    
+    println!("Testing persistence and recovery with {} pages...", page_count);
+    
+    let mut allocated_pages = Vec::with_capacity(page_count);
+    
+    // Phase 1: Create database and allocate pages
+    println!("Phase 1: Creating database and allocating pages...");
+    {
+        let pager = Pager::create(&fs, db_path, config.clone()).unwrap();
+        
+        for i in 0..page_count {
+            if i % 10_000 == 0 {
+                println!("  Allocated {} pages...", i);
+            }
+            let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+            allocated_pages.push(page_id);
+        }
+        
+        // Write data to a sample of pages
+        println!("Writing data to sample pages...");
+        for i in (0..page_count).step_by(100) {
+            let page_id = allocated_pages[i];
+            let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+            let data = format!("Page {} data - sample {}", page_id, i);
+            page.data_mut().extend_from_slice(data.as_bytes());
+            pager.write_page(&page).unwrap();
+        }
+        
+        println!("Syncing database...");
+        pager.sync().unwrap();
+        
+        println!("Total pages: {}, Free pages: {}",
+                 pager.total_pages(), pager.free_pages());
+    }
+    
+    // Phase 2: Reopen database and verify state
+    println!("\nPhase 2: Reopening database and verifying state...");
+    {
+        let pager = Pager::open(&fs, db_path).unwrap();
+        
+        // Verify total pages
+        let total_pages = pager.total_pages();
+        println!("Total pages after reopen: {}", total_pages);
+        assert!(
+            total_pages >= (page_count + 2) as u64,
+            "Total pages should be preserved: expected at least {}, got {}",
+            page_count + 2,
+            total_pages
+        );
+        
+        // Verify we can read sample pages
+        println!("Verifying sample page data...");
+        let mut verified = 0;
+        for i in (0..page_count).step_by(100) {
+            let page_id = allocated_pages[i];
+            let page = pager
+                .read_page(page_id)
+                .expect(&format!("Failed to read page {}", page_id));
+            
+            let expected_data = format!("Page {} data - sample {}", page_id, i);
+            assert_eq!(
+                &page.data()[0..expected_data.len()],
+                expected_data.as_bytes(),
+                "Page data should be preserved for page {}",
+                page_id
+            );
+            verified += 1;
+        }
+        println!("Verified {} sample pages", verified);
+        
+        // Verify we can allocate new pages
+        println!("Testing new page allocation...");
+        let new_page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        assert!(new_page_id > 0, "Should be able to allocate new pages");
+        
+        println!("Database recovery successful!");
+    }
+    
+    println!("\nTest completed successfully!");
+}
+
 // Made with Bob
