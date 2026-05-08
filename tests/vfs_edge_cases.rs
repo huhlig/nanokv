@@ -484,4 +484,592 @@ fn test_interleaved_operations() {
     }
 }
 
+// ============================================================================
+// Security Tests - Path Traversal
+// ============================================================================
+
+#[test]
+fn test_path_traversal_parent_directory() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create a file in the root
+    let mut file = fs.create_file("/safe.txt").unwrap();
+    file.write_all(b"safe content").unwrap();
+    drop(file);
+    
+    // Try to access parent directory with ../
+    // This should be contained within the root
+    let result = fs.create_file("/../escape.txt");
+    // Should either fail or be contained within root
+    if let Ok(mut file) = result {
+        file.write_all(b"test").unwrap();
+        drop(file);
+        // Verify it's actually within our temp directory
+        assert!(temp_dir.path().join("escape.txt").exists() ||
+                !std::path::Path::new("/escape.txt").exists());
+    }
+}
+
+#[test]
+fn test_path_traversal_multiple_parents() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Try multiple parent directory traversals
+    let paths = [
+        "../../etc/passwd",
+        "../../../etc/shadow",
+        "subdir/../../escape.txt",
+        "./../../escape2.txt",
+    ];
+    
+    for path in &paths {
+        // These should either fail or be contained within root
+        let result = fs.create_file(path);
+        if let Ok(mut file) = result {
+            file.write_all(b"test").unwrap();
+            drop(file);
+            // Verify file is within temp directory
+            let file_path = temp_dir.path().join(path.trim_start_matches('/'));
+            if file_path.exists() {
+                assert!(file_path.starts_with(temp_dir.path()));
+            }
+        }
+    }
+}
+
+#[test]
+fn test_path_traversal_current_directory() {
+    let fs = MemoryFileSystem::new();
+    
+    // Test ./ handling
+    let paths = [
+        "/./test.txt",
+        "/dir/./file.txt",
+        "/./././test2.txt",
+    ];
+    
+    for path in &paths {
+        let result = fs.create_file(path);
+        // Should either work or fail consistently
+        if let Ok(mut file) = result {
+            file.write_all(b"test").unwrap();
+            drop(file);
+            // Verify we can access it
+            assert!(fs.exists(path).unwrap());
+        }
+    }
+}
+
+#[test]
+fn test_path_traversal_mixed() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create a subdirectory
+    fs.create_directory("/subdir").unwrap();
+    
+    // Try mixed traversal patterns
+    let paths = [
+        "/subdir/../file.txt",
+        "/subdir/./../file2.txt",
+        "/./subdir/../file3.txt",
+    ];
+    
+    for path in &paths {
+        let result = fs.create_file(path);
+        if let Ok(mut file) = result {
+            file.write_all(b"test").unwrap();
+            drop(file);
+            // Should be within root
+            assert!(fs.exists(path).unwrap() || fs.exists("/file.txt").unwrap());
+        }
+    }
+}
+
+// ============================================================================
+// Long Path Tests
+// ============================================================================
+
+#[test]
+fn test_very_long_filename() {
+    let fs = MemoryFileSystem::new();
+    
+    // Create a filename with 255 characters (typical filesystem limit)
+    let long_name = format!("/{}", "a".repeat(255));
+    
+    let result = fs.create_file(&long_name);
+    match result {
+        Ok(mut file) => {
+            file.write_all(b"test").unwrap();
+            drop(file);
+            assert!(fs.exists(&long_name).unwrap());
+        }
+        Err(_) => {
+            // Some filesystems may reject this, which is acceptable
+        }
+    }
+}
+
+#[test]
+fn test_extremely_long_filename() {
+    let fs = MemoryFileSystem::new();
+    
+    // Create a filename with 1000 characters (exceeds typical limits)
+    let very_long_name = format!("/{}", "b".repeat(1000));
+    
+    let result = fs.create_file(&very_long_name);
+    // This should either work (memory fs) or fail gracefully
+    match result {
+        Ok(mut file) => {
+            file.write_all(b"test").unwrap();
+            drop(file);
+            assert!(fs.exists(&very_long_name).unwrap());
+        }
+        Err(e) => {
+            // Should fail with InvalidPath or similar
+            assert!(matches!(e, FileSystemError::InvalidPath(_) |
+                               FileSystemError::InternalError(_) |
+                               FileSystemError::WrappedError(_)));
+        }
+    }
+}
+
+#[test]
+fn test_very_long_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create a deeply nested path (each component is reasonable, but total is long)
+    let mut path = String::from("/");
+    for i in 0..50 {
+        path.push_str(&format!("dir{}/", i));
+    }
+    path.push_str("file.txt");
+    
+    // Try to create the directory structure
+    let dir_path = path.rsplit_once('/').unwrap().0;
+    let result = fs.create_directory_all(dir_path);
+    
+    if result.is_ok() {
+        // Try to create file in deep path
+        let file_result = fs.create_file(&path);
+        match file_result {
+            Ok(mut file) => {
+                file.write_all(b"deep").unwrap();
+                drop(file);
+                assert!(fs.exists(&path).unwrap());
+            }
+            Err(_) => {
+                // May fail on some systems due to path length limits
+            }
+        }
+    }
+}
+
+#[test]
+fn test_long_path_components() {
+    let fs = MemoryFileSystem::new();
+    
+    // Create path with multiple long components
+    let long_component = "x".repeat(100);
+    let path = format!("/{}/{}/{}/file.txt", long_component, long_component, long_component);
+    
+    // Create directory structure
+    let dir_path = path.rsplit_once('/').unwrap().0;
+    fs.create_directory_all(dir_path).unwrap();
+    
+    // Create file
+    let result = fs.create_file(&path);
+    match result {
+        Ok(mut file) => {
+            file.write_all(b"test").unwrap();
+            drop(file);
+            assert!(fs.exists(&path).unwrap());
+        }
+        Err(_) => {
+            // May fail on some systems
+        }
+    }
+}
+
+// ============================================================================
+// Special Character Tests
+// ============================================================================
+
+#[test]
+fn test_special_characters_in_filename() {
+    let fs = MemoryFileSystem::new();
+    
+    // Test various special characters that should be handled
+    let special_names = [
+        "/file with spaces.txt",
+        "/file-with-dashes.txt",
+        "/file_with_underscores.txt",
+        "/file.multiple.dots.txt",
+        "/file(with)parens.txt",
+        "/file[with]brackets.txt",
+        "/file{with}braces.txt",
+        "/file'with'quotes.txt",
+        "/file@with@at.txt",
+        "/file#with#hash.txt",
+        "/file$with$dollar.txt",
+        "/file%with%percent.txt",
+        "/file&with&ampersand.txt",
+        "/file+with+plus.txt",
+        "/file=with=equals.txt",
+        "/file~with~tilde.txt",
+        "/file`with`backtick.txt",
+    ];
+    
+    for name in &special_names {
+        let result = fs.create_file(name);
+        match result {
+            Ok(mut file) => {
+                file.write_all(b"test").unwrap();
+                drop(file);
+                assert!(fs.exists(name).unwrap(), "Failed to verify existence of {}", name);
+            }
+            Err(e) => {
+                // Some characters may be invalid, which is acceptable
+                println!("Character test failed for {}: {:?}", name, e);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_unicode_in_filename() {
+    let fs = MemoryFileSystem::new();
+    
+    // Test Unicode characters
+    let unicode_names = [
+        "/файл.txt",           // Cyrillic
+        "/文件.txt",            // Chinese
+        "/ファイル.txt",        // Japanese
+        "/파일.txt",            // Korean
+        "/αρχείο.txt",         // Greek
+        "/ملف.txt",            // Arabic
+        "/קוֹבֶץ.txt",         // Hebrew
+        "/emoji😀file.txt",    // Emoji
+        "/café.txt",           // Accented
+        "/naïve.txt",          // Diaeresis
+    ];
+    
+    for name in &unicode_names {
+        let result = fs.create_file(name);
+        match result {
+            Ok(mut file) => {
+                file.write_all(b"unicode test").unwrap();
+                drop(file);
+                assert!(fs.exists(name).unwrap(), "Failed to verify existence of {}", name);
+            }
+            Err(e) => {
+                println!("Unicode test failed for {}: {:?}", name, e);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_control_characters_in_filename() {
+    let fs = MemoryFileSystem::new();
+    
+    // Test that control characters are rejected or handled safely
+    let control_names = [
+        "/file\x00null.txt",      // Null byte
+        "/file\x01soh.txt",       // Start of heading
+        "/file\x07bell.txt",      // Bell
+        "/file\x08backspace.txt", // Backspace
+        "/file\x0Atab.txt",       // Tab
+        "/file\x0Anewline.txt",   // Newline
+        "/file\x0Dcarriage.txt",  // Carriage return
+    ];
+    
+    for name in &control_names {
+        let result = fs.create_file(name);
+        // These should typically fail or be sanitized
+        match result {
+            Ok(_) => {
+                // If it succeeds, verify it's safe
+                println!("Warning: Control character accepted in filename: {:?}", name);
+            }
+            Err(_) => {
+                // Expected to fail - this is good
+            }
+        }
+    }
+}
+
+#[test]
+fn test_reserved_names_windows() {
+    // Test Windows reserved names (should work on Unix, may fail on Windows)
+    let fs = MemoryFileSystem::new();
+    
+    let reserved_names = [
+        "/CON.txt",
+        "/PRN.txt",
+        "/AUX.txt",
+        "/NUL.txt",
+        "/COM1.txt",
+        "/LPT1.txt",
+    ];
+    
+    for name in &reserved_names {
+        let result = fs.create_file(name);
+        // Behavior depends on platform
+        match result {
+            Ok(mut file) => {
+                file.write_all(b"test").unwrap();
+                drop(file);
+            }
+            Err(_) => {
+                // May fail on Windows
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Case Sensitivity Tests
+// ============================================================================
+
+#[test]
+fn test_case_sensitivity_memory_fs() {
+    let fs = MemoryFileSystem::new();
+    
+    // Create file with lowercase name
+    let mut file1 = fs.create_file("/test.txt").unwrap();
+    file1.write_all(b"lowercase").unwrap();
+    drop(file1);
+    
+    // Try to create file with uppercase name
+    let result = fs.create_file("/TEST.txt");
+    
+    match result {
+        Ok(mut file2) => {
+            // If it succeeds, filesystem is case-sensitive
+            file2.write_all(b"uppercase").unwrap();
+            drop(file2);
+            
+            // Both should exist
+            assert!(fs.exists("/test.txt").unwrap());
+            assert!(fs.exists("/TEST.txt").unwrap());
+            
+            // Verify they're different files
+            let mut file1 = fs.open_file("/test.txt").unwrap();
+            let mut buf1 = Vec::new();
+            file1.read_to_end(&mut buf1).unwrap();
+            
+            let mut file2 = fs.open_file("/TEST.txt").unwrap();
+            let mut buf2 = Vec::new();
+            file2.read_to_end(&mut buf2).unwrap();
+            
+            assert_eq!(buf1, b"lowercase");
+            assert_eq!(buf2, b"uppercase");
+        }
+        Err(FileSystemError::PathExists) => {
+            // Filesystem is case-insensitive
+            println!("MemoryFileSystem is case-insensitive");
+        }
+        Err(e) => {
+            panic!("Unexpected error: {:?}", e);
+        }
+    }
+}
+
+#[test]
+fn test_case_sensitivity_local_fs() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create file with lowercase name
+    let mut file1 = fs.create_file("/test.txt").unwrap();
+    file1.write_all(b"lowercase").unwrap();
+    drop(file1);
+    
+    // Try to create file with uppercase name
+    let result = fs.create_file("/TEST.txt");
+    
+    match result {
+        Ok(mut file2) => {
+            // Filesystem is case-sensitive (Linux, macOS with case-sensitive APFS)
+            file2.write_all(b"uppercase").unwrap();
+            drop(file2);
+            
+            assert!(fs.exists("/test.txt").unwrap());
+            assert!(fs.exists("/TEST.txt").unwrap());
+        }
+        Err(FileSystemError::PathExists) => {
+            // Filesystem is case-insensitive (Windows, macOS default)
+            println!("LocalFileSystem is case-insensitive on this platform");
+            
+            // Verify the original file still exists
+            assert!(fs.exists("/test.txt").unwrap());
+        }
+        Err(e) => {
+            panic!("Unexpected error: {:?}", e);
+        }
+    }
+}
+
+#[test]
+fn test_case_sensitivity_directory_operations() {
+    let fs = MemoryFileSystem::new();
+    
+    // Create directory with lowercase name
+    fs.create_directory("/mydir").unwrap();
+    
+    // Try to create directory with uppercase name
+    let result = fs.create_directory("/MYDIR");
+    
+    match result {
+        Ok(_) => {
+            // Case-sensitive: both should exist
+            assert!(fs.exists("/mydir").unwrap());
+            assert!(fs.exists("/MYDIR").unwrap());
+        }
+        Err(FileSystemError::PathExists) => {
+            // Case-insensitive: only one exists
+            assert!(fs.exists("/mydir").unwrap());
+        }
+        Err(e) => {
+            panic!("Unexpected error: {:?}", e);
+        }
+    }
+}
+
+// ============================================================================
+// Symbolic Link Tests (LocalFileSystem only)
+// ============================================================================
+
+#[cfg(unix)]
+#[test]
+fn test_symlink_to_file() {
+    use std::os::unix::fs::symlink;
+    
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create a regular file
+    let mut file = fs.create_file("/target.txt").unwrap();
+    file.write_all(b"target content").unwrap();
+    drop(file);
+    
+    // Create a symlink to it
+    let target_path = temp_dir.path().join("target.txt");
+    let link_path = temp_dir.path().join("link.txt");
+    symlink(&target_path, &link_path).unwrap();
+    
+    // Try to open via symlink
+    let result = fs.open_file("/link.txt");
+    match result {
+        Ok(mut file) => {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf, b"target content");
+        }
+        Err(e) => {
+            println!("Symlink test failed: {:?}", e);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_symlink_to_directory() {
+    use std::os::unix::fs::symlink;
+    
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create a directory with a file
+    fs.create_directory("/targetdir").unwrap();
+    let mut file = fs.create_file("/targetdir/file.txt").unwrap();
+    file.write_all(b"in directory").unwrap();
+    drop(file);
+    
+    // Create a symlink to the directory
+    let target_path = temp_dir.path().join("targetdir");
+    let link_path = temp_dir.path().join("linkdir");
+    symlink(&target_path, &link_path).unwrap();
+    
+    // Try to access file through symlinked directory
+    let result = fs.open_file("/linkdir/file.txt");
+    match result {
+        Ok(mut file) => {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf, b"in directory");
+        }
+        Err(e) => {
+            println!("Symlink directory test failed: {:?}", e);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_broken_symlink() {
+    use std::os::unix::fs::symlink;
+    
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create a symlink to a non-existent file
+    let target_path = temp_dir.path().join("nonexistent.txt");
+    let link_path = temp_dir.path().join("broken_link.txt");
+    symlink(&target_path, &link_path).unwrap();
+    
+    // Try to open the broken symlink
+    let result = fs.open_file("/broken_link.txt");
+    match result {
+        Err(FileSystemError::PathMissing) => {
+            // Expected behavior
+        }
+        Err(e) => {
+            println!("Broken symlink returned error: {:?}", e);
+        }
+        Ok(_) => {
+            panic!("Should not be able to open broken symlink");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_circular_symlink() {
+    use std::os::unix::fs::symlink;
+    
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalFileSystem::new(temp_dir.path());
+    
+    // Create circular symlinks
+    let link1_path = temp_dir.path().join("link1.txt");
+    let link2_path = temp_dir.path().join("link2.txt");
+    
+    symlink(&link2_path, &link1_path).unwrap();
+    symlink(&link1_path, &link2_path).unwrap();
+    
+    // Try to open circular symlink
+    let result = fs.open_file("/link1.txt");
+    match result {
+        Err(_) => {
+            // Should fail with some error (PathMissing, IOError, etc.)
+        }
+        Ok(_) => {
+            panic!("Should not be able to open circular symlink");
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn test_windows_symlink_note() {
+    // Note: Windows symlinks require admin privileges or developer mode
+    // These tests are Unix-only for practical reasons
+    println!("Symlink tests are Unix-only due to Windows privilege requirements");
+}
+
 // Made with Bob

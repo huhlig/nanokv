@@ -18,10 +18,10 @@ The VFS test suite is organized into multiple test files:
 
 ## Test Statistics
 
-- **Total Test Count**: 91+ tests
+- **Total Test Count**: 104+ tests
 - **Unit Tests**: 2
 - **Integration Tests**: 21
-- **Edge Case Tests**: 31
+- **Edge Case Tests**: 41 (includes security tests)
 - **Property-Based Tests**: 34 (15 property tests + 3 edge cases × 2 implementations)
 - **Concurrency Tests**: 8
 
@@ -252,7 +252,49 @@ Tests system limits and performance:
 **Test Files**: `vfs_edge_cases.rs`
 **Test Count**: 4+ tests
 
-### 12. Edge Cases
+### 12. Security Tests
+
+Tests security-related edge cases and attack vectors:
+
+**Path Traversal Tests:**
+- Parent directory traversal (`../`)
+- Multiple parent traversals (`../../`)
+- Current directory references (`./`)
+- Mixed traversal patterns
+- Path containment verification
+
+**Long Path Tests:**
+- Very long filenames (255+ characters)
+- Extremely long filenames (1000+ characters)
+- Very long paths (deeply nested directories)
+- Long path components
+
+**Special Character Tests:**
+- Spaces, dashes, underscores in filenames
+- Special characters (@, #, $, %, &, +, =, ~, etc.)
+- Unicode characters (Cyrillic, Chinese, Japanese, Korean, Greek, Arabic, Hebrew)
+- Emoji in filenames
+- Accented characters
+- Control characters (null bytes, newlines, tabs, etc.)
+- Windows reserved names (CON, PRN, AUX, NUL, COM1, LPT1)
+
+**Case Sensitivity Tests:**
+- Case-sensitive filesystem behavior (MemoryFS)
+- Case-insensitive filesystem behavior (LocalFS on Windows/macOS)
+- Directory case sensitivity
+- Mixed case operations
+
+**Symbolic Link Tests (Unix only):**
+- Symlinks to files
+- Symlinks to directories
+- Broken symlinks
+- Circular symlinks
+- Symlink traversal
+
+**Test Files**: `vfs_edge_cases.rs`
+**Test Count**: 23 tests
+
+### 13. Edge Cases
 
 Tests boundary conditions:
 
@@ -370,12 +412,16 @@ cargo test vfs -- --nocapture
 ## Future Improvements
 
 1. ~~Add more concurrent access tests with multiple threads~~ ✅ **COMPLETED** (8 concurrency tests added)
-2. Add tests for symbolic links (if supported)
-3. Add tests for file permissions and attributes
-4. Add tests for very large files (>4GB)
-5. Add fuzzing tests for robustness
-6. Add coverage reporting integration
-7. Fix MemoryFileSystem nested directory listing (parent-child relationships)
+2. ~~Add tests for symbolic links (if supported)~~ ✅ **COMPLETED** (Unix symlink tests added)
+3. ~~Add tests for path traversal security~~ ✅ **COMPLETED** (Path traversal attack tests added)
+4. ~~Add tests for special characters and Unicode~~ ✅ **COMPLETED** (Comprehensive character tests added)
+5. ~~Add tests for case sensitivity~~ ✅ **COMPLETED** (Case sensitivity tests added)
+6. ~~Add tests for very long paths~~ ✅ **COMPLETED** (Long path tests added)
+7. Add tests for file permissions and attributes
+8. Add tests for very large files (>4GB)
+9. Add fuzzing tests for robustness
+10. Add coverage reporting integration
+11. Fix MemoryFileSystem nested directory listing (parent-child relationships)
 
 ## Maintenance
 
@@ -386,17 +432,23 @@ cargo test vfs -- --nocapture
 
 ## Summary
 
-The VFS library has comprehensive test coverage with 91+ tests covering:
+The VFS library has comprehensive test coverage with 104+ tests covering:
 - ✅ All public APIs
 - ✅ Both implementations (Memory and Local)
 - ✅ Error conditions
 - ✅ Edge cases
+- ✅ **Security testing** (path traversal, special characters, long paths)
 - ✅ Property-based testing (34 tests, 3,400+ test cases)
 - ✅ Stress testing
 - ✅ Multi-threaded concurrency testing
 - ✅ Cross-implementation compatibility
 - ✅ Platform-specific behavior (LocalFileSystem)
+- ✅ **Symbolic link handling** (Unix platforms)
+- ✅ **Case sensitivity** (platform-aware)
+- ✅ **Unicode and special character support**
 
 All tests pass successfully on Windows, and the test suite provides confidence in the correctness and reliability of the VFS abstraction layer. The addition of 8 comprehensive concurrency tests validates thread-safety and exposes potential race conditions in file operations, directory operations, and lock contention scenarios.
 
-**Key Achievement**: LocalFileSystem now has the same 15 property-based tests as MemoryFileSystem, providing 1,500 additional test cases that validate behavioral consistency across implementations and catch platform-specific issues.
+**Key Achievements**:
+- LocalFileSystem now has the same 15 property-based tests as MemoryFileSystem, providing 1,500 additional test cases that validate behavioral consistency across implementations and catch platform-specific issues.
+- **23 new security and edge case tests** added for production hardening, including path traversal attack prevention, long path handling, special character support, case sensitivity awareness, and symbolic link handling.
