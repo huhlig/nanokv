@@ -15,6 +15,36 @@
 //
 
 //! WAL recovery - Handles crash recovery and replay
+//!
+//! This module implements WAL (Write-Ahead Log) recovery with checkpoint optimization.
+//!
+//! # Checkpoint Optimization
+//!
+//! The recovery process now utilizes checkpoint information to:
+//!
+//! 1. **Track checkpoint state**: Records the LSN and active transactions at each checkpoint
+//! 2. **Validate recovery consistency**: Ensures that transactions active at checkpoint time
+//!    are properly accounted for during recovery (either committed, rolled back, or still active)
+//! 3. **Detect corruption**: Warns if checkpoint state doesn't match recovery state, which may
+//!    indicate WAL corruption or truncation
+//!
+//! # Recovery Process
+//!
+//! 1. Read all WAL records sequentially
+//! 2. Track transaction states (Active, Committed, RolledBack)
+//! 3. When encountering a checkpoint:
+//!    - Store the checkpoint LSN and active transactions
+//!    - Validate that checkpoint's active transactions match current recovery state
+//! 4. Build final result with committed writes and active transactions
+//! 5. Validate that all checkpoint active transactions are accounted for
+//!
+//! # Future Optimizations
+//!
+//! The checkpoint information could be used for incremental recovery:
+//! - Skip replaying transactions committed before the last checkpoint (if their effects
+//!   are already persisted to the database)
+//! - Start recovery from the last checkpoint instead of the beginning of the WAL
+//! - Implement parallel recovery for independent transactions
 
 use crate::vfs::FileSystem;
 use crate::wal::{
@@ -67,6 +97,8 @@ pub struct WalRecovery {
     transaction_writes: BTreeMap<TransactionId, Vec<RecoveredWrite>>,
     /// Last checkpoint LSN
     last_checkpoint_lsn: Option<Lsn>,
+    /// Active transactions at last checkpoint
+    checkpoint_active_txns: Option<HashSet<TransactionId>>,
     /// Records processed
     records_processed: usize,
 }
@@ -78,6 +110,7 @@ impl WalRecovery {
             transactions: BTreeMap::new(),
             transaction_writes: BTreeMap::new(),
             last_checkpoint_lsn: None,
+            checkpoint_active_txns: None,
             records_processed: 0,
         }
     }
@@ -212,12 +245,45 @@ impl WalRecovery {
         active_txns: Vec<TransactionId>,
     ) -> WalResult<()> {
         self.last_checkpoint_lsn = Some(lsn);
-
-        // TODO: Beads issue nanokv-7l2
+        
+        // Store the active transactions at checkpoint for validation
+        let checkpoint_txns: HashSet<TransactionId> = active_txns.iter().copied().collect();
+        
+        // Validate that checkpoint active_txns matches our current state
+        // This helps detect WAL corruption or inconsistencies
+        let current_active: HashSet<TransactionId> = self.transactions
+            .iter()
+            .filter_map(|(txn_id, state)| {
+                if *state == TransactionState::Active {
+                    Some(*txn_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Check if checkpoint's active transactions match our tracked active transactions
+        if checkpoint_txns != current_active {
+            // Log a warning but don't fail - the checkpoint might be slightly stale
+            // or there might be a race condition during checkpoint creation
+            eprintln!(
+                "Warning: Checkpoint active transactions mismatch at LSN {}. \
+                 Checkpoint has {} active txns, recovery has {} active txns.",
+                lsn,
+                checkpoint_txns.len(),
+                current_active.len()
+            );
+        }
+        
+        self.checkpoint_active_txns = Some(checkpoint_txns);
+        
         // Note: We don't remove any transaction state or writes here.
         // The checkpoint just marks a point in time. All committed transactions
         // before and after the checkpoint should still be recovered.
-        // We only use the checkpoint to know which transactions were active at that point.
+        //
+        // Future optimization: We could potentially skip replaying transactions
+        // that were committed before the checkpoint, if we had a way to know
+        // that their effects were already persisted to the database.
 
         Ok(())
     }
@@ -226,6 +292,22 @@ impl WalRecovery {
     fn build_result(self) -> RecoveryResult {
         let mut committed_writes = Vec::new();
         let mut active_transactions = HashSet::new();
+        
+        // Final validation: if we had a checkpoint, verify active transactions
+        // Do this before consuming self.transactions
+        if let Some(checkpoint_txns) = &self.checkpoint_active_txns {
+            // Check if any checkpoint active transactions are still tracked
+            // (they should either be committed, rolled back, or still active)
+            for checkpoint_txn in checkpoint_txns {
+                if !self.transactions.contains_key(checkpoint_txn) {
+                    eprintln!(
+                        "Warning: Transaction {} was active at checkpoint but not found in recovery. \
+                         This might indicate WAL truncation or corruption.",
+                        checkpoint_txn
+                    );
+                }
+            }
+        }
 
         // Collect committed writes and active transactions
         for (txn_id, state) in self.transactions {
@@ -486,6 +568,263 @@ mod tests {
         assert_eq!(result.committed_writes[0].op_type, WriteOpType::Delete);
         assert_eq!(result.committed_writes[0].key, b"key1");
         assert!(result.committed_writes[0].value.is_empty());
+    }
+
+    #[test]
+    fn test_checkpoint_validation_matching_state() {
+        let fs = MemoryFileSystem::new();
+        let path = "test.wal";
+        let config = WalWriterConfig::default();
+        let writer = WalWriter::create(&fs, path, config).unwrap();
+
+        // Transaction 1: active before checkpoint
+        writer.write_begin(1).unwrap();
+        writer
+            .write_operation(
+                1,
+                "table1".to_string(),
+                WriteOpType::Put,
+                b"key1".to_vec(),
+                b"value1".to_vec(),
+            )
+            .unwrap();
+
+        // Transaction 2: active before checkpoint
+        writer.write_begin(2).unwrap();
+        writer
+            .write_operation(
+                2,
+                "table2".to_string(),
+                WriteOpType::Put,
+                b"key2".to_vec(),
+                b"value2".to_vec(),
+            )
+            .unwrap();
+
+        // Checkpoint with both transactions active
+        writer.write_checkpoint().unwrap();
+
+        // Transaction 1: committed after checkpoint
+        writer.write_commit(1).unwrap();
+
+        // Transaction 2: still active
+        writer.flush().unwrap();
+
+        // Recover and verify
+        let result = WalRecovery::recover(&fs, path).unwrap();
+
+        assert!(result.last_checkpoint_lsn.is_some());
+        assert_eq!(result.committed_writes.len(), 1);
+        assert_eq!(result.active_transactions.len(), 1);
+        assert!(result.active_transactions.contains(&2));
+    }
+
+    #[test]
+    fn test_checkpoint_validation_all_committed() {
+        let fs = MemoryFileSystem::new();
+        let path = "test.wal";
+        let config = WalWriterConfig::default();
+        let writer = WalWriter::create(&fs, path, config).unwrap();
+
+        // Transaction 1: active before checkpoint
+        writer.write_begin(1).unwrap();
+        writer
+            .write_operation(
+                1,
+                "table1".to_string(),
+                WriteOpType::Put,
+                b"key1".to_vec(),
+                b"value1".to_vec(),
+            )
+            .unwrap();
+
+        // Transaction 2: active before checkpoint
+        writer.write_begin(2).unwrap();
+        writer
+            .write_operation(
+                2,
+                "table2".to_string(),
+                WriteOpType::Put,
+                b"key2".to_vec(),
+                b"value2".to_vec(),
+            )
+            .unwrap();
+
+        // Checkpoint with both transactions active
+        writer.write_checkpoint().unwrap();
+
+        // Both transactions committed after checkpoint
+        writer.write_commit(1).unwrap();
+        writer.write_commit(2).unwrap();
+        writer.flush().unwrap();
+
+        // Recover and verify
+        let result = WalRecovery::recover(&fs, path).unwrap();
+
+        assert!(result.last_checkpoint_lsn.is_some());
+        assert_eq!(result.committed_writes.len(), 2);
+        assert!(result.active_transactions.is_empty());
+    }
+
+    #[test]
+    fn test_checkpoint_validation_mixed_outcomes() {
+        let fs = MemoryFileSystem::new();
+        let path = "test.wal";
+        let config = WalWriterConfig::default();
+        let writer = WalWriter::create(&fs, path, config).unwrap();
+
+        // Transaction 1: active before checkpoint
+        writer.write_begin(1).unwrap();
+        writer
+            .write_operation(
+                1,
+                "table1".to_string(),
+                WriteOpType::Put,
+                b"key1".to_vec(),
+                b"value1".to_vec(),
+            )
+            .unwrap();
+
+        // Transaction 2: active before checkpoint
+        writer.write_begin(2).unwrap();
+        writer
+            .write_operation(
+                2,
+                "table2".to_string(),
+                WriteOpType::Put,
+                b"key2".to_vec(),
+                b"value2".to_vec(),
+            )
+            .unwrap();
+
+        // Transaction 3: active before checkpoint
+        writer.write_begin(3).unwrap();
+        writer
+            .write_operation(
+                3,
+                "table3".to_string(),
+                WriteOpType::Put,
+                b"key3".to_vec(),
+                b"value3".to_vec(),
+            )
+            .unwrap();
+
+        // Checkpoint with all three transactions active
+        writer.write_checkpoint().unwrap();
+
+        // Transaction 1: committed after checkpoint
+        writer.write_commit(1).unwrap();
+
+        // Transaction 2: rolled back after checkpoint
+        writer.write_rollback(2).unwrap();
+
+        // Transaction 3: still active
+        writer.flush().unwrap();
+
+        // Recover and verify
+        let result = WalRecovery::recover(&fs, path).unwrap();
+
+        assert!(result.last_checkpoint_lsn.is_some());
+        assert_eq!(result.committed_writes.len(), 1);
+        assert_eq!(result.committed_writes[0].table, "table1");
+        assert_eq!(result.active_transactions.len(), 1);
+        assert!(result.active_transactions.contains(&3));
+    }
+
+    #[test]
+    fn test_multiple_checkpoints() {
+        let fs = MemoryFileSystem::new();
+        let path = "test.wal";
+        let config = WalWriterConfig::default();
+        let writer = WalWriter::create(&fs, path, config).unwrap();
+
+        // Transaction 1: committed before first checkpoint
+        writer.write_begin(1).unwrap();
+        writer
+            .write_operation(
+                1,
+                "table1".to_string(),
+                WriteOpType::Put,
+                b"key1".to_vec(),
+                b"value1".to_vec(),
+            )
+            .unwrap();
+        writer.write_commit(1).unwrap();
+
+        // First checkpoint (no active transactions)
+        writer.write_checkpoint().unwrap();
+
+        // Transaction 2: active at second checkpoint
+        writer.write_begin(2).unwrap();
+        writer
+            .write_operation(
+                2,
+                "table2".to_string(),
+                WriteOpType::Put,
+                b"key2".to_vec(),
+                b"value2".to_vec(),
+            )
+            .unwrap();
+
+        // Second checkpoint (transaction 2 active)
+        writer.write_checkpoint().unwrap();
+
+        // Transaction 2: committed after second checkpoint
+        writer.write_commit(2).unwrap();
+        writer.flush().unwrap();
+
+        // Recover and verify
+        let result = WalRecovery::recover(&fs, path).unwrap();
+
+        // Should use the last checkpoint
+        assert!(result.last_checkpoint_lsn.is_some());
+        assert_eq!(result.committed_writes.len(), 2);
+        assert!(result.active_transactions.is_empty());
+    }
+
+    #[test]
+    fn test_checkpoint_with_no_active_transactions() {
+        let fs = MemoryFileSystem::new();
+        let path = "test.wal";
+        let config = WalWriterConfig::default();
+        let writer = WalWriter::create(&fs, path, config).unwrap();
+
+        // Transaction 1: committed before checkpoint
+        writer.write_begin(1).unwrap();
+        writer
+            .write_operation(
+                1,
+                "table1".to_string(),
+                WriteOpType::Put,
+                b"key1".to_vec(),
+                b"value1".to_vec(),
+            )
+            .unwrap();
+        writer.write_commit(1).unwrap();
+
+        // Checkpoint with no active transactions
+        writer.write_checkpoint().unwrap();
+
+        // Transaction 2: started after checkpoint
+        writer.write_begin(2).unwrap();
+        writer
+            .write_operation(
+                2,
+                "table2".to_string(),
+                WriteOpType::Put,
+                b"key2".to_vec(),
+                b"value2".to_vec(),
+            )
+            .unwrap();
+        writer.write_commit(2).unwrap();
+        writer.flush().unwrap();
+
+        // Recover and verify
+        let result = WalRecovery::recover(&fs, path).unwrap();
+
+        assert!(result.last_checkpoint_lsn.is_some());
+        assert_eq!(result.committed_writes.len(), 2);
+        assert!(result.active_transactions.is_empty());
     }
 }
 
