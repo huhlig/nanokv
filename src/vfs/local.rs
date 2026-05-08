@@ -100,6 +100,21 @@ impl FileSystem for LocalFileSystem {
 
     #[tracing::instrument]
     fn create_file(&self, path: &str) -> FileSystemResult<Self::File> {
+        // Validate filename components on Windows (not the full path, which may have drive letters)
+        #[cfg(windows)]
+        {
+            // Check each path component for invalid characters, skipping drive letters (e.g., "C:")
+            for (i, component) in path.split(&['/', '\\'][..]).enumerate() {
+                // Skip first component if it's a drive letter (e.g., "C:")
+                if i == 0 && component.len() == 2 && component.ends_with(':') && component.chars().next().unwrap().is_ascii_alphabetic() {
+                    continue;
+                }
+                if component.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+                    return Err(FileSystemError::InvalidPath(path.to_string()));
+                }
+            }
+        }
+        
         std::fs::File::options()
             .read(true)
             .write(true)
@@ -115,6 +130,21 @@ impl FileSystem for LocalFileSystem {
 
     #[tracing::instrument]
     fn open_file(&self, path: &str) -> FileSystemResult<Self::File> {
+        // Validate filename components on Windows (not the full path, which may have drive letters)
+        #[cfg(windows)]
+        {
+            // Check each path component for invalid characters, skipping drive letters (e.g., "C:")
+            for (i, component) in path.split(&['/', '\\'][..]).enumerate() {
+                // Skip first component if it's a drive letter (e.g., "C:")
+                if i == 0 && component.len() == 2 && component.ends_with(':') && component.chars().next().unwrap().is_ascii_alphabetic() {
+                    continue;
+                }
+                if component.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+                    return Err(FileSystemError::InvalidPath(path.to_string()));
+                }
+            }
+        }
+        
         std::fs::File::open(self.absolute_path(path))
             .map(|file| LocalFileHandle {
                 path: self.root.join(path),

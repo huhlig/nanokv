@@ -16,6 +16,7 @@
 
 //! Pager error types
 
+use crate::pager::PageId;
 use crate::vfs::FileSystemError;
 use thiserror::Error;
 
@@ -31,15 +32,15 @@ pub enum PagerError {
 
     /// Invalid page ID
     #[error("Invalid page ID: {0}")]
-    InvalidPageId(u64),
+    InvalidPageId(PageId),
 
     /// Page not found
     #[error("Page not found: {0}")]
-    PageNotFound(u64),
+    PageNotFound(PageId),
 
     /// Checksum mismatch
     #[error("Checksum mismatch for page {0}")]
-    ChecksumMismatch(u64),
+    ChecksumMismatch(PageId),
 
     /// Invalid page size
     #[error("Invalid page size: {0}")]
@@ -83,15 +84,15 @@ pub enum PagerError {
 
     /// Page is already allocated
     #[error("Page {0} is already allocated")]
-    PageAlreadyAllocated(u64),
+    PageAlreadyAllocated(PageId),
 
     /// Page is already free
     #[error("Page {0} is already free")]
-    PageAlreadyFree(u64),
+    PageAlreadyFree(PageId),
 
     /// Page is pinned (cannot be freed while in use)
     #[error("Page {0} is pinned and cannot be freed")]
-    PagePinned(u64),
+    PagePinned(PageId),
 
     /// Invalid page type
     #[error("Invalid page type: {0}")]

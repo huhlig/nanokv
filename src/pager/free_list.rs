@@ -42,7 +42,7 @@ impl FreeListPage {
     /// Create a new empty free list page
     pub fn new() -> Self {
         Self {
-            next_page: 0,
+            next_page: PageId::from(0),
             free_pages: Vec::new(),
         }
     }
@@ -88,14 +88,14 @@ impl FreeListPage {
         let mut bytes = Vec::new();
 
         // Next page ID
-        bytes.extend_from_slice(&self.next_page.to_le_bytes());
+        bytes.extend_from_slice(&self.next_page.to_bytes());
 
         // Number of entries
         bytes.extend_from_slice(&(self.free_pages.len() as u64).to_le_bytes());
 
         // Free page IDs
         for page_id in &self.free_pages {
-            bytes.extend_from_slice(&page_id.to_le_bytes());
+            bytes.extend_from_slice(&page_id.to_bytes());
         }
 
         bytes
@@ -109,7 +109,7 @@ impl FreeListPage {
             ));
         }
 
-        let next_page = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let next_page = PageId::from(u64::from_le_bytes(bytes[0..8].try_into().unwrap()));
         let count = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
 
         let mut free_pages = Vec::with_capacity(count);
@@ -121,7 +121,9 @@ impl FreeListPage {
                     "Insufficient bytes for free page entries".to_string(),
                 ));
             }
-            let page_id = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let page_id = PageId::from(u64::from_le_bytes(
+                bytes[offset..offset + 8].try_into().unwrap(),
+            ));
             free_pages.push(page_id);
             offset += 8;
         }
@@ -158,8 +160,8 @@ impl FreeList {
     /// Create a new empty free list
     pub fn new() -> Self {
         Self {
-            first_page: 0,
-            last_page: 0,
+            first_page: PageId::from(0),
+            last_page: PageId::from(0),
             total_free: 0,
             free_pages: Vec::new(),
         }
@@ -198,7 +200,7 @@ impl FreeList {
     /// Update the first page ID
     pub fn set_first_page(&mut self, page_id: PageId) {
         self.first_page = page_id;
-        if self.last_page == 0 {
+        if self.last_page == PageId::from(0) {
             self.last_page = page_id;
         }
     }
@@ -206,7 +208,7 @@ impl FreeList {
     /// Update the last page ID
     pub fn set_last_page(&mut self, page_id: PageId) {
         self.last_page = page_id;
-        if self.first_page == 0 {
+        if self.first_page == PageId::from(0) {
             self.first_page = page_id;
         }
     }
@@ -222,8 +224,8 @@ impl FreeList {
         let page_id = self.free_pages.pop();
         self.total_free = self.free_pages.len() as u64;
         if self.total_free == 0 {
-            self.first_page = 0;
-            self.last_page = 0;
+            self.first_page = PageId::from(0);
+            self.last_page = PageId::from(0);
         }
         page_id
     }
@@ -234,8 +236,8 @@ impl FreeList {
         self.total_free = free_pages.len() as u64;
         self.free_pages = free_pages;
         if self.total_free == 0 {
-            self.first_page = 0;
-            self.last_page = 0;
+            self.first_page = PageId::from(0);
+            self.last_page = PageId::from(0);
         }
     }
 
@@ -250,8 +252,8 @@ impl FreeList {
             self.total_free -= 1;
         }
         if self.total_free == 0 {
-            self.first_page = 0;
-            self.last_page = 0;
+            self.first_page = PageId::from(0);
+            self.last_page = PageId::from(0);
         }
     }
 }
@@ -269,7 +271,7 @@ mod tests {
     #[test]
     fn test_free_list_page_creation() {
         let page = FreeListPage::new();
-        assert_eq!(page.next_page, 0);
+        assert_eq!(page.next_page, PageId::from(0));
         assert!(page.is_empty());
         assert_eq!(page.len(), 0);
     }
@@ -279,14 +281,14 @@ mod tests {
         let mut page = FreeListPage::new();
         let page_data_size = 4000;
 
-        page.add_page(10, page_data_size).unwrap();
-        page.add_page(20, page_data_size).unwrap();
-        page.add_page(30, page_data_size).unwrap();
+        page.add_page(PageId::from(10), page_data_size).unwrap();
+        page.add_page(PageId::from(20), page_data_size).unwrap();
+        page.add_page(PageId::from(30), page_data_size).unwrap();
 
         assert_eq!(page.len(), 3);
-        assert_eq!(page.pop_page(), Some(30));
-        assert_eq!(page.pop_page(), Some(20));
-        assert_eq!(page.pop_page(), Some(10));
+        assert_eq!(page.pop_page(), Some(PageId::from(30)));
+        assert_eq!(page.pop_page(), Some(PageId::from(20)));
+        assert_eq!(page.pop_page(), Some(PageId::from(10)));
         assert_eq!(page.pop_page(), None);
         assert!(page.is_empty());
     }
@@ -294,24 +296,24 @@ mod tests {
     #[test]
     fn test_free_list_page_serialization() {
         let mut page = FreeListPage::new();
-        page.next_page = 42;
-        page.add_page(100, 4000).unwrap();
-        page.add_page(200, 4000).unwrap();
+        page.next_page = PageId::from(42);
+        page.add_page(PageId::from(100), 4000).unwrap();
+        page.add_page(PageId::from(200), 4000).unwrap();
 
         let bytes = page.to_bytes();
         let deserialized = FreeListPage::from_bytes(&bytes).unwrap();
 
-        assert_eq!(deserialized.next_page, 42);
+        assert_eq!(deserialized.next_page, PageId::from(42));
         assert_eq!(deserialized.len(), 2);
-        assert_eq!(deserialized.free_pages[0], 100);
-        assert_eq!(deserialized.free_pages[1], 200);
+        assert_eq!(deserialized.free_pages[0], PageId::from(100));
+        assert_eq!(deserialized.free_pages[1], PageId::from(200));
     }
 
     #[test]
     fn test_free_list_page_max_entries() {
         let page_data_size = 4000;
         let max = FreeListPage::max_entries(page_data_size);
-        
+
         // (4000 - 16) / 8 = 498
         assert_eq!(max, 498);
     }
@@ -322,16 +324,16 @@ mod tests {
         assert!(free_list.is_empty());
         assert_eq!(free_list.total_free(), 0);
 
-        free_list.set_first_page(10);
+        free_list.set_first_page(PageId::from(10));
         free_list.increment_free();
-        
-        assert_eq!(free_list.first_page(), 10);
+
+        assert_eq!(free_list.first_page(), PageId::from(10));
         assert_eq!(free_list.total_free(), 1);
         assert!(!free_list.is_empty());
 
         free_list.decrement_free();
         assert!(free_list.is_empty());
-        assert_eq!(free_list.first_page(), 0);
+        assert_eq!(free_list.first_page(), PageId::from(0));
     }
 }
 

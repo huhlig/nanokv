@@ -17,13 +17,11 @@
 //! Comprehensive benchmarks for compression and encryption features
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nanokv::pager::{
-    CompressionType, EncryptionType, Page, PageType, Pager, PagerConfig,
-};
+use nanokv::pager::{CompressionType, EncryptionType, Page, PageType, Pager, PagerConfig};
+use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalWriter, WalWriterConfig, WriteOpType};
 use std::hint::black_box;
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -71,7 +69,7 @@ fn generate_incompressible_data(size: usize) -> Vec<u8> {
 
 fn bench_pager_compression(c: &mut Criterion) {
     let mut group = c.benchmark_group("pager_compression");
-    
+
     for &data_size in &[1024, 4096, 16384] {
         group.throughput(Throughput::Bytes(data_size as u64));
 
@@ -81,14 +79,15 @@ fn bench_pager_compression(c: &mut Criterion) {
             &data_size,
             |b, &size| {
                 let fs = MemoryFileSystem::new();
-                let config = PagerConfig::default()
-                    .with_compression(CompressionType::Lz4);
+                let config = PagerConfig::default().with_compression(CompressionType::Lz4);
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.header.compression = CompressionType::Lz4;
-                page.data_mut().extend_from_slice(&generate_compressible_data(size));
+                page.data_mut()
+                    .extend_from_slice(&generate_compressible_data(size));
 
                 b.iter(|| {
                     pager.write_page(&page).unwrap();
@@ -102,14 +101,15 @@ fn bench_pager_compression(c: &mut Criterion) {
             &data_size,
             |b, &size| {
                 let fs = MemoryFileSystem::new();
-                let config = PagerConfig::default()
-                    .with_compression(CompressionType::Lz4);
+                let config = PagerConfig::default().with_compression(CompressionType::Lz4);
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.header.compression = CompressionType::Lz4;
-                page.data_mut().extend_from_slice(&generate_compressible_data(size));
+                page.data_mut()
+                    .extend_from_slice(&generate_compressible_data(size));
                 pager.write_page(&page).unwrap();
 
                 b.iter(|| {
@@ -125,14 +125,15 @@ fn bench_pager_compression(c: &mut Criterion) {
             &data_size,
             |b, &size| {
                 let fs = MemoryFileSystem::new();
-                let config = PagerConfig::default()
-                    .with_compression(CompressionType::Zstd);
+                let config = PagerConfig::default().with_compression(CompressionType::Zstd);
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.header.compression = CompressionType::Zstd;
-                page.data_mut().extend_from_slice(&generate_compressible_data(size));
+                page.data_mut()
+                    .extend_from_slice(&generate_compressible_data(size));
 
                 b.iter(|| {
                     pager.write_page(&page).unwrap();
@@ -146,14 +147,15 @@ fn bench_pager_compression(c: &mut Criterion) {
             &data_size,
             |b, &size| {
                 let fs = MemoryFileSystem::new();
-                let config = PagerConfig::default()
-                    .with_compression(CompressionType::Zstd);
+                let config = PagerConfig::default().with_compression(CompressionType::Zstd);
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.header.compression = CompressionType::Zstd;
-                page.data_mut().extend_from_slice(&generate_compressible_data(size));
+                page.data_mut()
+                    .extend_from_slice(&generate_compressible_data(size));
                 pager.write_page(&page).unwrap();
 
                 b.iter(|| {
@@ -172,9 +174,11 @@ fn bench_pager_compression(c: &mut Criterion) {
                 let config = PagerConfig::default();
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
-                page.data_mut().extend_from_slice(&generate_compressible_data(size));
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+                page.data_mut()
+                    .extend_from_slice(&generate_compressible_data(size));
 
                 b.iter(|| {
                     pager.write_page(&page).unwrap();
@@ -191,9 +195,11 @@ fn bench_pager_compression(c: &mut Criterion) {
                 let config = PagerConfig::default();
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
-                page.data_mut().extend_from_slice(&generate_compressible_data(size));
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+                page.data_mut()
+                    .extend_from_slice(&generate_compressible_data(size));
                 pager.write_page(&page).unwrap();
 
                 b.iter(|| {
@@ -215,7 +221,7 @@ fn bench_pager_encryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("pager_encryption");
 
     let encryption_key = [0x42u8; 32];
-    
+
     for &data_size in &[1024, 4096, 16384] {
         group.throughput(Throughput::Bytes(data_size as u64));
 
@@ -229,8 +235,9 @@ fn bench_pager_encryption(c: &mut Criterion) {
                     .with_encryption(EncryptionType::Aes256Gcm, encryption_key);
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.header.encryption = EncryptionType::Aes256Gcm;
                 page.data_mut().resize(size, 0xAB);
 
@@ -250,8 +257,9 @@ fn bench_pager_encryption(c: &mut Criterion) {
                     .with_encryption(EncryptionType::Aes256Gcm, encryption_key);
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.header.encryption = EncryptionType::Aes256Gcm;
                 page.data_mut().resize(size, 0xAB);
                 pager.write_page(&page).unwrap();
@@ -272,8 +280,9 @@ fn bench_pager_encryption(c: &mut Criterion) {
                 let config = PagerConfig::default();
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.data_mut().resize(size, 0xAB);
 
                 b.iter(|| {
@@ -291,8 +300,9 @@ fn bench_pager_encryption(c: &mut Criterion) {
                 let config = PagerConfig::default();
                 let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
                 let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-                
-                let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
+
+                let mut page =
+                    Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
                 page.data_mut().resize(size, 0xAB);
                 pager.write_page(&page).unwrap();
 
@@ -316,7 +326,7 @@ fn bench_pager_combined(c: &mut Criterion) {
 
     let encryption_key = [0x42u8; 32];
     let data_size = 4096;
-    
+
     group.throughput(Throughput::Bytes(data_size as u64));
 
     // LZ4 + AES-256-GCM - Write
@@ -327,11 +337,12 @@ fn bench_pager_combined(c: &mut Criterion) {
             .with_encryption(EncryptionType::Aes256Gcm, encryption_key);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Lz4;
         page.header.encryption = EncryptionType::Aes256Gcm;
-        page.data_mut().extend_from_slice(&generate_compressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_compressible_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -346,11 +357,12 @@ fn bench_pager_combined(c: &mut Criterion) {
             .with_encryption(EncryptionType::Aes256Gcm, encryption_key);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Lz4;
         page.header.encryption = EncryptionType::Aes256Gcm;
-        page.data_mut().extend_from_slice(&generate_compressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_compressible_data(data_size));
         pager.write_page(&page).unwrap();
 
         b.iter(|| {
@@ -367,11 +379,12 @@ fn bench_pager_combined(c: &mut Criterion) {
             .with_encryption(EncryptionType::Aes256Gcm, encryption_key);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Zstd;
         page.header.encryption = EncryptionType::Aes256Gcm;
-        page.data_mut().extend_from_slice(&generate_compressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_compressible_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -386,11 +399,12 @@ fn bench_pager_combined(c: &mut Criterion) {
             .with_encryption(EncryptionType::Aes256Gcm, encryption_key);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Zstd;
         page.header.encryption = EncryptionType::Aes256Gcm;
-        page.data_mut().extend_from_slice(&generate_compressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_compressible_data(data_size));
         pager.write_page(&page).unwrap();
 
         b.iter(|| {
@@ -424,18 +438,20 @@ fn bench_wal_compression(c: &mut Criterion) {
                 let value = generate_compressible_data(size);
                 let mut counter = 0;
 
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
-                    writer.write_operation(
-                        1,
-                        "test".to_string(),
-                        WriteOpType::Put,
-                        key,
-                        value.clone(),
-                    ).unwrap();
+                    writer
+                        .write_operation(
+                            TransactionId::from(1),
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            key,
+                            value.clone(),
+                        )
+                        .unwrap();
                 });
             },
         );
@@ -452,18 +468,20 @@ fn bench_wal_compression(c: &mut Criterion) {
                 let value = generate_compressible_data(size);
                 let mut counter = 0;
 
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
-                    writer.write_operation(
-                        1,
-                        "test".to_string(),
-                        WriteOpType::Put,
-                        key,
-                        value.clone(),
-                    ).unwrap();
+                    writer
+                        .write_operation(
+                            TransactionId::from(1),
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            key,
+                            value.clone(),
+                        )
+                        .unwrap();
                 });
             },
         );
@@ -479,18 +497,20 @@ fn bench_wal_compression(c: &mut Criterion) {
                 let value = generate_compressible_data(size);
                 let mut counter = 0;
 
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
-                    writer.write_operation(
-                        1,
-                        "test".to_string(),
-                        WriteOpType::Put,
-                        key,
-                        value.clone(),
-                    ).unwrap();
+                    writer
+                        .write_operation(
+                            TransactionId::from(1),
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            key,
+                            value.clone(),
+                        )
+                        .unwrap();
                 });
             },
         );
@@ -524,18 +544,20 @@ fn bench_wal_encryption(c: &mut Criterion) {
                 let value = vec![0xAB; size];
                 let mut counter = 0;
 
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
-                    writer.write_operation(
-                        1,
-                        "test".to_string(),
-                        WriteOpType::Put,
-                        key,
-                        value.clone(),
-                    ).unwrap();
+                    writer
+                        .write_operation(
+                            TransactionId::from(1),
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            key,
+                            value.clone(),
+                        )
+                        .unwrap();
                 });
             },
         );
@@ -551,18 +573,20 @@ fn bench_wal_encryption(c: &mut Criterion) {
                 let value = vec![0xAB; size];
                 let mut counter = 0;
 
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
-                    writer.write_operation(
-                        1,
-                        "test".to_string(),
-                        WriteOpType::Put,
-                        key,
-                        value.clone(),
-                    ).unwrap();
+                    writer
+                        .write_operation(
+                            TransactionId::from(1),
+                            "test".to_string(),
+                            WriteOpType::Put,
+                            key,
+                            value.clone(),
+                        )
+                        .unwrap();
                 });
             },
         );
@@ -594,18 +618,20 @@ fn bench_wal_combined(c: &mut Criterion) {
         let value = generate_compressible_data(value_size);
         let mut counter = 0;
 
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
 
         b.iter(|| {
             let key = format!("key_{}", counter).into_bytes();
             counter += 1;
-            writer.write_operation(
-                1,
-                "test".to_string(),
-                WriteOpType::Put,
-                key,
-                value.clone(),
-            ).unwrap();
+            writer
+                .write_operation(
+                    TransactionId::from(1),
+                    "test".to_string(),
+                    WriteOpType::Put,
+                    key,
+                    value.clone(),
+                )
+                .unwrap();
         });
     });
 
@@ -620,18 +646,20 @@ fn bench_wal_combined(c: &mut Criterion) {
         let value = generate_compressible_data(value_size);
         let mut counter = 0;
 
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
 
         b.iter(|| {
             let key = format!("key_{}", counter).into_bytes();
             counter += 1;
-            writer.write_operation(
-                1,
-                "test".to_string(),
-                WriteOpType::Put,
-                key,
-                value.clone(),
-            ).unwrap();
+            writer
+                .write_operation(
+                    TransactionId::from(1),
+                    "test".to_string(),
+                    WriteOpType::Put,
+                    key,
+                    value.clone(),
+                )
+                .unwrap();
         });
     });
 
@@ -651,14 +679,14 @@ fn bench_data_patterns(c: &mut Criterion) {
     // Highly compressible data with LZ4
     group.bench_function("compressible_lz4", |b| {
         let fs = MemoryFileSystem::new();
-        let config = PagerConfig::default()
-            .with_compression(CompressionType::Lz4);
+        let config = PagerConfig::default().with_compression(CompressionType::Lz4);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Lz4;
-        page.data_mut().extend_from_slice(&generate_compressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_compressible_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -668,14 +696,14 @@ fn bench_data_patterns(c: &mut Criterion) {
     // Moderately compressible data with LZ4
     group.bench_function("moderate_lz4", |b| {
         let fs = MemoryFileSystem::new();
-        let config = PagerConfig::default()
-            .with_compression(CompressionType::Lz4);
+        let config = PagerConfig::default().with_compression(CompressionType::Lz4);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Lz4;
-        page.data_mut().extend_from_slice(&generate_moderate_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_moderate_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -685,14 +713,14 @@ fn bench_data_patterns(c: &mut Criterion) {
     // Incompressible data with LZ4
     group.bench_function("incompressible_lz4", |b| {
         let fs = MemoryFileSystem::new();
-        let config = PagerConfig::default()
-            .with_compression(CompressionType::Lz4);
+        let config = PagerConfig::default().with_compression(CompressionType::Lz4);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Lz4;
-        page.data_mut().extend_from_slice(&generate_incompressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_incompressible_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -702,14 +730,14 @@ fn bench_data_patterns(c: &mut Criterion) {
     // Highly compressible data with Zstd
     group.bench_function("compressible_zstd", |b| {
         let fs = MemoryFileSystem::new();
-        let config = PagerConfig::default()
-            .with_compression(CompressionType::Zstd);
+        let config = PagerConfig::default().with_compression(CompressionType::Zstd);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Zstd;
-        page.data_mut().extend_from_slice(&generate_compressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_compressible_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -719,14 +747,14 @@ fn bench_data_patterns(c: &mut Criterion) {
     // Moderately compressible data with Zstd
     group.bench_function("moderate_zstd", |b| {
         let fs = MemoryFileSystem::new();
-        let config = PagerConfig::default()
-            .with_compression(CompressionType::Zstd);
+        let config = PagerConfig::default().with_compression(CompressionType::Zstd);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Zstd;
-        page.data_mut().extend_from_slice(&generate_moderate_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_moderate_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();
@@ -736,14 +764,14 @@ fn bench_data_patterns(c: &mut Criterion) {
     // Incompressible data with Zstd
     group.bench_function("incompressible_zstd", |b| {
         let fs = MemoryFileSystem::new();
-        let config = PagerConfig::default()
-            .with_compression(CompressionType::Zstd);
+        let config = PagerConfig::default().with_compression(CompressionType::Zstd);
         let pager = Pager::create(&fs, "/bench.db", config.clone()).unwrap();
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        
+
         let mut page = Page::new(page_id, PageType::BTreeLeaf, config.page_size.data_size());
         page.header.compression = CompressionType::Zstd;
-        page.data_mut().extend_from_slice(&generate_incompressible_data(data_size));
+        page.data_mut()
+            .extend_from_slice(&generate_incompressible_data(data_size));
 
         b.iter(|| {
             pager.write_page(&page).unwrap();

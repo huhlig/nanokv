@@ -14,14 +14,30 @@
 // limitations under the License.
 //
 
-pub mod index;
-pub mod kvdb;
-pub mod pager;
-mod rest;
-pub mod snap;
-pub mod table;
-pub mod txn;
-pub mod vfs;
-pub mod wal;
 
-pub mod prelude {}
+/// Owned key buffer.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyBuf(pub Vec<u8>);
+
+impl AsRef<[u8]> for KeyBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Owned value buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueBuf(pub Vec<u8>);
+
+impl AsRef<[u8]> for ValueBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// A key-value entry returned by owned iterators or batch operations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub key: KeyBuf,
+    pub value: ValueBuf,
+}

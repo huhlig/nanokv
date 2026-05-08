@@ -17,7 +17,7 @@
 //! WAL reader - Handles reading records from the WAL file
 
 use crate::vfs::{File, FileSystem};
-use crate::wal::{Lsn, WalError, WalRecord, WalResult};
+use crate::wal::{LogSequenceNumber, WalError, WalRecord, WalResult};
 
 /// WAL reader - Reads records from the WAL file
 pub struct WalReader<FS: FileSystem> {
@@ -109,7 +109,7 @@ impl<FS: FileSystem> WalReader<FS> {
     }
 
     /// Seek to a specific LSN
-    pub fn seek_to_lsn(&mut self, target_lsn: Lsn) -> WalResult<()> {
+    pub fn seek_to_lsn(&mut self, target_lsn: LogSequenceNumber) -> WalResult<()> {
         // Reset to beginning
         self.offset = 0;
 
@@ -177,6 +177,7 @@ impl<FS: FileSystem> Iterator for WalRecordIterator<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::txn::TransactionId;
     use crate::vfs::MemoryFileSystem;
     use crate::wal::{RecordData, WalWriter, WalWriterConfig, WriteOpType};
 
@@ -187,29 +188,29 @@ mod tests {
         let writer = WalWriter::create(&fs, &path, config).unwrap();
 
         // Write some test records
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Delete,
                 b"key2".to_vec(),
                 vec![],
             )
             .unwrap();
-        writer.write_rollback(2).unwrap();
+        writer.write_rollback(TransactionId::from(2)).unwrap();
 
         writer.flush().unwrap();
 
@@ -225,11 +226,13 @@ mod tests {
         assert_eq!(records.len(), 6); // 2 begin, 2 write, 1 commit, 1 rollback
 
         // Check first record
-        assert_eq!(records[0].lsn, 1);
-        assert!(matches!(records[0].data, RecordData::Begin { txn_id: 1 }));
+        let txn_id = TransactionId::from(1);
+        let lsn = LogSequenceNumber::from(1);
+        assert_eq!(records[0].lsn, lsn);
+        assert!(matches!(records[0].data, RecordData::Begin { txn_id }));
 
         // Check second record
-        assert_eq!(records[1].lsn, 2);
+        assert_eq!(records[1].lsn, LogSequenceNumber::from(2));
         if let RecordData::Write {
             txn_id,
             table,
@@ -238,7 +241,7 @@ mod tests {
             value,
         } = &records[1].data
         {
-            assert_eq!(*txn_id, 1);
+            assert_eq!(*txn_id, TransactionId::from(1));
             assert_eq!(table, "table1");
             assert_eq!(*op_type, WriteOpType::Put);
             assert_eq!(key, b"key1");
@@ -248,8 +251,9 @@ mod tests {
         }
 
         // Check third record
-        assert_eq!(records[2].lsn, 3);
-        assert!(matches!(records[2].data, RecordData::Commit { txn_id: 1 }));
+        let txn_id = TransactionId::from(1);
+        assert_eq!(records[2].lsn, LogSequenceNumber::from(3));
+        assert!(matches!(records[2].data, RecordData::Commit { txn_id }));
     }
 
     #[test]
@@ -258,13 +262,13 @@ mod tests {
         let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
         let record1 = reader.read_next().unwrap().unwrap();
-        assert_eq!(record1.lsn, 1);
+        assert_eq!(record1.lsn, LogSequenceNumber::from(1));
 
         let record2 = reader.read_next().unwrap().unwrap();
-        assert_eq!(record2.lsn, 2);
+        assert_eq!(record2.lsn, LogSequenceNumber::from(2));
 
         let record3 = reader.read_next().unwrap().unwrap();
-        assert_eq!(record3.lsn, 3);
+        assert_eq!(record3.lsn, LogSequenceNumber::from(3));
     }
 
     #[test]
@@ -272,9 +276,9 @@ mod tests {
         let (fs, path) = create_test_wal();
         let mut reader = WalReader::open(&fs, &path, None).unwrap();
 
-        reader.seek_to_lsn(3).unwrap();
+        reader.seek_to_lsn(LogSequenceNumber::from(3)).unwrap();
         let record = reader.read_next().unwrap().unwrap();
-        assert_eq!(record.lsn, 3);
+        assert_eq!(record.lsn, LogSequenceNumber::from(3));
     }
 
     #[test]
@@ -289,7 +293,7 @@ mod tests {
         // Reset and read again
         reader.reset();
         let record = reader.read_next().unwrap().unwrap();
-        assert_eq!(record.lsn, 1);
+        assert_eq!(record.lsn, LogSequenceNumber::from(1));
     }
 
     #[test]

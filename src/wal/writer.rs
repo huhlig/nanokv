@@ -17,9 +17,10 @@
 //! WAL writer - Handles writing records to the WAL file
 
 use crate::pager::{CompressionType, EncryptionType};
+use crate::txn::TransactionId;
 use crate::vfs::{File, FileSystem};
-use crate::wal::group_commit::{GroupCommitConfig, GroupCommitCoordinator};
-use crate::wal::{Lsn, RecordData, TransactionId, WalError, WalRecord, WalResult};
+use crate::wal::commit::{GroupCommitConfig, GroupCommitCoordinator};
+use crate::wal::{LogSequenceNumber, RecordData, WalError, WalRecord, WalResult};
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::io::Write;
@@ -61,7 +62,7 @@ impl Default for WalWriterConfig {
 /// WAL writer state
 struct WalWriterState {
     /// Current LSN (incremented for each record)
-    current_lsn: Lsn,
+    current_lsn: LogSequenceNumber,
     /// Current file offset
     current_offset: u64,
     /// Active transactions
@@ -92,7 +93,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         let file = fs.create_file(path)?;
 
         let state = WalWriterState {
-            current_lsn: 1, // Start from LSN 1
+            current_lsn: LogSequenceNumber::from(1), // Start from LSN 1
             current_offset: 0,
             active_txns: HashSet::new(),
             buffer: Vec::with_capacity(config.buffer_size),
@@ -106,26 +107,23 @@ impl<FS: FileSystem> WalWriter<FS> {
             let file_clone = file_arc.clone();
             let state_clone = state_arc.clone();
             let sync_on_write = config.sync_on_write;
-            
-            let coordinator = GroupCommitCoordinator::new(
-                config.group_commit.clone(),
-                move || {
-                    let mut state = state_clone.write();
-                    if state.buffer.is_empty() {
-                        return Ok(());
-                    }
 
-                    let mut file = file_clone.write();
-                    file.write_all(&state.buffer).map_err(WalError::IoError)?;
-                    
-                    if sync_on_write {
-                        file.sync_data()?;
-                    }
-                    
-                    state.buffer.clear();
-                    Ok(())
-                },
-            );
+            let coordinator = GroupCommitCoordinator::new(config.group_commit.clone(), move || {
+                let mut state = state_clone.write();
+                if state.buffer.is_empty() {
+                    return Ok(());
+                }
+
+                let mut file = file_clone.write();
+                file.write_all(&state.buffer).map_err(WalError::IoError)?;
+
+                if sync_on_write {
+                    file.sync_data()?;
+                }
+
+                state.buffer.clear();
+                Ok(())
+            });
             Some(Arc::new(coordinator))
         } else {
             None
@@ -151,7 +149,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         // TODO: Scan the file to find the last LSN and active transactions
         // For now, we'll start from LSN 1 and assume no active transactions
         let state = WalWriterState {
-            current_lsn: 1,
+            current_lsn: LogSequenceNumber::from(1),
             current_offset: file_size,
             active_txns: HashSet::new(),
             buffer: Vec::with_capacity(config.buffer_size),
@@ -165,26 +163,23 @@ impl<FS: FileSystem> WalWriter<FS> {
             let file_clone = file_arc.clone();
             let state_clone = state_arc.clone();
             let sync_on_write = config.sync_on_write;
-            
-            let coordinator = GroupCommitCoordinator::new(
-                config.group_commit.clone(),
-                move || {
-                    let mut state = state_clone.write();
-                    if state.buffer.is_empty() {
-                        return Ok(());
-                    }
 
-                    let mut file = file_clone.write();
-                    file.write_all(&state.buffer).map_err(WalError::IoError)?;
-                    
-                    if sync_on_write {
-                        file.sync_data()?;
-                    }
-                    
-                    state.buffer.clear();
-                    Ok(())
-                },
-            );
+            let coordinator = GroupCommitCoordinator::new(config.group_commit.clone(), move || {
+                let mut state = state_clone.write();
+                if state.buffer.is_empty() {
+                    return Ok(());
+                }
+
+                let mut file = file_clone.write();
+                file.write_all(&state.buffer).map_err(WalError::IoError)?;
+
+                if sync_on_write {
+                    file.sync_data()?;
+                }
+
+                state.buffer.clear();
+                Ok(())
+            });
             Some(Arc::new(coordinator))
         } else {
             None
@@ -201,7 +196,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Write a BEGIN record
-    pub fn write_begin(&self, txn_id: TransactionId) -> WalResult<Lsn> {
+    pub fn write_begin(&self, txn_id: TransactionId) -> WalResult<LogSequenceNumber> {
         let mut state = self.state.write();
 
         // Check if transaction already exists
@@ -235,7 +230,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         op_type: crate::wal::WriteOpType,
         key: Vec<u8>,
         value: Vec<u8>,
-    ) -> WalResult<Lsn> {
+    ) -> WalResult<LogSequenceNumber> {
         let mut state = self.state.write();
 
         // Check if transaction exists
@@ -265,7 +260,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Write a COMMIT record
-    pub fn write_commit(&self, txn_id: TransactionId) -> WalResult<Lsn> {
+    pub fn write_commit(&self, txn_id: TransactionId) -> WalResult<LogSequenceNumber> {
         let lsn = {
             let mut state = self.state.write();
 
@@ -304,7 +299,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Write a ROLLBACK record
-    pub fn write_rollback(&self, txn_id: TransactionId) -> WalResult<Lsn> {
+    pub fn write_rollback(&self, txn_id: TransactionId) -> WalResult<LogSequenceNumber> {
         let mut state = self.state.write();
 
         // Check if transaction exists
@@ -331,7 +326,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Write a CHECKPOINT record
-    pub fn write_checkpoint(&self) -> WalResult<Lsn> {
+    pub fn write_checkpoint(&self) -> WalResult<LogSequenceNumber> {
         let mut state = self.state.write();
 
         // Create record with current active transactions
@@ -373,7 +368,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         }
 
         // Update state
-        state.current_lsn += 1;
+        state.current_lsn = LogSequenceNumber::from(state.current_lsn.as_u64() + 1);
         state.current_offset += bytes.len() as u64;
 
         Ok(())
@@ -408,7 +403,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Get current LSN
-    pub fn current_lsn(&self) -> Lsn {
+    pub fn current_lsn(&self) -> LogSequenceNumber {
         self.state.read().current_lsn
     }
 
@@ -465,7 +460,7 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        assert_eq!(writer.current_lsn(), 1);
+        assert_eq!(writer.current_lsn(), LogSequenceNumber::from(1));
         assert_eq!(writer.file_size(), 0);
     }
 
@@ -475,10 +470,10 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        let lsn = writer.write_begin(1).unwrap();
-        assert_eq!(lsn, 1);
-        assert_eq!(writer.current_lsn(), 2);
-        assert_eq!(writer.active_transactions(), vec![1]);
+        let lsn = writer.write_begin(TransactionId::from(1)).unwrap();
+        assert_eq!(lsn, LogSequenceNumber::from(1));
+        assert_eq!(writer.current_lsn(), LogSequenceNumber::from(2));
+        assert_eq!(writer.active_transactions(), vec![TransactionId::from(1)]);
     }
 
     #[test]
@@ -487,10 +482,10 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         let lsn = writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "test_table".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
@@ -498,8 +493,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(lsn, 2);
-        assert_eq!(writer.current_lsn(), 3);
+        assert_eq!(lsn, LogSequenceNumber::from(2));
+        assert_eq!(writer.current_lsn(), LogSequenceNumber::from(3));
     }
 
     #[test]
@@ -508,11 +503,11 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        writer.write_begin(1).unwrap();
-        let lsn = writer.write_commit(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
+        let lsn = writer.write_commit(TransactionId::from(1)).unwrap();
 
-        assert_eq!(lsn, 2);
-        assert_eq!(writer.current_lsn(), 3);
+        assert_eq!(lsn, LogSequenceNumber::from(2));
+        assert_eq!(writer.current_lsn(), LogSequenceNumber::from(3));
         assert!(writer.active_transactions().is_empty());
     }
 
@@ -522,11 +517,11 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        writer.write_begin(1).unwrap();
-        let lsn = writer.write_rollback(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
+        let lsn = writer.write_rollback(TransactionId::from(1)).unwrap();
 
-        assert_eq!(lsn, 2);
-        assert_eq!(writer.current_lsn(), 3);
+        assert_eq!(lsn, LogSequenceNumber::from(2));
+        assert_eq!(writer.current_lsn(), LogSequenceNumber::from(3));
         assert!(writer.active_transactions().is_empty());
     }
 
@@ -536,16 +531,16 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        writer.write_begin(1).unwrap();
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
 
         let lsn = writer.write_checkpoint().unwrap();
-        assert_eq!(lsn, 3);
+        assert_eq!(lsn, LogSequenceNumber::from(3));
 
         let active = writer.active_transactions();
         assert_eq!(active.len(), 2);
-        assert!(active.contains(&1));
-        assert!(active.contains(&2));
+        assert!(active.contains(&TransactionId::from(1)));
+        assert!(active.contains(&TransactionId::from(2)));
     }
 
     #[test]
@@ -554,8 +549,8 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        let result = writer.write_commit(999);
-        assert!(matches!(result, Err(WalError::TransactionNotFound(999))));
+        let result = writer.write_commit(TransactionId::from(999));
+        assert!(matches!(result, Err(WalError::TransactionNotFound(txn)) if txn == TransactionId::from(999)));
     }
 
     #[test]
@@ -564,9 +559,9 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-        writer.write_begin(1).unwrap();
-        let result = writer.write_begin(1);
-        assert!(matches!(result, Err(WalError::TransactionAlreadyExists(1))));
+        writer.write_begin(TransactionId::from(1)).unwrap();
+        let result = writer.write_begin(TransactionId::from(1));
+        assert!(matches!(result, Err(WalError::TransactionAlreadyExists(txn)) if txn == TransactionId::from(1)));
     }
 }
 

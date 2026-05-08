@@ -556,9 +556,9 @@ fn test_concurrent_new_page_allocation_race_condition() {
     // Verify page IDs are in the expected range (starting from 2, after header and superblock)
     let min_page_id = *all_pages.iter().min().unwrap();
     let max_page_id = *all_pages.iter().max().unwrap();
-    assert!(min_page_id >= 2, "Page IDs should start at 2 or higher");
+    assert!(min_page_id.as_u64() >= 2, "Page IDs should start at 2 or higher");
     assert_eq!(
-        max_page_id - min_page_id + 1,
+        max_page_id.as_u64() - min_page_id.as_u64() + 1,
         all_pages.len() as u64,
         "Page IDs should be consecutive (no gaps)"
     );

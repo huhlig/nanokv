@@ -95,7 +95,7 @@ pub struct CacheConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            capacity: 1000, // Default to 1000 pages
+            capacity: 1000,   // Default to 1000 pages
             write_back: true, // Default to write-back for better performance
         }
     }
@@ -170,17 +170,17 @@ impl PageCache {
     /// Updates LRU ordering on hit.
     pub fn get(&self, page_id: PageId) -> Option<Page> {
         let mut inner = self.inner.write();
-        
+
         if inner.entries.contains_key(&page_id) {
             // Cache hit
             inner.stats.hits += 1;
-            
+
             // Clone the page before moving to front
             let page = inner.entries.get(&page_id).unwrap().page.clone();
-            
+
             // Move to front of LRU list
             inner.move_to_front(page_id);
-            
+
             Some(page)
         } else {
             // Cache miss
@@ -196,7 +196,7 @@ impl PageCache {
     pub fn put(&self, page: Page, dirty: bool) -> Option<Page> {
         let mut inner = self.inner.write();
         let page_id = page.page_id();
-        
+
         // Check if page already exists
         if inner.entries.contains_key(&page_id) {
             // Update existing entry
@@ -207,14 +207,14 @@ impl PageCache {
             inner.move_to_front(page_id);
             return None;
         }
-        
+
         // Evict if at capacity
         let evicted = if inner.entries.len() >= inner.capacity {
             inner.evict_lru()
         } else {
             None
         };
-        
+
         // Add new entry
         let entry = CacheEntry {
             page,
@@ -222,27 +222,27 @@ impl PageCache {
             prev: None,
             next: inner.lru_head,
         };
-        
+
         inner.entries.insert(page_id, entry);
-        
+
         // Update LRU list
         if let Some(old_head) = inner.lru_head {
             if let Some(head_entry) = inner.entries.get_mut(&old_head) {
                 head_entry.prev = Some(page_id);
             }
         }
-        
+
         inner.lru_head = Some(page_id);
-        
+
         if inner.lru_tail.is_none() {
             inner.lru_tail = Some(page_id);
         }
-        
+
         inner.stats.current_size = inner.entries.len();
         if dirty {
             inner.stats.dirty_pages += 1;
         }
-        
+
         evicted
     }
 
@@ -257,7 +257,7 @@ impl PageCache {
     /// Returns true if the page was found and marked dirty, false otherwise.
     pub fn mark_dirty(&self, page_id: PageId) -> bool {
         let mut inner = self.inner.write();
-        
+
         if let Some(entry) = inner.entries.get_mut(&page_id) {
             if !entry.dirty {
                 entry.dirty = true;
@@ -274,7 +274,7 @@ impl PageCache {
     /// Returns true if the page was found and marked clean, false otherwise.
     pub fn mark_clean(&self, page_id: PageId) -> bool {
         let mut inner = self.inner.write();
-        
+
         if let Some(entry) = inner.entries.get_mut(&page_id) {
             if entry.dirty {
                 entry.dirty = false;
@@ -319,20 +319,20 @@ impl PageCache {
     /// Returns all dirty pages that were in the cache.
     pub fn clear(&self) -> Vec<(PageId, Page)> {
         let mut inner = self.inner.write();
-        
+
         let dirty_pages: Vec<(PageId, Page)> = inner
             .entries
             .iter()
             .filter(|(_, entry)| entry.dirty)
             .map(|(id, entry)| (*id, entry.page.clone()))
             .collect();
-        
+
         inner.entries.clear();
         inner.lru_head = None;
         inner.lru_tail = None;
         inner.stats.current_size = 0;
         inner.stats.dirty_pages = 0;
-        
+
         dirty_pages
     }
 
@@ -372,46 +372,46 @@ impl CacheInner {
         if self.lru_head == Some(page_id) {
             return;
         }
-        
+
         // Remove from current position
         if let Some(entry) = self.entries.get(&page_id) {
             let prev = entry.prev;
             let next = entry.next;
-            
+
             // Update previous node's next pointer
             if let Some(prev_id) = prev {
                 if let Some(prev_entry) = self.entries.get_mut(&prev_id) {
                     prev_entry.next = next;
                 }
             }
-            
+
             // Update next node's prev pointer
             if let Some(next_id) = next {
                 if let Some(next_entry) = self.entries.get_mut(&next_id) {
                     next_entry.prev = prev;
                 }
             }
-            
+
             // Update tail if this was the tail
             if self.lru_tail == Some(page_id) {
                 self.lru_tail = prev;
             }
         }
-        
+
         // Add to front
         if let Some(entry) = self.entries.get_mut(&page_id) {
             entry.prev = None;
             entry.next = self.lru_head;
         }
-        
+
         if let Some(old_head) = self.lru_head {
             if let Some(head_entry) = self.entries.get_mut(&old_head) {
                 head_entry.prev = Some(page_id);
             }
         }
-        
+
         self.lru_head = Some(page_id);
-        
+
         if self.lru_tail.is_none() {
             self.lru_tail = Some(page_id);
         }
@@ -431,7 +431,7 @@ impl CacheInner {
     /// Returns the page if it was dirty.
     fn remove_entry(&mut self, page_id: PageId) -> Option<Page> {
         let entry = self.entries.remove(&page_id)?;
-        
+
         // Update LRU list
         if let Some(prev_id) = entry.prev {
             if let Some(prev_entry) = self.entries.get_mut(&prev_id) {
@@ -441,7 +441,7 @@ impl CacheInner {
             // This was the head
             self.lru_head = entry.next;
         }
-        
+
         if let Some(next_id) = entry.next {
             if let Some(next_entry) = self.entries.get_mut(&next_id) {
                 next_entry.prev = entry.prev;
@@ -450,9 +450,9 @@ impl CacheInner {
             // This was the tail
             self.lru_tail = entry.prev;
         }
-        
+
         self.stats.current_size = self.entries.len();
-        
+
         if entry.dirty {
             self.stats.dirty_pages = self.stats.dirty_pages.saturating_sub(1);
             Some(entry.page)
@@ -465,11 +465,12 @@ impl CacheInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pager::{PageType, PageSize};
+    use crate::pager::{PageSize, PageType};
 
     fn create_test_page(id: PageId) -> Page {
         let mut page = Page::new(id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
-        page.data_mut().extend_from_slice(&format!("page {}", id).as_bytes());
+        page.data_mut()
+            .extend_from_slice(&format!("page {}", id).as_bytes());
         page
     }
 
@@ -479,21 +480,21 @@ mod tests {
         let cache = PageCache::new(config);
 
         // Put pages
-        let page1 = create_test_page(1);
-        let page2 = create_test_page(2);
-        
+        let page1 = create_test_page(PageId::from(1));
+        let page2 = create_test_page(PageId::from(2));
+
         cache.put(page1.clone(), false);
         cache.put(page2.clone(), false);
 
         // Get pages
-        assert!(cache.get(1).is_some());
-        assert!(cache.get(2).is_some());
-        assert!(cache.get(3).is_none());
+        assert!(cache.get(PageId::from(1)).is_some());
+        assert!(cache.get(PageId::from(2)).is_some());
+        assert!(cache.get(PageId::from(3)).is_none());
 
         // Check contains
-        assert!(cache.contains(1));
-        assert!(cache.contains(2));
-        assert!(!cache.contains(3));
+        assert!(cache.contains(PageId::from(1)));
+        assert!(cache.contains(PageId::from(2)));
+        assert!(!cache.contains(PageId::from(3)));
     }
 
     #[test]
@@ -502,20 +503,20 @@ mod tests {
         let cache = PageCache::new(config);
 
         // Fill cache
-        cache.put(create_test_page(1), false);
-        cache.put(create_test_page(2), false);
-        cache.put(create_test_page(3), false);
+        cache.put(create_test_page(PageId::from(1)), false);
+        cache.put(create_test_page(PageId::from(2)), false);
+        cache.put(create_test_page(PageId::from(3)), false);
 
         // Access page 1 (make it most recently used)
-        cache.get(1);
+        cache.get(PageId::from(1));
 
         // Add page 4 (should evict page 2, the LRU)
-        cache.put(create_test_page(4), false);
+        cache.put(create_test_page(PageId::from(4)), false);
 
-        assert!(cache.contains(1));
-        assert!(!cache.contains(2)); // Evicted
-        assert!(cache.contains(3));
-        assert!(cache.contains(4));
+        assert!(cache.contains(PageId::from(1)));
+        assert!(!cache.contains(PageId::from(2))); // Evicted
+        assert!(cache.contains(PageId::from(3)));
+        assert!(cache.contains(PageId::from(4)));
     }
 
     #[test]
@@ -524,23 +525,23 @@ mod tests {
         let cache = PageCache::new(config);
 
         // Put clean page
-        cache.put(create_test_page(1), false);
-        assert!(!cache.is_dirty(1));
+        cache.put(create_test_page(PageId::from(1)), false);
+        assert!(!cache.is_dirty(PageId::from(1)));
 
         // Mark as dirty
-        cache.mark_dirty(1);
-        assert!(cache.is_dirty(1));
+        cache.mark_dirty(PageId::from(1));
+        assert!(cache.is_dirty(PageId::from(1)));
 
         // Put dirty page
-        cache.put(create_test_page(2), true);
-        assert!(cache.is_dirty(2));
+        cache.put(create_test_page(PageId::from(2)), true);
+        assert!(cache.is_dirty(PageId::from(2)));
 
         // Mark as clean
-        cache.mark_clean(2);
-        assert!(!cache.is_dirty(2));
+        cache.mark_clean(PageId::from(2));
+        assert!(!cache.is_dirty(PageId::from(2)));
 
         // Get dirty pages
-        cache.put(create_test_page(3), true);
+        cache.put(create_test_page(PageId::from(3)), true);
         let dirty = cache.get_dirty_pages();
         assert_eq!(dirty.len(), 2); // Pages 1 and 3
     }
@@ -550,16 +551,16 @@ mod tests {
         let config = CacheConfig::new().with_capacity(3);
         let cache = PageCache::new(config);
 
-        cache.put(create_test_page(1), false);
-        cache.put(create_test_page(2), false);
+        cache.put(create_test_page(PageId::from(1)), false);
+        cache.put(create_test_page(PageId::from(2)), false);
 
         // Cache hits
-        cache.get(1);
-        cache.get(2);
+        cache.get(PageId::from(1));
+        cache.get(PageId::from(2));
 
         // Cache misses
-        cache.get(3);
-        cache.get(4);
+        cache.get(PageId::from(3));
+        cache.get(PageId::from(4));
 
         let stats = cache.stats();
         assert_eq!(stats.hits, 2);
@@ -574,13 +575,13 @@ mod tests {
         let cache = PageCache::new(config);
 
         // Fill cache with dirty pages
-        cache.put(create_test_page(1), true);
-        cache.put(create_test_page(2), true);
+        cache.put(create_test_page(PageId::from(1)), true);
+        cache.put(create_test_page(PageId::from(2)), true);
 
         // Add another page (should evict page 1)
-        let evicted = cache.put(create_test_page(3), false);
+        let evicted = cache.put(create_test_page(PageId::from(3)), false);
         assert!(evicted.is_some());
-        assert_eq!(evicted.unwrap().page_id(), 1);
+        assert_eq!(evicted.unwrap().page_id(), PageId::from(1));
 
         let stats = cache.stats();
         assert_eq!(stats.evictions, 1);
@@ -591,9 +592,9 @@ mod tests {
         let config = CacheConfig::new().with_capacity(5);
         let cache = PageCache::new(config);
 
-        cache.put(create_test_page(1), true);
-        cache.put(create_test_page(2), false);
-        cache.put(create_test_page(3), true);
+        cache.put(create_test_page(PageId::from(1)), true);
+        cache.put(create_test_page(PageId::from(2)), false);
+        cache.put(create_test_page(PageId::from(3)), true);
 
         let dirty = cache.clear();
         assert_eq!(dirty.len(), 2); // Pages 1 and 3
@@ -605,16 +606,16 @@ mod tests {
         let config = CacheConfig::new().with_capacity(5);
         let cache = PageCache::new(config);
 
-        cache.put(create_test_page(1), true);
-        cache.put(create_test_page(2), false);
+        cache.put(create_test_page(PageId::from(1)), true);
+        cache.put(create_test_page(PageId::from(2)), false);
 
         // Remove dirty page
-        let removed = cache.remove(1);
+        let removed = cache.remove(PageId::from(1));
         assert!(removed.is_some());
-        assert_eq!(removed.unwrap().page_id(), 1);
+        assert_eq!(removed.unwrap().page_id(), PageId::from(1));
 
         // Remove clean page
-        let removed = cache.remove(2);
+        let removed = cache.remove(PageId::from(2));
         assert!(removed.is_none());
 
         assert_eq!(cache.size(), 0);
@@ -626,12 +627,12 @@ mod tests {
         let cache = PageCache::new(config);
 
         // Put initial page
-        cache.put(create_test_page(1), false);
-        assert!(!cache.is_dirty(1));
+        cache.put(create_test_page(PageId::from(1)), false);
+        assert!(!cache.is_dirty(PageId::from(1)));
 
         // Update with dirty flag
-        cache.put(create_test_page(1), true);
-        assert!(cache.is_dirty(1));
+        cache.put(create_test_page(PageId::from(1)), true);
+        assert!(cache.is_dirty(PageId::from(1)));
         assert_eq!(cache.size(), 1); // Should not increase size
     }
 }

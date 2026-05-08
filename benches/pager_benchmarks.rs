@@ -17,9 +17,7 @@
 //! Benchmarks for Pager implementation
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nanokv::pager::{
-    CompressionType, EncryptionType, Page, PageSize, PageType, Pager, PagerConfig,
-};
+use nanokv::pager::{CompressionType, EncryptionType, Page, PageId, PageSize, PageType, Pager, PagerConfig};
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
 use std::hint::black_box;
 
@@ -234,7 +232,7 @@ fn bench_page_serialization(c: &mut Criterion) {
             BenchmarkId::new("serialize", format!("{:?}", page_size)),
             page_size,
             |b, &page_size| {
-                let mut page = Page::new(1, PageType::BTreeLeaf, page_size.data_size());
+                let mut page = Page::new(PageId::from(1), PageType::BTreeLeaf, page_size.data_size());
                 page.data_mut().resize(data_size, 0xAB);
 
                 b.iter(|| {
@@ -248,7 +246,7 @@ fn bench_page_serialization(c: &mut Criterion) {
             BenchmarkId::new("deserialize", format!("{:?}", page_size)),
             page_size,
             |b, &page_size| {
-                let mut page = Page::new(1, PageType::BTreeLeaf, page_size.data_size());
+                let mut page = Page::new(PageId::from(1), PageType::BTreeLeaf, page_size.data_size());
                 page.data_mut().resize(data_size, 0xAB);
                 let bytes = page.to_bytes(page_size.to_u32() as usize, None).unwrap();
 
@@ -263,7 +261,7 @@ fn bench_page_serialization(c: &mut Criterion) {
             BenchmarkId::new("checksum_calculation", format!("{:?}", page_size)),
             page_size,
             |b, &page_size| {
-                let mut page = Page::new(1, PageType::BTreeLeaf, page_size.data_size());
+                let mut page = Page::new(PageId::from(1), PageType::BTreeLeaf, page_size.data_size());
                 page.data_mut().resize(data_size, 0xAB);
 
                 b.iter(|| {

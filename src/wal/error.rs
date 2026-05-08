@@ -16,7 +16,9 @@
 
 //! WAL error types
 
+use crate::txn::TransactionId;
 use crate::vfs::FileSystemError;
+use crate::wal::LogSequenceNumber;
 use thiserror::Error;
 
 /// Result type for WAL operations
@@ -35,7 +37,7 @@ pub enum WalError {
 
     /// Checksum mismatch
     #[error("Checksum mismatch at offset {0}")]
-    ChecksumMismatch(u64),
+    ChecksumMismatch(LogSequenceNumber),
 
     /// Corrupted WAL file
     #[error("Corrupted WAL file: {0}")]
@@ -43,11 +45,11 @@ pub enum WalError {
 
     /// Transaction not found
     #[error("Transaction not found: {0}")]
-    TransactionNotFound(u64),
+    TransactionNotFound(TransactionId),
 
     /// Transaction already exists
     #[error("Transaction already exists: {0}")]
-    TransactionAlreadyExists(u64),
+    TransactionAlreadyExists(TransactionId),
 
     /// Invalid transaction state
     #[error("Invalid transaction state: {0}")]

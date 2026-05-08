@@ -17,8 +17,8 @@
 //! Pager implementation - Main page management logic
 
 use crate::pager::{
-    CacheConfig, FileHeader, FreeList, FreeListPage, Page, PageCache,
-    PageId, PageSize, PageType, PagerConfig, PagerError, PagerResult, PinTable, Superblock,
+    CacheConfig, FileHeader, FreeList, FreeListPage, Page, PageCache, PageId, PageSize, PageType,
+    PagerConfig, PagerError, PagerResult, PinTable, Superblock,
 };
 use crate::vfs::{File, FileSystem};
 use parking_lot::RwLock;
@@ -73,11 +73,17 @@ impl<FS: FileSystem> Pager<FS> {
         let superblock = Superblock::new();
 
         // Write superblock to page 1
-        let mut superblock_page = Page::new(1, PageType::Superblock, config.page_size.data_size());
-        superblock_page.data_mut().extend_from_slice(&superblock.to_bytes());
+        let mut superblock_page = Page::new(
+            PageId::from(1),
+            PageType::Superblock,
+            config.page_size.data_size(),
+        );
+        superblock_page
+            .data_mut()
+            .extend_from_slice(&superblock.to_bytes());
         let page1_data = superblock_page.to_bytes(
             config.page_size.to_u32() as usize,
-            config.encryption_key.as_ref()
+            config.encryption_key.as_ref(),
         )?;
         file.write_to_offset(config.page_size.to_u32() as u64, &page1_data)?;
 
@@ -134,7 +140,7 @@ impl<FS: FileSystem> Pager<FS> {
             encryption: header.encryption,
             encryption_key: None, // Will need to be provided separately for encrypted databases
             enable_checksums: true,
-            cache_capacity: 1000, // Default cache capacity
+            cache_capacity: 1000,   // Default cache capacity
             cache_write_back: true, // Default to write-back
         };
 
@@ -145,12 +151,12 @@ impl<FS: FileSystem> Pager<FS> {
             superblock.free_pages,
         );
 
-        if superblock.free_pages > 0 && superblock.first_free_list_page != 0 {
+        if superblock.free_pages > 0 && superblock.first_free_list_page != PageId::from(0) {
             let mut all_free_pages = Vec::new();
             let mut current_page_id = superblock.first_free_list_page;
 
-            while current_page_id != 0 {
-                let offset = current_page_id * page_size as u64;
+            while current_page_id != PageId::from(0) {
+                let offset = current_page_id.as_u64() * page_size as u64;
                 let mut free_list_page_data = vec![0u8; page_size];
                 file.read_at_offset(offset, &mut free_list_page_data)?;
 
@@ -211,7 +217,7 @@ impl<FS: FileSystem> Pager<FS> {
         let page_id = {
             let mut free_list = self.free_list.write();
             let mut superblock = self.superblock.write();
-            
+
             if let Some(page_id) = free_list.pop_page() {
                 superblock.mark_page_allocated();
                 page_id
@@ -249,17 +255,24 @@ impl<FS: FileSystem> Pager<FS> {
 
         {
             let mut file = self.file.write();
-            file.write_to_offset(page_id * page_size as u64, &page_bytes)?;
+            file.write_to_offset(page_id.as_u64() * page_size as u64, &page_bytes)?;
             let header_bytes = header_data.to_bytes();
             let mut page0_data = vec![0u8; page_size];
             page0_data[0..FileHeader::SIZE].copy_from_slice(&header_bytes);
             file.write_to_offset(0, &page0_data)?;
 
-            let mut superblock_page = Page::new(1, PageType::Superblock, self.config.page_size.data_size());
+            let mut superblock_page = Page::new(
+                PageId::from(1),
+                PageType::Superblock,
+                self.config.page_size.data_size(),
+            );
             superblock_page.header.compression = self.config.compression;
             superblock_page.header.encryption = self.config.encryption;
-            superblock_page.data_mut().extend_from_slice(&superblock_data.to_bytes());
-            let superblock_bytes = superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+            superblock_page
+                .data_mut()
+                .extend_from_slice(&superblock_data.to_bytes());
+            let superblock_bytes =
+                superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(page_size as u64, &superblock_bytes)?;
         }
 
@@ -268,7 +281,7 @@ impl<FS: FileSystem> Pager<FS> {
 
     /// Free a page (add it to the free list)
     pub fn free_page(&self, page_id: PageId) -> PagerResult<()> {
-        if page_id == 0 || page_id == 1 {
+        if page_id == PageId::from(0) || page_id == PageId::from(1) {
             return Err(PagerError::InvalidPageId(page_id));
         }
 
@@ -279,7 +292,7 @@ impl<FS: FileSystem> Pager<FS> {
         }
 
         let page_size = self.config.page_size.to_u32() as usize;
-        let offset = page_id * page_size as u64;
+        let offset = page_id.as_u64() * page_size as u64;
 
         {
             let mut file = self.file.write();
@@ -294,10 +307,12 @@ impl<FS: FileSystem> Pager<FS> {
                 return Err(PagerError::PageAlreadyFree(page_id));
             }
 
-            let mut free_page = Page::new(page_id, PageType::Free, self.config.page_size.data_size());
+            let mut free_page =
+                Page::new(page_id, PageType::Free, self.config.page_size.data_size());
             free_page.header.compression = self.config.compression;
             free_page.header.encryption = self.config.encryption;
-            let free_page_bytes = free_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+            let free_page_bytes =
+                free_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(offset, &free_page_bytes)?;
         }
 
@@ -336,11 +351,18 @@ impl<FS: FileSystem> Pager<FS> {
             page0_data[0..FileHeader::SIZE].copy_from_slice(&header_bytes);
             file.write_to_offset(0, &page0_data)?;
 
-            let mut superblock_page = Page::new(1, PageType::Superblock, self.config.page_size.data_size());
+            let mut superblock_page = Page::new(
+                PageId::from(1),
+                PageType::Superblock,
+                self.config.page_size.data_size(),
+            );
             superblock_page.header.compression = self.config.compression;
             superblock_page.header.encryption = self.config.encryption;
-            superblock_page.data_mut().extend_from_slice(&superblock_data.to_bytes());
-            let superblock_bytes = superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+            superblock_page
+                .data_mut()
+                .extend_from_slice(&superblock_data.to_bytes());
+            let superblock_bytes =
+                superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(page_size as u64, &superblock_bytes)?;
         }
 
@@ -349,7 +371,7 @@ impl<FS: FileSystem> Pager<FS> {
 
     /// Read a page from disk (with caching)
     pub fn read_page(&self, page_id: PageId) -> PagerResult<Page> {
-        if page_id >= self.total_pages() {
+        if page_id.as_u64() >= self.total_pages() {
             return Err(PagerError::PageNotFound(page_id));
         }
 
@@ -366,14 +388,18 @@ impl<FS: FileSystem> Pager<FS> {
 
         // Cache miss - read from disk
         let page_size = self.config.page_size.to_u32() as usize;
-        let offset = page_id * page_size as u64;
+        let offset = page_id.as_u64() * page_size as u64;
 
         let result = (|| {
             let mut buffer = vec![0u8; page_size];
             let mut file = self.file.write();
             file.read_at_offset(offset, &mut buffer)?;
 
-            let page = Page::from_bytes(&buffer, self.config.enable_checksums, self.config.encryption_key.as_ref())?;
+            let page = Page::from_bytes(
+                &buffer,
+                self.config.enable_checksums,
+                self.config.encryption_key.as_ref(),
+            )?;
 
             // Add to cache
             if let Some(cache) = &self.cache {
@@ -395,12 +421,14 @@ impl<FS: FileSystem> Pager<FS> {
     /// Write a page to disk (with caching)
     pub fn write_page(&self, page: &Page) -> PagerResult<()> {
         if let Some(cache) = &self.cache {
-            // If write-back mode, just update cache
+            // Keep the cache updated, but also persist the page immediately so
+            // reopened pagers observe the latest on-disk bytes.
             if self.config.cache_write_back {
-                // If evicted page is dirty, write it to disk
                 if let Some(evicted_page) = cache.put(page.clone(), true) {
                     self.write_page_to_disk(&evicted_page)?;
                 }
+                self.write_page_to_disk(page)?;
+                cache.mark_clean(page.page_id());
                 return Ok(());
             } else {
                 // Write-through mode: write to disk and update cache
@@ -417,7 +445,7 @@ impl<FS: FileSystem> Pager<FS> {
     /// Write a page directly to disk (bypassing cache)
     fn write_page_to_disk(&self, page: &Page) -> PagerResult<()> {
         let page_size = self.config.page_size.to_u32() as usize;
-        let offset = page.page_id() * page_size as u64;
+        let offset = page.page_id().as_u64() * page_size as u64;
 
         let buffer = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
         let mut file = self.file.write();
@@ -459,7 +487,7 @@ impl<FS: FileSystem> Pager<FS> {
     pub fn sync(&self) -> PagerResult<()> {
         // Flush cache first
         self.flush_cache()?;
-        
+
         let mut file = self.file.write();
         file.sync_all()?;
         Ok(())
@@ -472,11 +500,20 @@ impl<FS: FileSystem> Pager<FS> {
     }
 
     /// Write a free list page
-    fn write_free_list_page(&self, page_id: PageId, free_list_page: &FreeListPage) -> PagerResult<()> {
-        let mut page = Page::new(page_id, PageType::FreeList, self.config.page_size.data_size());
+    fn write_free_list_page(
+        &self,
+        page_id: PageId,
+        free_list_page: &FreeListPage,
+    ) -> PagerResult<()> {
+        let mut page = Page::new(
+            page_id,
+            PageType::FreeList,
+            self.config.page_size.data_size(),
+        );
         page.header.compression = self.config.compression;
         page.header.encryption = self.config.encryption;
-        page.data_mut().extend_from_slice(&free_list_page.to_bytes());
+        page.data_mut()
+            .extend_from_slice(&free_list_page.to_bytes());
         self.write_page(&page)
     }
 
@@ -493,7 +530,11 @@ impl<FS: FileSystem> Pager<FS> {
 
     /// Write the superblock
     fn write_superblock(&self, superblock: &Superblock) -> PagerResult<()> {
-        let mut page = Page::new(1, PageType::Superblock, self.config.page_size.data_size());
+        let mut page = Page::new(
+            PageId::from(1),
+            PageType::Superblock,
+            self.config.page_size.data_size(),
+        );
         page.header.compression = self.config.compression;
         page.header.encryption = self.config.encryption;
         page.data_mut().extend_from_slice(&superblock.to_bytes());
@@ -539,7 +580,7 @@ mod tests {
 
         // Allocate a new page
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        assert_eq!(page_id, 2);
+        assert_eq!(page_id, PageId::from(2));
         assert_eq!(pager.total_pages(), 3);
     }
 
@@ -571,7 +612,7 @@ mod tests {
 
         // Allocate a page
         let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-        assert_eq!(page_id, 2);
+        assert_eq!(page_id, PageId::from(2));
         assert_eq!(pager.free_pages(), 0);
 
         // Free the page

@@ -20,6 +20,7 @@
 //! concurrent operations without data races, panics, or corruption.
 
 use nanokv::pager::CompressionType;
+use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 use std::sync::Arc;
@@ -44,7 +45,7 @@ fn test_concurrent_wal_writers() {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
             for i in 0..writes_per_thread {
-                let txn_id = (thread_id * writes_per_thread + i) as u64;
+                let txn_id = TransactionId::from((thread_id * writes_per_thread + i) as u64);
 
                 // Begin transaction
                 writer_clone.write_begin(txn_id).unwrap();
@@ -95,17 +96,18 @@ fn test_concurrent_reader_writer() {
 
     // Write some initial data
     for i in 0..10 {
-        writer.write_begin(i).unwrap();
+        let txn_id = TransactionId::from(i);
+        writer.write_begin(txn_id).unwrap();
         writer
             .write_operation(
-                i,
+                txn_id,
                 "data".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
             )
             .unwrap();
-        writer.write_commit(i).unwrap();
+        writer.write_commit(txn_id).unwrap();
     }
     writer.flush().unwrap();
 
@@ -113,17 +115,18 @@ fn test_concurrent_reader_writer() {
     let writer_clone = Arc::clone(&writer);
     let writer_handle = thread::spawn(move || {
         for i in 10..20 {
-            writer_clone.write_begin(i).unwrap();
+            let txn_id = TransactionId::from(i);
+            writer_clone.write_begin(txn_id).unwrap();
             writer_clone
                 .write_operation(
-                    i,
+                    txn_id,
                     "data".to_string(),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
                 )
                 .unwrap();
-            writer_clone.write_commit(i).unwrap();
+            writer_clone.write_commit(txn_id).unwrap();
             thread::sleep(Duration::from_millis(1));
         }
         writer_clone.flush().unwrap();
@@ -166,7 +169,7 @@ fn test_concurrent_checkpoints() {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
             for i in 0..10 {
-                let txn_id = (thread_id * 100 + i) as u64;
+                let txn_id = TransactionId::from((thread_id * 100 + i) as u64);
 
                 writer_clone.write_begin(txn_id).unwrap();
                 writer_clone
@@ -218,7 +221,7 @@ fn test_concurrent_transaction_operations() {
     for thread_id in 0..num_threads {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
-            let txn_id = thread_id as u64;
+            let txn_id = TransactionId::from(thread_id as u64);
 
             // Begin transaction
             writer_clone.write_begin(txn_id).unwrap();
@@ -230,7 +233,7 @@ fn test_concurrent_transaction_operations() {
                         txn_id,
                         "data".to_string(),
                         WriteOpType::Put,
-                        format!("key_{}_{}",thread_id, i).into_bytes(),
+                        format!("key_{}_{}", thread_id, i).into_bytes(),
                         format!("value_{}_{}", thread_id, i).into_bytes(),
                     )
                     .unwrap();
@@ -270,7 +273,7 @@ fn test_concurrent_rollbacks() {
     for thread_id in 0..num_threads {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
-            let txn_id = thread_id as u64;
+            let txn_id = TransactionId::from(thread_id as u64);
 
             writer_clone.write_begin(txn_id).unwrap();
             writer_clone
@@ -283,7 +286,7 @@ fn test_concurrent_rollbacks() {
                 )
                 .unwrap();
 
-            // Half commit, half rollback
+            // Half-commit, half-rollback
             if thread_id % 2 == 0 {
                 writer_clone.write_commit(txn_id).unwrap();
             } else {
@@ -322,7 +325,7 @@ fn test_concurrent_flushes() {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
             for i in 0..10 {
-                let txn_id = (thread_id * 100 + i) as u64;
+                let txn_id = TransactionId::from((thread_id * 100 + i) as u64);
 
                 writer_clone.write_begin(txn_id).unwrap();
                 writer_clone
@@ -375,7 +378,7 @@ fn test_concurrent_lsn_generation() {
         let handle = thread::spawn(move || {
             let mut lsns = vec![];
             for i in 0..writes_per_thread {
-                let txn_id = (thread_id * writes_per_thread + i) as u64;
+                let txn_id = TransactionId::from((thread_id * writes_per_thread + i) as u64);
                 let lsn = writer_clone.write_begin(txn_id).unwrap();
                 lsns.push(lsn);
                 writer_clone.write_commit(txn_id).unwrap();
@@ -415,7 +418,7 @@ fn test_concurrent_active_transaction_tracking() {
     for thread_id in 0..num_threads {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
-            let txn_id = thread_id as u64;
+            let txn_id = TransactionId::from(thread_id as u64);
 
             // Begin transaction
             writer_clone.write_begin(txn_id).unwrap();
@@ -467,7 +470,7 @@ fn test_concurrent_writes_with_compression() {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
             for i in 0..10 {
-                let txn_id = (thread_id * 100 + i) as u64;
+                let txn_id = TransactionId::from((thread_id * 100 + i) as u64);
                 let compressible_data = format!("Repeated data {} ", thread_id).repeat(100);
 
                 writer_clone.write_begin(txn_id).unwrap();
@@ -515,7 +518,7 @@ fn test_high_contention_wal_writes() {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
             for i in 0..writes_per_thread {
-                let txn_id = (thread_id * writes_per_thread + i) as u64;
+                let txn_id = TransactionId::from((thread_id * writes_per_thread + i) as u64);
 
                 writer_clone.write_begin(txn_id).unwrap();
                 writer_clone
@@ -558,17 +561,18 @@ fn test_concurrent_truncate() {
 
     // Write some initial data
     for i in 0..10 {
-        writer.write_begin(i).unwrap();
+        let txn_id = TransactionId::from(i);
+        writer.write_begin(txn_id).unwrap();
         writer
             .write_operation(
-                i,
+                txn_id,
                 "data".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
             )
             .unwrap();
-        writer.write_commit(i).unwrap();
+        writer.write_commit(txn_id).unwrap();
     }
     writer.flush().unwrap();
 
@@ -583,17 +587,18 @@ fn test_concurrent_truncate() {
     let writer_clone = Arc::clone(&writer);
     let handle = thread::spawn(move || {
         for i in 20..30 {
-            writer_clone.write_begin(i).unwrap();
+            let txn_id = TransactionId::from(i);
+            writer_clone.write_begin(txn_id).unwrap();
             writer_clone
                 .write_operation(
-                    i,
+                    txn_id,
                     "data".to_string(),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
                 )
                 .unwrap();
-            writer_clone.write_commit(i).unwrap();
+            writer_clone.write_commit(txn_id).unwrap();
         }
         writer_clone.flush().unwrap();
     });
@@ -622,7 +627,7 @@ fn test_concurrent_recovery() {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
             for i in 0..writes_per_thread {
-                let txn_id = (thread_id * writes_per_thread + i) as u64;
+                let txn_id = TransactionId::from((thread_id * writes_per_thread + i) as u64);
 
                 writer_clone.write_begin(txn_id).unwrap();
                 writer_clone
@@ -691,7 +696,7 @@ fn test_concurrent_recovery() {
     // Verify all active transactions are present
     for thread_id in 0..num_threads {
         for i in (writes_per_thread / 2)..writes_per_thread {
-            let txn_id = (thread_id * writes_per_thread + i) as u64;
+            let txn_id = TransactionId::from((thread_id * writes_per_thread + i) as u64);
             assert!(
                 result.active_transactions.contains(&txn_id),
                 "Missing active transaction {} (thread {}, write {})",
@@ -719,7 +724,7 @@ fn test_concurrent_recovery_with_checkpoint() {
     for thread_id in 0..num_threads {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
-            let txn_id = thread_id as u64;
+            let txn_id = TransactionId::from(thread_id as u64);
             writer_clone.write_begin(txn_id).unwrap();
             writer_clone
                 .write_operation(
@@ -747,7 +752,7 @@ fn test_concurrent_recovery_with_checkpoint() {
     for thread_id in num_threads..(num_threads * 2) {
         let writer_clone = Arc::clone(&writer);
         let handle = thread::spawn(move || {
-            let txn_id = thread_id as u64;
+            let txn_id = TransactionId::from(thread_id as u64);
             writer_clone.write_begin(txn_id).unwrap();
             writer_clone
                 .write_operation(
@@ -784,7 +789,8 @@ fn test_concurrent_recovery_with_checkpoint() {
 
     // Verify active transactions are from phase 2
     for thread_id in num_threads..(num_threads * 2) {
-        assert!(result.active_transactions.contains(&(thread_id as u64)));
+        let txn_id = TransactionId::from(thread_id as u64);
+        assert!(result.active_transactions.contains(&txn_id));
     }
 }
 
@@ -799,10 +805,11 @@ fn test_concurrent_recovery_with_readers() {
     {
         let writer = WalWriter::create(&*fs, path, config).unwrap();
         for i in 0..20 {
-            writer.write_begin(i).unwrap();
+            let txn_id = TransactionId::from(i);
+            writer.write_begin(txn_id).unwrap();
             writer
                 .write_operation(
-                    i,
+                    txn_id,
                     "data".to_string(),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
@@ -810,7 +817,7 @@ fn test_concurrent_recovery_with_readers() {
                 )
                 .unwrap();
             if i % 2 == 0 {
-                writer.write_commit(i).unwrap();
+                writer.write_commit(txn_id).unwrap();
             }
             // Leave odd transactions uncommitted
         }
@@ -873,7 +880,7 @@ fn test_lsn_monotonicity_stress() {
         let handle = thread::spawn(move || {
             let mut lsns = vec![];
             for i in 0..writes_per_thread {
-                let txn_id = (thread_id * writes_per_thread + i) as u64;
+                let txn_id = TransactionId::from((thread_id * writes_per_thread + i) as u64);
                 let lsn = writer_clone.write_begin(txn_id).unwrap();
                 lsns.push(lsn);
                 writer_clone

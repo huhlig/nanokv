@@ -20,6 +20,7 @@
 //! with various compression and encryption configurations.
 
 use nanokv::pager::{CompressionType, EncryptionType, PageSize, Pager, PagerConfig};
+use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 
@@ -48,16 +49,16 @@ fn test_pager_and_wal_both_lz4_compression() {
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
     // Write transaction to WAL
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "users".to_string(),
         WriteOpType::Put,
         b"user:1".to_vec(),
         b"Alice".repeat(100), // Compressible data
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Verify recovery works
@@ -89,16 +90,16 @@ fn test_pager_and_wal_both_encrypted() {
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
     // Write encrypted transaction
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "secrets".to_string(),
         WriteOpType::Put,
         b"password".to_vec(),
         b"super-secret-value".to_vec(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Verify recovery with correct key
@@ -133,16 +134,16 @@ fn test_pager_and_wal_both_compressed_and_encrypted() {
 
     // Write compressed and encrypted data
     let compressible_data = b"Repeated data pattern ".repeat(500);
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"blob:1".to_vec(),
         compressible_data.clone(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Verify recovery with correct key
@@ -171,16 +172,16 @@ fn test_pager_and_wal_different_compression_algorithms() {
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
     // Write data to WAL
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"key1".to_vec(),
         b"value1".repeat(50),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Verify both work independently
@@ -215,22 +216,24 @@ fn test_recovery_of_encrypted_compressed_database() {
 
         // Write multiple transactions
         for i in 1..=5 {
-            wal.write_begin(i).unwrap();
+            let txn_id = TransactionId::from(i);
+            wal.write_begin(txn_id).unwrap();
             wal.write_operation(
-                i,
+                txn_id,
                 "data".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).as_bytes().to_vec(),
                 format!("value{}", i).repeat(100).as_bytes().to_vec(),
             )
             .unwrap();
-            wal.write_commit(i).unwrap();
+            wal.write_commit(txn_id).unwrap();
         }
 
         // Simulate crash - don't commit last transaction
-        wal.write_begin(6).unwrap();
+        let txn_id = TransactionId::from(6);
+        wal.write_begin(txn_id).unwrap();
         wal.write_operation(
-            6,
+            txn_id,
             "data".to_string(),
             WriteOpType::Put,
             b"key6".to_vec(),
@@ -244,7 +247,7 @@ fn test_recovery_of_encrypted_compressed_database() {
     let result = WalRecovery::recover_with_key(&fs, wal_path, Some(key)).unwrap();
     assert_eq!(result.committed_writes.len(), 5);
     assert_eq!(result.active_transactions.len(), 1);
-    assert!(result.active_transactions.contains(&6));
+    assert!(result.active_transactions.contains(&TransactionId::from(6)));
 
     // Verify data integrity
     for i in 1..=5 {
@@ -253,10 +256,7 @@ fn test_recovery_of_encrypted_compressed_database() {
             .iter()
             .find(|w| w.key == format!("key{}", i).as_bytes())
             .unwrap();
-        assert_eq!(
-            write.value,
-            format!("value{}", i).repeat(100).as_bytes()
-        );
+        assert_eq!(write.value, format!("value{}", i).repeat(100).as_bytes());
     }
 }
 
@@ -287,16 +287,16 @@ fn test_write_close_reopen_encrypted_compressed() {
         let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
         // Write data
-        wal.write_begin(1).unwrap();
+        wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-        wal.write_commit(1).unwrap();
+        wal.write_commit(TransactionId::from(1)).unwrap();
         wal.flush().unwrap();
     }
 
@@ -325,21 +325,21 @@ fn test_checkpoint_with_compression_and_encryption() {
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
     // Transaction before checkpoint
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"key1".to_vec(),
         b"value1".repeat(100),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
 
     // Active transaction during checkpoint
-    wal.write_begin(2).unwrap();
+    wal.write_begin(TransactionId::from(2)).unwrap();
     wal.write_operation(
-        2,
+        TransactionId::from(2),
         "data".to_string(),
         WriteOpType::Put,
         b"key2".to_vec(),
@@ -351,19 +351,19 @@ fn test_checkpoint_with_compression_and_encryption() {
     let checkpoint_lsn = wal.write_checkpoint().unwrap();
 
     // Complete transaction after checkpoint
-    wal.write_commit(2).unwrap();
+    wal.write_commit(TransactionId::from(2)).unwrap();
 
     // New transaction after checkpoint
-    wal.write_begin(3).unwrap();
+    wal.write_begin(TransactionId::from(3)).unwrap();
     wal.write_operation(
-        3,
+        TransactionId::from(3),
         "data".to_string(),
         WriteOpType::Put,
         b"key3".to_vec(),
         b"value3".repeat(100),
     )
     .unwrap();
-    wal.write_commit(3).unwrap();
+    wal.write_commit(TransactionId::from(3)).unwrap();
     wal.flush().unwrap();
 
     // Verify recovery
@@ -393,12 +393,15 @@ fn test_data_integrity_through_full_cycle() {
         (b"medium".to_vec(), b"Hello World!".repeat(10)),
         (b"large".to_vec(), vec![0xAB; 10000]),
         (b"compressible".to_vec(), b"AAAA".repeat(1000)),
-        (b"random".to_vec(), (0..1000).map(|i| (i % 256) as u8).collect()),
+        (
+            b"random".to_vec(),
+            (0..1000).map(|i| (i % 256) as u8).collect(),
+        ),
     ];
 
     // Write all test cases
     for (i, (key_data, value_data)) in test_cases.iter().enumerate() {
-        let txn_id = (i + 1) as u64;
+        let txn_id = TransactionId::from((i + 1) as u64);
         wal.write_begin(txn_id).unwrap();
         wal.write_operation(
             txn_id,
@@ -423,7 +426,11 @@ fn test_data_integrity_through_full_cycle() {
             .iter()
             .find(|w| w.key == key_data)
             .unwrap();
-        assert_eq!(write.value, value_data, "Data mismatch for key {:?}", key_data);
+        assert_eq!(
+            write.value, value_data,
+            "Data mismatch for key {:?}",
+            key_data
+        );
     }
 }
 
@@ -444,16 +451,16 @@ fn test_encrypted_database_wrong_key_fails() {
     wal_config.encryption_key = Some(correct_key);
 
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Try to recover with wrong key
@@ -473,16 +480,16 @@ fn test_encrypted_database_no_key_fails() {
     wal_config.encryption_key = Some(key);
 
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Try to recover without key
@@ -498,8 +505,7 @@ fn test_mixed_encryption_settings_pager_encrypted_wal_unencrypted() {
     let key = [66u8; 32];
 
     // Pager encrypted
-    let pager_config = PagerConfig::new()
-        .with_encryption(EncryptionType::Aes256Gcm, key);
+    let pager_config = PagerConfig::new().with_encryption(EncryptionType::Aes256Gcm, key);
 
     let _pager = Pager::create(&fs, db_path, pager_config).unwrap();
 
@@ -508,16 +514,16 @@ fn test_mixed_encryption_settings_pager_encrypted_wal_unencrypted() {
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
     // Should work - they're independent
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     let result = WalRecovery::recover(&fs, wal_path).unwrap();
@@ -543,16 +549,16 @@ fn test_mixed_encryption_settings_pager_unencrypted_wal_encrypted() {
     let wal = WalWriter::create(&fs, wal_path, wal_config).unwrap();
 
     // Should work - they're independent
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "data".to_string(),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     let result = WalRecovery::recover_with_key(&fs, wal_path, Some(key)).unwrap();
@@ -565,8 +571,7 @@ fn test_compression_settings_persisted_in_file_header() {
     let db_path = "persist.db";
 
     // Create with compression
-    let pager_config = PagerConfig::new()
-        .with_compression(CompressionType::Zstd);
+    let pager_config = PagerConfig::new().with_compression(CompressionType::Zstd);
 
     {
         let _pager = Pager::create(&fs, db_path, pager_config).unwrap();
@@ -584,8 +589,7 @@ fn test_encryption_settings_persisted_in_file_header() {
     let key = [99u8; 32];
 
     // Create with encryption
-    let pager_config = PagerConfig::new()
-        .with_encryption(EncryptionType::Aes256Gcm, key);
+    let pager_config = PagerConfig::new().with_encryption(EncryptionType::Aes256Gcm, key);
 
     {
         let _pager = Pager::create(&fs, db_path, pager_config).unwrap();
@@ -613,16 +617,16 @@ fn test_compressed_data_is_smaller() {
     {
         let config = WalWriterConfig::default();
         let wal = WalWriter::create(&fs, uncompressed_path, config).unwrap();
-        wal.write_begin(1).unwrap();
+        wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             compressible_data.clone(),
         )
         .unwrap();
-        wal.write_commit(1).unwrap();
+        wal.write_commit(TransactionId::from(1)).unwrap();
         wal.flush().unwrap();
     }
 
@@ -631,16 +635,16 @@ fn test_compressed_data_is_smaller() {
         let mut config = WalWriterConfig::default();
         config.compression = CompressionType::Lz4;
         let wal = WalWriter::create(&fs, compressed_path, config).unwrap();
-        wal.write_begin(1).unwrap();
+        wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             compressible_data,
         )
         .unwrap();
-        wal.write_commit(1).unwrap();
+        wal.write_commit(TransactionId::from(1)).unwrap();
         wal.flush().unwrap();
     }
 
@@ -680,16 +684,16 @@ fn test_encryption_preserves_data_integrity() {
     // Write random data (not compressible)
     let random_data: Vec<u8> = (0..5000).map(|i| ((i * 7 + 13) % 256) as u8).collect();
 
-    wal.write_begin(1).unwrap();
+    wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
-        1,
+        TransactionId::from(1),
         "random".to_string(),
         WriteOpType::Put,
         b"random_key".to_vec(),
         random_data.clone(),
     )
     .unwrap();
-    wal.write_commit(1).unwrap();
+    wal.write_commit(TransactionId::from(1)).unwrap();
     wal.flush().unwrap();
 
     // Verify data reads back correctly
@@ -705,7 +709,10 @@ fn test_compression_with_various_data_patterns() {
     let test_cases = vec![
         ("highly_compressible", b"A".repeat(1000)),
         ("moderately_compressible", b"Hello World! ".repeat(100)),
-        ("low_compressible", (0..1000).map(|i| (i % 256) as u8).collect()),
+        (
+            "low_compressible",
+            (0..1000).map(|i| (i % 256) as u8).collect(),
+        ),
     ];
 
     for (name, data) in test_cases {
@@ -715,16 +722,16 @@ fn test_compression_with_various_data_patterns() {
         config.compression = CompressionType::Lz4;
 
         let wal = WalWriter::create(&fs, &path, config).unwrap();
-        wal.write_begin(1).unwrap();
+        wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             data.clone(),
         )
         .unwrap();
-        wal.write_commit(1).unwrap();
+        wal.write_commit(TransactionId::from(1)).unwrap();
         wal.flush().unwrap();
 
         // Verify data integrity
@@ -751,16 +758,16 @@ fn test_encryption_overhead_is_reasonable() {
     {
         let config = WalWriterConfig::default();
         let wal = WalWriter::create(&fs, unencrypted_path, config).unwrap();
-        wal.write_begin(1).unwrap();
+        wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             test_data.clone(),
         )
         .unwrap();
-        wal.write_commit(1).unwrap();
+        wal.write_commit(TransactionId::from(1)).unwrap();
         wal.flush().unwrap();
     }
 
@@ -770,16 +777,16 @@ fn test_encryption_overhead_is_reasonable() {
         config.encryption = EncryptionType::Aes256Gcm;
         config.encryption_key = Some(key);
         let wal = WalWriter::create(&fs, encrypted_path, config).unwrap();
-        wal.write_begin(1).unwrap();
+        wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             test_data,
         )
         .unwrap();
-        wal.write_commit(1).unwrap();
+        wal.write_commit(TransactionId::from(1)).unwrap();
         wal.flush().unwrap();
     }
 
@@ -815,7 +822,7 @@ fn test_combined_compression_and_encryption_performance() {
     for i in 1..=10 {
         let data_size = i * 1000;
         let data = b"X".repeat(data_size);
-        let txn_id = i as u64;
+        let txn_id = TransactionId::from(i as u64);
 
         wal.write_begin(txn_id).unwrap();
         wal.write_operation(

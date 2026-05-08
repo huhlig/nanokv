@@ -150,118 +150,118 @@ mod tests {
     #[test]
     fn test_pin_unpin() {
         let table = PinTable::new();
-        
+
         // Pin a page
-        assert_eq!(table.pin(1), 1);
-        assert!(table.is_pinned(1));
-        assert_eq!(table.ref_count(1), 1);
-        
+        assert_eq!(table.pin(PageId::from(1)), 1);
+        assert!(table.is_pinned(PageId::from(1)));
+        assert_eq!(table.ref_count(PageId::from(1)), 1);
+
         // Pin again (increment)
-        assert_eq!(table.pin(1), 2);
-        assert_eq!(table.ref_count(1), 2);
-        
+        assert_eq!(table.pin(PageId::from(1)), 2);
+        assert_eq!(table.ref_count(PageId::from(1)), 2);
+
         // Unpin once
-        assert_eq!(table.unpin(1), Some(1));
-        assert!(table.is_pinned(1));
-        
+        assert_eq!(table.unpin(PageId::from(1)), Some(1));
+        assert!(table.is_pinned(PageId::from(1)));
+
         // Unpin again (should reach 0)
-        assert_eq!(table.unpin(1), Some(0));
-        assert!(!table.is_pinned(1));
-        assert_eq!(table.ref_count(1), 0);
+        assert_eq!(table.unpin(PageId::from(1)), Some(0));
+        assert!(!table.is_pinned(PageId::from(1)));
+        assert_eq!(table.ref_count(PageId::from(1)), 0);
     }
 
     #[test]
     fn test_multiple_pages() {
         let table = PinTable::new();
-        
-        table.pin(1);
-        table.pin(2);
-        table.pin(3);
-        
+
+        table.pin(PageId::from(1));
+        table.pin(PageId::from(2));
+        table.pin(PageId::from(3));
+
         assert_eq!(table.pinned_count(), 3);
-        assert!(table.is_pinned(1));
-        assert!(table.is_pinned(2));
-        assert!(table.is_pinned(3));
-        
-        table.unpin(2);
+        assert!(table.is_pinned(PageId::from(1)));
+        assert!(table.is_pinned(PageId::from(2)));
+        assert!(table.is_pinned(PageId::from(3)));
+
+        table.unpin(PageId::from(2));
         assert_eq!(table.pinned_count(), 2);
-        assert!(!table.is_pinned(2));
+        assert!(!table.is_pinned(PageId::from(2)));
     }
 
     #[test]
     fn test_unpin_unpinned_page() {
         let table = PinTable::new();
-        
+
         // Unpinning a page that was never pinned returns None
-        assert_eq!(table.unpin(1), None);
+        assert_eq!(table.unpin(PageId::from(1)), None);
     }
 
     #[test]
     fn test_pin_guard() {
         let table = PinTable::new();
-        
+
         {
-            let _guard = PinGuard::new(1, table.clone());
-            assert!(table.is_pinned(1));
-            assert_eq!(table.ref_count(1), 1);
+            let _guard = PinGuard::new(PageId::from(1), table.clone());
+            assert!(table.is_pinned(PageId::from(1)));
+            assert_eq!(table.ref_count(PageId::from(1)), 1);
         }
-        
+
         // Guard dropped, page should be unpinned
-        assert!(!table.is_pinned(1));
-        assert_eq!(table.ref_count(1), 0);
+        assert!(!table.is_pinned(PageId::from(1)));
+        assert_eq!(table.ref_count(PageId::from(1)), 0);
     }
 
     #[test]
     fn test_multiple_guards() {
         let table = PinTable::new();
-        
-        let _guard1 = PinGuard::new(1, table.clone());
-        assert_eq!(table.ref_count(1), 1);
-        
-        let _guard2 = PinGuard::new(1, table.clone());
-        assert_eq!(table.ref_count(1), 2);
-        
+
+        let _guard1 = PinGuard::new(PageId::from(1), table.clone());
+        assert_eq!(table.ref_count(PageId::from(1)), 1);
+
+        let _guard2 = PinGuard::new(PageId::from(1), table.clone());
+        assert_eq!(table.ref_count(PageId::from(1)), 2);
+
         drop(_guard1);
-        assert_eq!(table.ref_count(1), 1);
-        
+        assert_eq!(table.ref_count(PageId::from(1)), 1);
+
         drop(_guard2);
-        assert_eq!(table.ref_count(1), 0);
+        assert_eq!(table.ref_count(PageId::from(1)), 0);
     }
 
     #[test]
     fn test_concurrent_pinning() {
         use std::sync::Barrier;
         use std::thread;
-        
+
         let table = PinTable::new();
         let thread_count = 10;
         let barrier = Arc::new(Barrier::new(thread_count));
-        
+
         let mut handles = vec![];
-        
+
         for _ in 0..thread_count {
             let table_clone = table.clone();
             let barrier_clone = Arc::clone(&barrier);
-            
+
             let handle = thread::spawn(move || {
                 barrier_clone.wait();
-                
+
                 // Pin and unpin multiple times
                 for _ in 0..100 {
-                    table_clone.pin(1);
-                    table_clone.unpin(1);
+                    table_clone.pin(PageId::from(1));
+                    table_clone.unpin(PageId::from(1));
                 }
             });
-            
+
             handles.push(handle);
         }
-        
+
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         // All pins should be balanced
-        assert_eq!(table.ref_count(1), 0);
+        assert_eq!(table.ref_count(PageId::from(1)), 0);
     }
 }
 

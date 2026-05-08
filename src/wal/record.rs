@@ -17,18 +17,43 @@
 //! WAL record types and serialization
 
 use crate::pager::{CompressionType, EncryptionType};
+use crate::txn::TransactionId;
 use crate::wal::{WalError, WalResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use std::fmt::Formatter;
 use std::io::Write;
 
-/// Transaction ID type
-pub type TransactionId = u64;
+/// Monotonic Log Sequence Number (LSN)  - unique identifier for each WAL record
+///
+/// Implementations may encode term, segment, offset, shard, or epoch information
+/// in a richer internal representation. The public trait only requires stable
+/// ordering.
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct LogSequenceNumber(u64);
 
-/// Log Sequence Number (LSN) - unique identifier for each WAL record
-pub type Lsn = u64;
+impl LogSequenceNumber {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+    pub fn to_bytes(&self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl From<u64> for LogSequenceNumber {
+    fn from(value: u64) -> Self {
+        LogSequenceNumber(value)
+    }
+}
+
+impl std::fmt::Display for LogSequenceNumber {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LSN({})", self.0)
+    }
+}
 
 /// WAL record type discriminator
 #[repr(u8)]
@@ -131,7 +156,7 @@ pub enum RecordData {
     /// Checkpoint
     Checkpoint {
         /// LSN of the checkpoint
-        lsn: Lsn,
+        lsn: LogSequenceNumber,
         /// Number of active transactions at checkpoint
         active_txns: Vec<TransactionId>,
     },
@@ -165,7 +190,7 @@ impl RecordData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalRecord {
     /// Log Sequence Number
-    pub lsn: Lsn,
+    pub lsn: LogSequenceNumber,
     /// Timestamp (microseconds since epoch)
     pub timestamp: u64,
     /// Record data
@@ -179,7 +204,7 @@ pub struct WalRecord {
 impl WalRecord {
     /// Create a new WAL record
     pub fn new(
-        lsn: Lsn,
+        lsn: LogSequenceNumber,
         data: RecordData,
         compression: CompressionType,
         encryption: EncryptionType,
@@ -219,7 +244,7 @@ impl WalRecord {
 
         // LSN
         buffer
-            .write_all(&self.lsn.to_le_bytes())
+            .write_all(&self.lsn.to_bytes())
             .map_err(WalError::IoError)?;
 
         // Timestamp
@@ -250,8 +275,9 @@ impl WalRecord {
         let compressed_data = match self.compression {
             CompressionType::None => data_bytes,
             CompressionType::Lz4 => lz4_flex::compress_prepend_size(&data_bytes),
-            CompressionType::Zstd => zstd::encode_all(&data_bytes[..], 3)
-                .map_err(|e| WalError::SerializationError(format!("Zstd compression failed: {}", e)))?,
+            CompressionType::Zstd => zstd::encode_all(&data_bytes[..], 3).map_err(|e| {
+                WalError::SerializationError(format!("Zstd compression failed: {}", e))
+            })?,
         };
 
         // Encrypt data if needed (after compression)
@@ -318,11 +344,11 @@ impl WalRecord {
         cursor += 4;
 
         // LSN
-        let lsn = u64::from_le_bytes(
+        let lsn = LogSequenceNumber::from(u64::from_le_bytes(
             bytes[cursor..cursor + 8]
                 .try_into()
                 .map_err(|_| WalError::DeserializationError("Invalid LSN".to_string()))?,
-        );
+        ));
         cursor += 8;
 
         // Timestamp
@@ -338,8 +364,9 @@ impl WalRecord {
         cursor += 1;
 
         // Compression type
-        let compression = CompressionType::from_u8(bytes[cursor])
-            .ok_or_else(|| WalError::DeserializationError("Invalid compression type".to_string()))?;
+        let compression = CompressionType::from_u8(bytes[cursor]).ok_or_else(|| {
+            WalError::DeserializationError("Invalid compression type".to_string())
+        })?;
         cursor += 1;
 
         // Encryption type
@@ -348,11 +375,10 @@ impl WalRecord {
         cursor += 1;
 
         // Uncompressed size
-        let _uncompressed_size = u32::from_le_bytes(
-            bytes[cursor..cursor + 4]
-                .try_into()
-                .map_err(|_| WalError::DeserializationError("Invalid uncompressed size".to_string()))?,
-        ) as usize;
+        let _uncompressed_size =
+            u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().map_err(|_| {
+                WalError::DeserializationError("Invalid uncompressed size".to_string())
+            })?) as usize;
         cursor += 4;
 
         // Stored size
@@ -407,10 +433,14 @@ impl WalRecord {
         // Decompress if needed
         let data_bytes = match compression {
             CompressionType::None => compressed_data,
-            CompressionType::Lz4 => lz4_flex::decompress_size_prepended(&compressed_data)
-                .map_err(|e| WalError::DeserializationError(format!("LZ4 decompression failed: {}", e)))?,
-            CompressionType::Zstd => zstd::decode_all(&compressed_data[..])
-                .map_err(|e| WalError::DeserializationError(format!("Zstd decompression failed: {}", e)))?,
+            CompressionType::Lz4 => {
+                lz4_flex::decompress_size_prepended(&compressed_data).map_err(|e| {
+                    WalError::DeserializationError(format!("LZ4 decompression failed: {}", e))
+                })?
+            }
+            CompressionType::Zstd => zstd::decode_all(&compressed_data[..]).map_err(|e| {
+                WalError::DeserializationError(format!("Zstd decompression failed: {}", e))
+            })?,
         };
 
         // Deserialize data
@@ -432,7 +462,7 @@ impl WalRecord {
         match &self.data {
             RecordData::Begin { txn_id } => {
                 buffer
-                    .write_all(&txn_id.to_le_bytes())
+                    .write_all(&txn_id.to_bytes())
                     .map_err(WalError::IoError)?;
             }
             RecordData::Write {
@@ -444,7 +474,7 @@ impl WalRecord {
             } => {
                 // Transaction ID
                 buffer
-                    .write_all(&txn_id.to_le_bytes())
+                    .write_all(&txn_id.to_bytes())
                     .map_err(WalError::IoError)?;
 
                 // Table name length and data
@@ -474,18 +504,18 @@ impl WalRecord {
             }
             RecordData::Commit { txn_id } => {
                 buffer
-                    .write_all(&txn_id.to_le_bytes())
+                    .write_all(&txn_id.to_bytes())
                     .map_err(WalError::IoError)?;
             }
             RecordData::Rollback { txn_id } => {
                 buffer
-                    .write_all(&txn_id.to_le_bytes())
+                    .write_all(&txn_id.to_bytes())
                     .map_err(WalError::IoError)?;
             }
             RecordData::Checkpoint { lsn, active_txns } => {
                 // LSN
                 buffer
-                    .write_all(&lsn.to_le_bytes())
+                    .write_all(&lsn.to_bytes())
                     .map_err(WalError::IoError)?;
 
                 // Number of active transactions
@@ -496,7 +526,7 @@ impl WalRecord {
                 // Active transaction IDs
                 for txn_id in active_txns {
                     buffer
-                        .write_all(&txn_id.to_le_bytes())
+                        .write_all(&txn_id.to_bytes())
                         .map_err(WalError::IoError)?;
                 }
             }
@@ -516,7 +546,9 @@ impl WalRecord {
                         "Invalid Begin record".to_string(),
                     ));
                 }
-                let txn_id = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+                let txn_id = TransactionId::from(u64::from_le_bytes(
+                    bytes[cursor..cursor + 8].try_into().unwrap(),
+                ));
                 Ok(RecordData::Begin { txn_id })
             }
             RecordType::Write => {
@@ -526,7 +558,9 @@ impl WalRecord {
                         "Invalid Write record".to_string(),
                     ));
                 }
-                let txn_id = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+                let txn_id = TransactionId::from(u64::from_le_bytes(
+                    bytes[cursor..cursor + 8].try_into().unwrap(),
+                ));
                 cursor += 8;
 
                 // Table name
@@ -608,7 +642,9 @@ impl WalRecord {
                         "Invalid Commit record".to_string(),
                     ));
                 }
-                let txn_id = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+                let txn_id = TransactionId::from(u64::from_le_bytes(
+                    bytes[cursor..cursor + 8].try_into().unwrap(),
+                ));
                 Ok(RecordData::Commit { txn_id })
             }
             RecordType::Rollback => {
@@ -617,7 +653,9 @@ impl WalRecord {
                         "Invalid Rollback record".to_string(),
                     ));
                 }
-                let txn_id = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+                let txn_id = TransactionId::from(u64::from_le_bytes(
+                    bytes[cursor..cursor + 8].try_into().unwrap(),
+                ));
                 Ok(RecordData::Rollback { txn_id })
             }
             RecordType::Checkpoint => {
@@ -627,7 +665,9 @@ impl WalRecord {
                         "Invalid Checkpoint record".to_string(),
                     ));
                 }
-                let lsn = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+                let lsn = LogSequenceNumber::from(u64::from_le_bytes(
+                    bytes[cursor..cursor + 8].try_into().unwrap(),
+                ));
                 cursor += 8;
 
                 // Number of active transactions
@@ -648,7 +688,9 @@ impl WalRecord {
                             "Invalid Checkpoint record".to_string(),
                         ));
                     }
-                    let txn_id = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+                    let txn_id = TransactionId::from(u64::from_le_bytes(
+                        bytes[cursor..cursor + 8].try_into().unwrap(),
+                    ));
                     active_txns.push(txn_id);
                     cursor += 8;
                 }
@@ -676,8 +718,10 @@ mod tests {
     #[test]
     fn test_begin_record_serialization() {
         let record = WalRecord::new(
-            1,
-            RecordData::Begin { txn_id: 42 },
+            LogSequenceNumber::from(1),
+            RecordData::Begin {
+                txn_id: TransactionId::from(42),
+            },
             CompressionType::None,
             EncryptionType::None,
         );
@@ -693,9 +737,9 @@ mod tests {
     #[test]
     fn test_write_record_serialization() {
         let record = WalRecord::new(
-            2,
+            LogSequenceNumber::from(2),
             RecordData::Write {
-                txn_id: 42,
+                txn_id: TransactionId::from(42),
                 table: "test_table".to_string(),
                 op_type: WriteOpType::Put,
                 key: b"key1".to_vec(),
@@ -716,8 +760,10 @@ mod tests {
     #[test]
     fn test_commit_record_serialization() {
         let record = WalRecord::new(
-            3,
-            RecordData::Commit { txn_id: 42 },
+            LogSequenceNumber::from(3),
+            RecordData::Commit {
+                txn_id: TransactionId::from(42),
+            },
             CompressionType::None,
             EncryptionType::None,
         );
@@ -733,10 +779,14 @@ mod tests {
     #[test]
     fn test_checkpoint_record_serialization() {
         let record = WalRecord::new(
-            4,
+            LogSequenceNumber::from(4),
             RecordData::Checkpoint {
-                lsn: 100,
-                active_txns: vec![1, 2, 3],
+                lsn: LogSequenceNumber::from(100),
+                active_txns: vec![
+                    TransactionId::from(1),
+                    TransactionId::from(2),
+                    TransactionId::from(3),
+                ],
             },
             CompressionType::None,
             EncryptionType::None,
@@ -753,8 +803,10 @@ mod tests {
     #[test]
     fn test_checksum_validation() {
         let record = WalRecord::new(
-            1,
-            RecordData::Begin { txn_id: 42 },
+            LogSequenceNumber::from(1),
+            RecordData::Begin {
+                txn_id: TransactionId::from(42),
+            },
             CompressionType::None,
             EncryptionType::None,
         );

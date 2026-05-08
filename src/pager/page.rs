@@ -23,8 +23,30 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
-/// Page identifier (0-based)
-pub type PageId = u64;
+/// Page identifier inside a single-file database. (0-based)
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct PageId(u64);
+
+impl PageId {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+    pub fn to_bytes(&self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl From<u64> for PageId {
+    fn from(value: u64) -> Self {
+        PageId(value)
+    }
+}
+
+impl std::fmt::Display for PageId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PageId({})", self.0)
+    }
+}
 
 /// Page type enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +144,7 @@ impl PageHeader {
         let mut bytes = [0u8; Self::SIZE];
 
         // Page ID (8 bytes)
-        bytes[0..8].copy_from_slice(&self.page_id.to_le_bytes());
+        bytes[0..8].copy_from_slice(&self.page_id.to_bytes());
 
         // Page type (1 byte)
         bytes[8] = self.page_type.to_u8();
@@ -155,7 +177,7 @@ impl PageHeader {
             ));
         }
 
-        let page_id = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let page_id = PageId::from(u64::from_le_bytes(bytes[0..8].try_into().unwrap()));
 
         let page_type =
             PageType::from_u8(bytes[8]).ok_or_else(|| PagerError::InvalidPageType(bytes[8]))?;
@@ -444,17 +466,17 @@ mod tests {
 
     #[test]
     fn test_page_header_serialization() {
-        let header = PageHeader::new(42, PageType::BTreeLeaf);
+        let header = PageHeader::new(PageId::from(42), PageType::BTreeLeaf);
         let bytes = header.to_bytes();
         let deserialized = PageHeader::from_bytes(&bytes).unwrap();
 
-        assert_eq!(deserialized.page_id, 42);
+        assert_eq!(deserialized.page_id, PageId::from(42));
         assert_eq!(deserialized.page_type, PageType::BTreeLeaf);
     }
 
     #[test]
     fn test_page_checksum() {
-        let mut page = Page::new(1, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(1), PageType::BTreeLeaf, 100);
         page.data.extend_from_slice(b"test data");
 
         let checksum = page.calculate_checksum();
@@ -467,21 +489,21 @@ mod tests {
 
     #[test]
     fn test_page_serialization() {
-        let mut page = Page::new(5, PageType::BTreeInternal, 100);
+        let mut page = Page::new(PageId::from(5), PageType::BTreeInternal, 100);
         page.data.extend_from_slice(b"test page data");
 
         let bytes = page.to_bytes(4096, None).unwrap();
         assert_eq!(bytes.len(), 4096);
 
         let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
-        assert_eq!(deserialized.page_id(), 5);
+        assert_eq!(deserialized.page_id(), PageId::from(5));
         assert_eq!(deserialized.page_type(), PageType::BTreeInternal);
         assert_eq!(deserialized.data(), b"test page data");
     }
 
     #[test]
     fn test_page_compression_lz4() {
-        let mut page = Page::new(10, PageType::BTreeLeaf, 1000);
+        let mut page = Page::new(PageId::from(10), PageType::BTreeLeaf, 1000);
         page.header.compression = CompressionType::Lz4;
 
         // Add compressible data
@@ -492,7 +514,7 @@ mod tests {
         assert_eq!(bytes.len(), 4096);
 
         let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
-        assert_eq!(deserialized.page_id(), 10);
+        assert_eq!(deserialized.page_id(), PageId::from(10));
         assert_eq!(deserialized.page_type(), PageType::BTreeLeaf);
         assert_eq!(deserialized.data(), &test_data[..]);
         assert_eq!(deserialized.header.compression, CompressionType::Lz4);
@@ -503,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_page_compression_zstd() {
-        let mut page = Page::new(11, PageType::BTreeLeaf, 1000);
+        let mut page = Page::new(PageId::from(11), PageType::BTreeLeaf, 1000);
         page.header.compression = CompressionType::Zstd;
 
         // Add compressible data
@@ -514,7 +536,7 @@ mod tests {
         assert_eq!(bytes.len(), 4096);
 
         let deserialized = Page::from_bytes(&bytes, true, None).unwrap();
-        assert_eq!(deserialized.page_id(), 11);
+        assert_eq!(deserialized.page_id(), PageId::from(11));
         assert_eq!(deserialized.page_type(), PageType::BTreeLeaf);
         assert_eq!(deserialized.data(), &test_data[..]);
         assert_eq!(deserialized.header.compression, CompressionType::Zstd);
@@ -525,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_page_no_compression() {
-        let mut page = Page::new(12, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(12), PageType::BTreeLeaf, 100);
         page.header.compression = CompressionType::None;
         page.data.extend_from_slice(b"uncompressed data");
 
@@ -542,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_page_checksum_with_compression() {
-        let mut page = Page::new(13, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(13), PageType::BTreeLeaf, 100);
         page.header.compression = CompressionType::Lz4;
         page.data.extend_from_slice(b"test data for checksum");
 
@@ -566,7 +588,7 @@ mod tests {
 
     #[test]
     fn test_page_encryption_aes256gcm() {
-        let mut page = Page::new(14, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(14), PageType::BTreeLeaf, 100);
         page.header.encryption = EncryptionType::Aes256Gcm;
         page.data.extend_from_slice(b"secret data to encrypt");
 
@@ -576,7 +598,7 @@ mod tests {
 
         // Decrypt with correct key
         let deserialized = Page::from_bytes(&bytes, true, Some(&key)).unwrap();
-        assert_eq!(deserialized.page_id(), 14);
+        assert_eq!(deserialized.page_id(), PageId::from(14));
         assert_eq!(deserialized.page_type(), PageType::BTreeLeaf);
         assert_eq!(deserialized.data(), b"secret data to encrypt");
         assert_eq!(deserialized.header.encryption, EncryptionType::Aes256Gcm);
@@ -584,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_page_encryption_wrong_key() {
-        let mut page = Page::new(15, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(15), PageType::BTreeLeaf, 100);
         page.header.encryption = EncryptionType::Aes256Gcm;
         page.data.extend_from_slice(b"secret data");
 
@@ -604,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_page_encryption_missing_key() {
-        let mut page = Page::new(16, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(16), PageType::BTreeLeaf, 100);
         page.header.encryption = EncryptionType::Aes256Gcm;
         page.data.extend_from_slice(b"secret data");
 
@@ -619,7 +641,7 @@ mod tests {
 
     #[test]
     fn test_page_encryption_and_compression() {
-        let mut page = Page::new(17, PageType::BTreeLeaf, 1000);
+        let mut page = Page::new(PageId::from(17), PageType::BTreeLeaf, 1000);
         page.header.compression = CompressionType::Lz4;
         page.header.encryption = EncryptionType::Aes256Gcm;
 
@@ -633,7 +655,7 @@ mod tests {
 
         // Decrypt and decompress
         let deserialized = Page::from_bytes(&bytes, true, Some(&key)).unwrap();
-        assert_eq!(deserialized.page_id(), 17);
+        assert_eq!(deserialized.page_id(), PageId::from(17));
         assert_eq!(deserialized.data(), &test_data[..]);
         assert_eq!(deserialized.header.compression, CompressionType::Lz4);
         assert_eq!(deserialized.header.encryption, EncryptionType::Aes256Gcm);
@@ -641,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_page_encryption_missing_key_on_read() {
-        let mut page = Page::new(18, PageType::BTreeLeaf, 100);
+        let mut page = Page::new(PageId::from(18), PageType::BTreeLeaf, 100);
         page.header.encryption = EncryptionType::Aes256Gcm;
         page.data.extend_from_slice(b"secret data");
 

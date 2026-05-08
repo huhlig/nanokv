@@ -1,0 +1,79 @@
+//
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+use std::fmt::Formatter;
+use crate::wal::LogSequenceNumber;
+
+/// Snapshot identifier.
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct SnapshotId(u64);
+
+impl From<u64> for SnapshotId {
+    fn from(value: u64) -> Self {
+        SnapshotId(value)
+    }
+}
+
+impl std::fmt::Display for SnapshotId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SnapshotId({})", self.0)
+    }
+}
+
+
+
+/// A named, persistent snapshot of the database at a specific LSN.
+///
+/// Snapshots enable point-in-time queries, backups, and long-running analytics
+/// without blocking writers. They pin the necessary pages/segments in memory
+/// or on disk until explicitly released.
+///
+/// # Lifecycle
+///
+/// 1. Create snapshot with [`KvDatabase::create_snapshot`]
+/// 2. Use snapshot LSN to open read transactions
+/// 3. Release snapshot with [`KvDatabase::release_snapshot`] when done
+///
+/// # Examples
+///
+/// ```
+/// # use nanokv::embedded_kv_traits::*;
+/// # fn example(db: &impl KvDatabase) -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a snapshot for backup
+/// let snapshot = db.create_snapshot("backup-2024")?;
+///
+/// // Use the snapshot LSN for consistent reads
+/// let tx = db.begin_read_at(snapshot.lsn)?;
+/// // ... perform backup operations ...
+///
+/// // Release when done
+/// db.release_snapshot(snapshot.id)?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Unique snapshot identifier.
+    pub id: SnapshotId,
+    /// User-provided name for the snapshot.
+    pub name: String,
+    /// LSN at which the snapshot was taken.
+    pub lsn: LogSequenceNumber,
+    /// Timestamp when the snapshot was created.
+    pub created_at: i64,
+    /// Estimated size in bytes (pages/segments pinned).
+    pub size_bytes: u64,
+}

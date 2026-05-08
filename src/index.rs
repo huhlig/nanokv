@@ -15,44 +15,70 @@
 //
 
 //! Index Types to Support
-//! 
+//!
 //! # Indexes
 //! - B/B+ Tree
 //! - Hash Index
 //! - Adaptive Radix Tree
 //! - LSM Tree Index
-//! 
+//!
 //! # Spatial Indexes
 //! - R-Tree
 //! - Quadtree
 //! - Octree
-//! 
+//!
 //! # Text Indexes
 //! - Full-Text Search
 //! - Inverted Index
-//! 
+//!
 //! # Graph Indexes
 //! - Adjacency List
 //! - Adjacency Matrix
 //! - Edge List
-//! 
+//!
 //! # Time Series Indexes
 //! - Time Bucket
 //! - Time Window
 //! - Time Series Database
-//! 
+//!
 //! # Geospatial Indexes
 //! - Geohash
 //! - Quadtree
 //! - R-Tree
-//! 
+//!
 //! # Vector Indexes
 //! - Vector Database
 //! - ANN (Approximate Nearest Neighbor)
 //! - IVF (Inverted File Index)
 //! - HNSW (Hierarchical Navigable Small World)
-//! 
+//!
 //! # Bloom Filters
 //! - Bloom Filter
 //! - Cuckoo Filter
 //! - Count-Min Sketch
+
+/// Logical index identifier assigned by the catalog.
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct IndexId(u64);
+
+impl IndexId {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub fn to_bytes(&self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl std::fmt::Display for IndexId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IndexId({})", self.0)
+    }
+}
+
+impl From<u64> for IndexId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}

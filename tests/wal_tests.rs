@@ -17,8 +17,11 @@
 //! Integration tests for WAL (Write-Ahead Log)
 
 use nanokv::pager::{CompressionType, EncryptionType};
+use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, LocalFileSystem, MemoryFileSystem};
-use nanokv::wal::{WalError, WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
+use nanokv::wal::{
+    LogSequenceNumber, WalError, WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType,
+};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -34,13 +37,13 @@ fn test_wal_basic_transaction_flow() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Begin transaction
-    let begin_lsn = writer.write_begin(1).unwrap();
-    assert_eq!(begin_lsn, 1);
+    let begin_lsn = writer.write_begin(TransactionId::from(1)).unwrap();
+    assert_eq!(begin_lsn, LogSequenceNumber::from(1));
 
     // Write operations
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
@@ -50,7 +53,7 @@ fn test_wal_basic_transaction_flow() {
 
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:2".to_vec(),
@@ -59,7 +62,7 @@ fn test_wal_basic_transaction_flow() {
         .unwrap();
 
     // Commit transaction
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery
@@ -77,17 +80,17 @@ fn test_wal_rollback_transaction() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Begin and rollback
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_rollback(1).unwrap();
+    writer.write_rollback(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery - no committed writes
@@ -106,10 +109,10 @@ fn test_wal_crash_recovery_active_transaction() {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Begin transaction but don't commit (simulating crash)
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "users".to_string(),
                 WriteOpType::Put,
                 b"user:1".to_vec(),
@@ -124,7 +127,7 @@ fn test_wal_crash_recovery_active_transaction() {
     let result = WalRecovery::recover(&fs, path).unwrap();
     assert_eq!(result.committed_writes.len(), 0);
     assert_eq!(result.active_transactions.len(), 1);
-    assert!(result.active_transactions.contains(&1));
+    assert!(result.active_transactions.contains(&TransactionId::from(1)));
 }
 
 #[test]
@@ -136,14 +139,14 @@ fn test_wal_multiple_concurrent_transactions() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Start multiple transactions
-    writer.write_begin(1).unwrap();
-    writer.write_begin(2).unwrap();
-    writer.write_begin(3).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
+    writer.write_begin(TransactionId::from(3)).unwrap();
 
     // Write to different transactions
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "table1".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
@@ -153,7 +156,7 @@ fn test_wal_multiple_concurrent_transactions() {
 
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "table2".to_string(),
             WriteOpType::Put,
             b"key2".to_vec(),
@@ -163,7 +166,7 @@ fn test_wal_multiple_concurrent_transactions() {
 
     writer
         .write_operation(
-            3,
+            TransactionId::from(3),
             "table3".to_string(),
             WriteOpType::Put,
             b"key3".to_vec(),
@@ -172,9 +175,9 @@ fn test_wal_multiple_concurrent_transactions() {
         .unwrap();
 
     // Commit in different order
-    writer.write_commit(2).unwrap();
-    writer.write_commit(1).unwrap();
-    writer.write_rollback(3).unwrap();
+    writer.write_commit(TransactionId::from(2)).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
+    writer.write_rollback(TransactionId::from(3)).unwrap();
 
     writer.flush().unwrap();
 
@@ -193,23 +196,23 @@ fn test_wal_checkpoint_functionality() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Transaction 1: complete before checkpoint
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
     // Transaction 2: active during checkpoint
-    writer.write_begin(2).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "data".to_string(),
             WriteOpType::Put,
             b"key2".to_vec(),
@@ -219,23 +222,23 @@ fn test_wal_checkpoint_functionality() {
 
     // Checkpoint
     let checkpoint_lsn = writer.write_checkpoint().unwrap();
-    assert!(checkpoint_lsn > 0);
+    assert!(checkpoint_lsn.as_u64() > 0);
 
     // Transaction 2: complete after checkpoint
-    writer.write_commit(2).unwrap();
+    writer.write_commit(TransactionId::from(2)).unwrap();
 
     // Transaction 3: after checkpoint
-    writer.write_begin(3).unwrap();
+    writer.write_begin(TransactionId::from(3)).unwrap();
     writer
         .write_operation(
-            3,
+            TransactionId::from(3),
             "data".to_string(),
             WriteOpType::Put,
             b"key3".to_vec(),
             b"value3".to_vec(),
         )
         .unwrap();
-    writer.write_commit(3).unwrap();
+    writer.write_commit(TransactionId::from(3)).unwrap();
 
     writer.flush().unwrap();
 
@@ -254,12 +257,12 @@ fn test_wal_delete_operations() {
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
 
     // Put operation
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
@@ -270,7 +273,7 @@ fn test_wal_delete_operations() {
     // Delete operation
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Delete,
             b"user:2".to_vec(),
@@ -278,7 +281,7 @@ fn test_wal_delete_operations() {
         )
         .unwrap();
 
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery
@@ -299,17 +302,17 @@ fn test_wal_large_values() {
     // Create a large value (1MB)
     let large_value = vec![0xAB; 1024 * 1024];
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "blobs".to_string(),
             WriteOpType::Put,
             b"blob:1".to_vec(),
             large_value.clone(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery
@@ -327,17 +330,17 @@ fn test_wal_reader_sequential_read() {
     // Write some records
     {
         let writer = WalWriter::create(&fs, path, config).unwrap();
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "test".to_string(),
                 WriteOpType::Put,
                 b"key".to_vec(),
                 b"value".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
         writer.flush().unwrap();
     }
 
@@ -362,17 +365,17 @@ fn test_wal_with_local_filesystem() {
     // Write to WAL
     {
         let writer = WalWriter::create(&fs, wal_path_str, config).unwrap();
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "users".to_string(),
                 WriteOpType::Put,
                 b"user:1".to_vec(),
                 b"Alice".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
         writer.flush().unwrap();
     }
 
@@ -399,17 +402,18 @@ fn test_wal_buffered_writes() {
 
     // Write multiple transactions
     for i in 1..=10 {
-        writer.write_begin(i).unwrap();
+        let txn_id = TransactionId::from(i);
+        writer.write_begin(txn_id).unwrap();
         writer
             .write_operation(
-                i,
+                txn_id,
                 "data".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).as_bytes().to_vec(),
                 format!("value{}", i).as_bytes().to_vec(),
             )
             .unwrap();
-        writer.write_commit(i).unwrap();
+        writer.write_commit(txn_id).unwrap();
     }
 
     // Explicit flush
@@ -429,17 +433,17 @@ fn test_wal_truncate() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Write some data
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             b"value".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     let size_before = writer.file_size();
@@ -461,12 +465,12 @@ fn test_wal_error_handling() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Try to commit non-existent transaction
-    let result = writer.write_commit(999);
+    let result = writer.write_commit(TransactionId::from(999));
     assert!(result.is_err());
 
     // Try to write to non-existent transaction
     let result = writer.write_operation(
-        999,
+        TransactionId::from(999),
         "table".to_string(),
         WriteOpType::Put,
         b"key".to_vec(),
@@ -475,8 +479,8 @@ fn test_wal_error_handling() {
     assert!(result.is_err());
 
     // Try to begin duplicate transaction
-    writer.write_begin(1).unwrap();
-    let result = writer.write_begin(1);
+    writer.write_begin(TransactionId::from(1)).unwrap();
+    let result = writer.write_begin(TransactionId::from(1));
     assert!(result.is_err());
 }
 
@@ -490,22 +494,22 @@ fn test_wal_with_lz4_compression() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Write transaction with compressible data
-    writer.write_begin(1).unwrap();
-    
+    writer.write_begin(TransactionId::from(1)).unwrap();
+
     // Create highly compressible data (repeated pattern)
     let compressible_value = vec![0x42; 10000];
-    
+
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
             compressible_value.clone(),
         )
         .unwrap();
-    
-    writer.write_commit(1).unwrap();
+
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery works with compressed data
@@ -525,22 +529,22 @@ fn test_wal_with_zstd_compression() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Write transaction with compressible data
-    writer.write_begin(1).unwrap();
-    
+    writer.write_begin(TransactionId::from(1)).unwrap();
+
     // Create highly compressible data
     let compressible_value = "Hello World! ".repeat(1000).into_bytes();
-    
+
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "messages".to_string(),
             WriteOpType::Put,
             b"msg:1".to_vec(),
             compressible_value.clone(),
         )
         .unwrap();
-    
-    writer.write_commit(1).unwrap();
+
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery works with compressed data
@@ -560,43 +564,57 @@ fn test_wal_compression_recovery() {
 
     // Write multiple transactions with compression
     for i in 1..=5 {
-        writer.write_begin(i).unwrap();
-        
-        let value = format!("Compressed value for transaction {}", i).repeat(100).into_bytes();
-        
+        let txn_id = TransactionId::from(i);
+        writer.write_begin(TransactionId::from(txn_id)).unwrap();
+
+        let value = format!("Compressed value for transaction {}", i)
+            .repeat(100)
+            .into_bytes();
+
         writer
             .write_operation(
-                i,
+                txn_id,
                 "data".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).as_bytes().to_vec(),
                 value,
             )
             .unwrap();
-        
-        writer.write_commit(i).unwrap();
+
+        writer.write_commit(txn_id).unwrap();
     }
-    
+
     writer.flush().unwrap();
 
     // Recover and verify all transactions
     let result = WalRecovery::recover(&fs, path).unwrap();
     assert_eq!(result.committed_writes.len(), 5);
-    
+
     // Verify all expected keys are present (order may vary due to HashMap iteration)
-    let mut found_keys: Vec<Vec<u8>> = result.committed_writes.iter().map(|w| w.key.clone()).collect();
+    let mut found_keys: Vec<Vec<u8>> = result
+        .committed_writes
+        .iter()
+        .map(|w| w.key.clone())
+        .collect();
     found_keys.sort();
-    
-    let mut expected_keys: Vec<Vec<u8>> = (1..=5).map(|i| format!("key{}", i).into_bytes()).collect();
+
+    let mut expected_keys: Vec<Vec<u8>> =
+        (1..=5).map(|i| format!("key{}", i).into_bytes()).collect();
     expected_keys.sort();
-    
+
     assert_eq!(found_keys, expected_keys);
-    
+
     // Verify each write has the correct value for its key
     for write in &result.committed_writes {
         let key_str = String::from_utf8(write.key.clone()).unwrap();
-        let key_num = key_str.strip_prefix("key").unwrap().parse::<usize>().unwrap();
-        let expected_value = format!("Compressed value for transaction {}", key_num).repeat(100).into_bytes();
+        let key_num = key_str
+            .strip_prefix("key")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        let expected_value = format!("Compressed value for transaction {}", key_num)
+            .repeat(100)
+            .into_bytes();
         assert_eq!(write.value, expected_value);
     }
 }
@@ -610,21 +628,21 @@ fn test_wal_mixed_compression() {
     let path = "test.wal";
     let mut config = WalWriterConfig::default();
     config.compression = CompressionType::None;
-    
+
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    
+
     // Write with no compression
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"uncompressed value".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Recover and verify the uncompressed record can be read
@@ -646,27 +664,30 @@ fn test_wal_compression_with_large_values() {
     // Create a large compressible value (1MB of repeated data)
     let large_value = vec![0xAB; 1024 * 1024];
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "blobs".to_string(),
             WriteOpType::Put,
             b"blob:1".to_vec(),
             large_value.clone(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery with compressed large value
     let result = WalRecovery::recover(&fs, path).unwrap();
     assert_eq!(result.committed_writes.len(), 1);
     assert_eq!(result.committed_writes[0].value, large_value);
-    
+
     // File size should be much smaller than 1MB due to compression
     let file_size = writer.file_size();
-    assert!(file_size < 1024 * 1024, "Compressed file should be smaller than uncompressed data");
+    assert!(
+        file_size < 1024 * 1024,
+        "Compressed file should be smaller than uncompressed data"
+    );
 }
 
 #[test]
@@ -679,23 +700,23 @@ fn test_wal_compression_checkpoint() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
     // Transaction before checkpoint
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".repeat(100),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
     // Active transaction during checkpoint
-    writer.write_begin(2).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "data".to_string(),
             WriteOpType::Put,
             b"key2".to_vec(),
@@ -705,10 +726,10 @@ fn test_wal_compression_checkpoint() {
 
     // Checkpoint with compression
     let checkpoint_lsn = writer.write_checkpoint().unwrap();
-    assert!(checkpoint_lsn > 0);
+    assert!(checkpoint_lsn.as_u64() > 0);
 
     // Complete transaction after checkpoint
-    writer.write_commit(2).unwrap();
+    writer.write_commit(TransactionId::from(2)).unwrap();
     writer.flush().unwrap();
 
     // Verify recovery with compressed checkpoint
@@ -728,17 +749,17 @@ fn test_wal_with_aes256_gcm_encryption() {
     config.encryption_key = Some(key);
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "secure".to_string(),
             WriteOpType::Put,
             b"secret-key".to_vec(),
             b"secret-value".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     let mut reader = WalReader::open(&fs, path, Some(key)).unwrap();
@@ -761,17 +782,17 @@ fn test_wal_decryption_with_correct_key() {
     config.encryption_key = Some(key);
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "secure".to_string(),
             WriteOpType::Put,
             b"k1".to_vec(),
             b"very secret payload".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     let result = WalRecovery::recover_with_key(&fs, path, Some(key)).unwrap();
@@ -792,17 +813,17 @@ fn test_wal_decryption_failure_with_wrong_key() {
     config.encryption_key = Some(key);
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "secure".to_string(),
             WriteOpType::Put,
             b"k2".to_vec(),
             b"classified".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     let err = WalRecovery::recover_with_key(&fs, path, Some(wrong_key)).unwrap_err();
@@ -821,22 +842,22 @@ fn test_wal_recovery_with_encrypted_records() {
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
-    writer.write_begin(2).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "users".to_string(),
             WriteOpType::Put,
             b"user:2".to_vec(),
@@ -849,7 +870,7 @@ fn test_wal_recovery_with_encrypted_records() {
     assert_eq!(result.committed_writes.len(), 1);
     assert_eq!(result.committed_writes[0].key, b"user:1");
     assert_eq!(result.committed_writes[0].value, b"Alice");
-    assert!(result.active_transactions.contains(&2));
+    assert!(result.active_transactions.contains(&TransactionId::from(2)));
 }
 
 #[test]
@@ -866,17 +887,17 @@ fn test_wal_encryption_and_compression_combined() {
     let writer = WalWriter::create(&fs, path, config).unwrap();
     let payload = b"compress then encrypt ".repeat(500);
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "data".to_string(),
             WriteOpType::Put,
             b"blob".to_vec(),
             payload.clone(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     let result = WalRecovery::recover_with_key(&fs, path, Some(key)).unwrap();
@@ -893,7 +914,7 @@ fn test_wal_missing_key_error_handling() {
     config.encryption = EncryptionType::Aes256Gcm;
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    let err = writer.write_begin(1).unwrap_err();
+    let err = writer.write_begin(TransactionId::from(1)).unwrap_err();
     assert!(matches!(err, WalError::MissingEncryptionKey));
 }
 
@@ -955,22 +976,22 @@ fn test_wal_partial_record_write_stops_recovery_at_tail() {
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
-    writer.write_begin(2).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "users".to_string(),
             WriteOpType::Put,
             b"user:2".to_vec(),
@@ -986,7 +1007,10 @@ fn test_wal_partial_record_write_stops_recovery_at_tail() {
     drop(file);
 
     let result = WalRecovery::recover(&fs, path).unwrap_err();
-    assert!(matches!(result, WalError::CorruptedWal(_) | WalError::InvalidRecord(_)));
+    assert!(matches!(
+        result,
+        WalError::CorruptedWal(_) | WalError::InvalidRecord(_)
+    ));
 }
 
 #[test]
@@ -996,17 +1020,17 @@ fn test_wal_corrupted_lsn_sequence_does_not_drop_committed_data() {
     let config = WalWriterConfig::default();
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
     drop(writer);
 
@@ -1014,7 +1038,8 @@ fn test_wal_corrupted_lsn_sequence_does_not_drop_committed_data() {
     overwrite_record_lsn(&fs, path, offsets[1], 99);
 
     let err = WalRecovery::recover(&fs, path).unwrap_err();
-    assert!(matches!(err, WalError::ChecksumMismatch(99)));
+    let lsn = LogSequenceNumber::from(99);
+    assert!(matches!(err, WalError::ChecksumMismatch(lsn)));
 }
 
 #[test]
@@ -1024,17 +1049,17 @@ fn test_wal_missing_middle_record_causes_recovery_error() {
     let config = WalWriterConfig::default();
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
     drop(writer);
 
@@ -1054,22 +1079,22 @@ fn test_wal_recovery_with_active_and_committed_transactions() {
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
-    writer.write_begin(2).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "users".to_string(),
             WriteOpType::Put,
             b"user:2".to_vec(),
@@ -1077,26 +1102,26 @@ fn test_wal_recovery_with_active_and_committed_transactions() {
         )
         .unwrap();
 
-    writer.write_begin(3).unwrap();
+    writer.write_begin(TransactionId::from(3)).unwrap();
     writer
         .write_operation(
-            3,
+            TransactionId::from(3),
             "users".to_string(),
             WriteOpType::Delete,
             b"user:3".to_vec(),
             vec![],
         )
         .unwrap();
-    writer.write_rollback(3).unwrap();
+    writer.write_rollback(TransactionId::from(3)).unwrap();
 
     writer.flush().unwrap();
 
     let result = WalRecovery::recover(&fs, path).unwrap();
     assert_eq!(result.committed_writes.len(), 1);
     assert_eq!(result.committed_writes[0].key, b"user:1");
-    assert!(result.active_transactions.contains(&2));
-    assert!(!result.active_transactions.contains(&1));
-    assert!(!result.active_transactions.contains(&3));
+    assert!(result.active_transactions.contains(&TransactionId::from(2)));
+    assert!(!result.active_transactions.contains(&TransactionId::from(1)));
+    assert!(!result.active_transactions.contains(&TransactionId::from(3)));
 }
 
 #[test]
@@ -1111,17 +1136,17 @@ fn test_wal_concurrent_corruption_scenario_reports_failure() {
     let writer_thread = {
         let writer = Arc::clone(&writer);
         thread::spawn(move || {
-            writer.write_begin(1).unwrap();
+            writer.write_begin(TransactionId::from(1)).unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "users".to_string(),
                     WriteOpType::Put,
                     b"user:1".to_vec(),
                     vec![0xAA; 4096],
                 )
                 .unwrap();
-            writer.write_commit(1).unwrap();
+            writer.write_commit(TransactionId::from(1)).unwrap();
             writer.flush().unwrap();
         })
     };
@@ -1156,17 +1181,17 @@ fn test_wal_encryption_key_rotation_failure_is_detected() {
     old_config.encryption_key = Some(old_key);
 
     let writer = WalWriter::create(&fs, path, old_config).unwrap();
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "secure".to_string(),
             WriteOpType::Put,
             b"k1".to_vec(),
             b"encrypted payload".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
     writer.flush().unwrap();
 
     let err = WalRecovery::recover_with_key(&fs, path, Some(new_key)).unwrap_err();

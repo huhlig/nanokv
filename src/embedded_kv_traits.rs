@@ -146,57 +146,11 @@ use std::sync::Arc;
 // Core identifiers and basic data containers
 // =============================================================================
 
-/// Logical table identifier assigned by the catalog.
-pub type TableId = u64;
 
-/// Logical index identifier assigned by the catalog.
-pub type IndexId = u64;
 
-/// Transaction identifier.
-pub type TxId = u64;
-
-/// Snapshot identifier.
-pub type SnapshotId = u64;
-
-/// Monotonic log sequence number.
-///
-/// Implementations may encode term, segment, offset, shard, or epoch information
-/// in a richer internal representation. The public trait only requires stable
-/// ordering.
-pub type Lsn = u64;
-
-/// Page identifier inside a single-file database.
-pub type PageId = u64;
 
 /// Logical version used by MVCC-capable engines.
 pub type Version = u64;
-
-/// Owned key buffer.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct KeyBuf(pub Vec<u8>);
-
-impl AsRef<[u8]> for KeyBuf {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-/// Owned value buffer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValueBuf(pub Vec<u8>);
-
-impl AsRef<[u8]> for ValueBuf {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-/// A key-value entry returned by owned iterators or batch operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub key: KeyBuf,
-    pub value: ValueBuf,
-}
 
 /// Defines whether a bound is inclusive, exclusive, or unbounded.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,56 +258,6 @@ pub enum MutationKind {
     RangeDelete,
 }
 
-/// Result of a successful commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommitInfo {
-    pub tx_id: TxId,
-    pub commit_lsn: Lsn,
-    pub durable_lsn: Option<Lsn>,
-}
-
-/// A named, persistent snapshot of the database at a specific LSN.
-///
-/// Snapshots enable point-in-time queries, backups, and long-running analytics
-/// without blocking writers. They pin the necessary pages/segments in memory
-/// or on disk until explicitly released.
-///
-/// # Lifecycle
-///
-/// 1. Create snapshot with [`KvDatabase::create_snapshot`]
-/// 2. Use snapshot LSN to open read transactions
-/// 3. Release snapshot with [`KvDatabase::release_snapshot`] when done
-///
-/// # Examples
-///
-/// ```
-/// # use nanokv::embedded_kv_traits::*;
-/// # fn example(db: &impl KvDatabase) -> Result<(), Box<dyn std::error::Error>> {
-/// // Create a snapshot for backup
-/// let snapshot = db.create_snapshot("backup-2024")?;
-///
-/// // Use the snapshot LSN for consistent reads
-/// let tx = db.begin_read_at(snapshot.lsn)?;
-/// // ... perform backup operations ...
-///
-/// // Release when done
-/// db.release_snapshot(snapshot.id)?;
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Snapshot {
-    /// Unique snapshot identifier.
-    pub id: SnapshotId,
-    /// User-provided name for the snapshot.
-    pub name: String,
-    /// LSN at which the snapshot was taken.
-    pub lsn: Lsn,
-    /// Timestamp when the snapshot was created.
-    pub created_at: i64,
-    /// Estimated size in bytes (pages/segments pinned).
-    pub size_bytes: u64,
-}
 
 // =============================================================================
 // Database and transaction layer

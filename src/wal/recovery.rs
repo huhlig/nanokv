@@ -46,9 +46,10 @@
 //! - Start recovery from the last checkpoint instead of the beginning of the WAL
 //! - Implement parallel recovery for independent transactions
 
+use crate::txn::TransactionId;
 use crate::vfs::FileSystem;
 use crate::wal::{
-    Lsn, RecordData, TransactionId, WalError, WalReader, WalRecord, WalResult, WriteOpType,
+    LogSequenceNumber, RecordData, WalError, WalReader, WalRecord, WalResult, WriteOpType,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -80,7 +81,7 @@ pub struct RecoveredWrite {
 #[derive(Debug)]
 pub struct RecoveryResult {
     /// Last checkpoint LSN (if any)
-    pub last_checkpoint_lsn: Option<Lsn>,
+    pub last_checkpoint_lsn: Option<LogSequenceNumber>,
     /// Committed writes that need to be applied
     pub committed_writes: Vec<RecoveredWrite>,
     /// Active transactions at the end of recovery
@@ -96,7 +97,7 @@ pub struct WalRecovery {
     /// Writes per transaction
     transaction_writes: BTreeMap<TransactionId, Vec<RecoveredWrite>>,
     /// Last checkpoint LSN
-    last_checkpoint_lsn: Option<Lsn>,
+    last_checkpoint_lsn: Option<LogSequenceNumber>,
     /// Active transactions at last checkpoint
     checkpoint_active_txns: Option<HashSet<TransactionId>>,
     /// Records processed
@@ -217,7 +218,8 @@ impl WalRecovery {
         }
 
         // Mark transaction as committed
-        self.transactions.insert(txn_id, TransactionState::Committed);
+        self.transactions
+            .insert(txn_id, TransactionState::Committed);
         Ok(())
     }
 
@@ -241,17 +243,18 @@ impl WalRecovery {
     /// Process a CHECKPOINT record
     fn process_checkpoint(
         &mut self,
-        lsn: Lsn,
+        lsn: LogSequenceNumber,
         active_txns: Vec<TransactionId>,
     ) -> WalResult<()> {
         self.last_checkpoint_lsn = Some(lsn);
-        
+
         // Store the active transactions at checkpoint for validation
         let checkpoint_txns: HashSet<TransactionId> = active_txns.iter().copied().collect();
-        
+
         // Validate that checkpoint active_txns matches our current state
         // This helps detect WAL corruption or inconsistencies
-        let current_active: HashSet<TransactionId> = self.transactions
+        let current_active: HashSet<TransactionId> = self
+            .transactions
             .iter()
             .filter_map(|(txn_id, state)| {
                 if *state == TransactionState::Active {
@@ -261,7 +264,7 @@ impl WalRecovery {
                 }
             })
             .collect();
-        
+
         // Check if checkpoint's active transactions match our tracked active transactions
         if checkpoint_txns != current_active {
             // Log a warning but don't fail - the checkpoint might be slightly stale
@@ -274,9 +277,9 @@ impl WalRecovery {
                 current_active.len()
             );
         }
-        
+
         self.checkpoint_active_txns = Some(checkpoint_txns);
-        
+
         // Note: We don't remove any transaction state or writes here.
         // The checkpoint just marks a point in time. All committed transactions
         // before and after the checkpoint should still be recovered.
@@ -292,7 +295,7 @@ impl WalRecovery {
     fn build_result(self) -> RecoveryResult {
         let mut committed_writes = Vec::new();
         let mut active_transactions = HashSet::new();
-        
+
         // Final validation: if we had a checkpoint, verify active transactions
         // Do this before consuming self.transactions
         if let Some(checkpoint_txns) = &self.checkpoint_active_txns {
@@ -355,17 +358,17 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Write a committed transaction
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
         writer.flush().unwrap();
 
         // Recover
@@ -387,17 +390,17 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Write a rolled back transaction
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_rollback(1).unwrap();
+        writer.write_rollback(TransactionId::from(1)).unwrap();
         writer.flush().unwrap();
 
         // Recover
@@ -416,10 +419,10 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Write an incomplete transaction
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
@@ -433,7 +436,7 @@ mod tests {
 
         assert_eq!(result.committed_writes.len(), 0);
         assert_eq!(result.active_transactions.len(), 1);
-        assert!(result.active_transactions.contains(&1));
+        assert!(result.active_transactions.contains(&TransactionId::from(1)));
         assert_eq!(result.records_processed, 2);
     }
 
@@ -445,36 +448,36 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: committed
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
         // Transaction 2: rolled back
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
             )
             .unwrap();
-        writer.write_rollback(2).unwrap();
+        writer.write_rollback(TransactionId::from(2)).unwrap();
 
         // Transaction 3: active
-        writer.write_begin(3).unwrap();
+        writer.write_begin(TransactionId::from(3)).unwrap();
         writer
             .write_operation(
-                3,
+                TransactionId::from(3),
                 "table3".to_string(),
                 WriteOpType::Put,
                 b"key3".to_vec(),
@@ -490,7 +493,7 @@ mod tests {
         assert_eq!(result.committed_writes.len(), 1);
         assert_eq!(result.committed_writes[0].table, "table1");
         assert_eq!(result.active_transactions.len(), 1);
-        assert!(result.active_transactions.contains(&3));
+        assert!(result.active_transactions.contains(&TransactionId::from(3)));
         assert_eq!(result.records_processed, 8);
     }
 
@@ -502,23 +505,23 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: committed before checkpoint
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
         // Transaction 2: active at checkpoint
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
@@ -530,7 +533,7 @@ mod tests {
         writer.write_checkpoint().unwrap();
 
         // Transaction 2: committed after checkpoint
-        writer.write_commit(2).unwrap();
+        writer.write_commit(TransactionId::from(2)).unwrap();
 
         writer.flush().unwrap();
 
@@ -549,17 +552,17 @@ mod tests {
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Delete,
                 b"key1".to_vec(),
                 vec![],
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
         writer.flush().unwrap();
 
         let result = WalRecovery::recover(&fs, path).unwrap();
@@ -578,10 +581,10 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: active before checkpoint
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
@@ -590,10 +593,10 @@ mod tests {
             .unwrap();
 
         // Transaction 2: active before checkpoint
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
@@ -605,7 +608,7 @@ mod tests {
         writer.write_checkpoint().unwrap();
 
         // Transaction 1: committed after checkpoint
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
         // Transaction 2: still active
         writer.flush().unwrap();
@@ -616,7 +619,7 @@ mod tests {
         assert!(result.last_checkpoint_lsn.is_some());
         assert_eq!(result.committed_writes.len(), 1);
         assert_eq!(result.active_transactions.len(), 1);
-        assert!(result.active_transactions.contains(&2));
+        assert!(result.active_transactions.contains(&TransactionId::from(2)));
     }
 
     #[test]
@@ -627,10 +630,10 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: active before checkpoint
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
@@ -639,10 +642,10 @@ mod tests {
             .unwrap();
 
         // Transaction 2: active before checkpoint
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
@@ -654,8 +657,8 @@ mod tests {
         writer.write_checkpoint().unwrap();
 
         // Both transactions committed after checkpoint
-        writer.write_commit(1).unwrap();
-        writer.write_commit(2).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
+        writer.write_commit(TransactionId::from(2)).unwrap();
         writer.flush().unwrap();
 
         // Recover and verify
@@ -674,10 +677,10 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: active before checkpoint
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
@@ -686,10 +689,10 @@ mod tests {
             .unwrap();
 
         // Transaction 2: active before checkpoint
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
@@ -698,10 +701,10 @@ mod tests {
             .unwrap();
 
         // Transaction 3: active before checkpoint
-        writer.write_begin(3).unwrap();
+        writer.write_begin(TransactionId::from(3)).unwrap();
         writer
             .write_operation(
-                3,
+                TransactionId::from(3),
                 "table3".to_string(),
                 WriteOpType::Put,
                 b"key3".to_vec(),
@@ -713,10 +716,10 @@ mod tests {
         writer.write_checkpoint().unwrap();
 
         // Transaction 1: committed after checkpoint
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
         // Transaction 2: rolled back after checkpoint
-        writer.write_rollback(2).unwrap();
+        writer.write_rollback(TransactionId::from(2)).unwrap();
 
         // Transaction 3: still active
         writer.flush().unwrap();
@@ -728,7 +731,7 @@ mod tests {
         assert_eq!(result.committed_writes.len(), 1);
         assert_eq!(result.committed_writes[0].table, "table1");
         assert_eq!(result.active_transactions.len(), 1);
-        assert!(result.active_transactions.contains(&3));
+        assert!(result.active_transactions.contains(&TransactionId::from(3)));
     }
 
     #[test]
@@ -739,26 +742,26 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: committed before first checkpoint
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
         // First checkpoint (no active transactions)
         writer.write_checkpoint().unwrap();
 
         // Transaction 2: active at second checkpoint
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
@@ -770,7 +773,7 @@ mod tests {
         writer.write_checkpoint().unwrap();
 
         // Transaction 2: committed after second checkpoint
-        writer.write_commit(2).unwrap();
+        writer.write_commit(TransactionId::from(2)).unwrap();
         writer.flush().unwrap();
 
         // Recover and verify
@@ -790,33 +793,33 @@ mod tests {
         let writer = WalWriter::create(&fs, path, config).unwrap();
 
         // Transaction 1: committed before checkpoint
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
         writer
             .write_operation(
-                1,
+                TransactionId::from(1),
                 "table1".to_string(),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
             )
             .unwrap();
-        writer.write_commit(1).unwrap();
+        writer.write_commit(TransactionId::from(1)).unwrap();
 
         // Checkpoint with no active transactions
         writer.write_checkpoint().unwrap();
 
         // Transaction 2: started after checkpoint
-        writer.write_begin(2).unwrap();
+        writer.write_begin(TransactionId::from(2)).unwrap();
         writer
             .write_operation(
-                2,
+                TransactionId::from(2),
                 "table2".to_string(),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
             )
             .unwrap();
-        writer.write_commit(2).unwrap();
+        writer.write_commit(TransactionId::from(2)).unwrap();
         writer.flush().unwrap();
 
         // Recover and verify

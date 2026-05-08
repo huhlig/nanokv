@@ -82,23 +82,26 @@
 //! }
 //! ```
 
+mod commit;
 mod error;
-mod group_commit;
 mod reader;
 mod record;
 mod recovery;
 mod writer;
 
+pub use self::commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitMetrics};
 pub use self::error::{WalError, WalResult};
-pub use self::group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitMetrics};
 pub use self::reader::{WalReader, WalRecordIterator};
-pub use self::record::{Lsn, RecordData, RecordType, TransactionId, WalRecord, WriteOpType};
+pub use self::record::{
+    LogSequenceNumber, RecordData, RecordType,  WalRecord, WriteOpType,
+};
 pub use self::recovery::{RecoveredWrite, RecoveryResult, WalRecovery};
 pub use self::writer::{WalWriter, WalWriterConfig};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::txn::TransactionId;
     use crate::vfs::MemoryFileSystem;
 
     #[test]
@@ -112,10 +115,10 @@ mod tests {
             let writer = WalWriter::create(&fs, path, config.clone()).unwrap();
 
             // Transaction 1: committed
-            writer.write_begin(1).unwrap();
+            writer.write_begin(TransactionId::from(1)).unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "users".to_string(),
                     WriteOpType::Put,
                     b"user:1".to_vec(),
@@ -124,33 +127,33 @@ mod tests {
                 .unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "users".to_string(),
                     WriteOpType::Put,
                     b"user:2".to_vec(),
                     b"Bob".to_vec(),
                 )
                 .unwrap();
-            writer.write_commit(1).unwrap();
+            writer.write_commit(TransactionId::from(1)).unwrap();
 
             // Transaction 2: rolled back
-            writer.write_begin(2).unwrap();
+            writer.write_begin(TransactionId::from(2)).unwrap();
             writer
                 .write_operation(
-                    2,
+                    TransactionId::from(2),
                     "users".to_string(),
                     WriteOpType::Delete,
                     b"user:1".to_vec(),
                     vec![],
                 )
                 .unwrap();
-            writer.write_rollback(2).unwrap();
+            writer.write_rollback(TransactionId::from(2)).unwrap();
 
             // Transaction 3: active (crash simulation)
-            writer.write_begin(3).unwrap();
+            writer.write_begin(TransactionId::from(3)).unwrap();
             writer
                 .write_operation(
-                    3,
+                    TransactionId::from(3),
                     "users".to_string(),
                     WriteOpType::Put,
                     b"user:3".to_vec(),
@@ -173,7 +176,7 @@ mod tests {
         assert_eq!(result.committed_writes[1].value, b"Bob");
 
         assert_eq!(result.active_transactions.len(), 1);
-        assert!(result.active_transactions.contains(&3));
+        assert!(result.active_transactions.contains(&TransactionId::from(3)));
 
         assert_eq!(result.records_processed, 9); // BEGIN(1), WRITE(1), WRITE(1), COMMIT(1), BEGIN(2), WRITE(2), ROLLBACK(2), BEGIN(3), WRITE(3)
     }
@@ -188,23 +191,23 @@ mod tests {
             let writer = WalWriter::create(&fs, path, config).unwrap();
 
             // Transaction 1
-            writer.write_begin(1).unwrap();
+            writer.write_begin(TransactionId::from(1)).unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "data".to_string(),
                     WriteOpType::Put,
                     b"key1".to_vec(),
                     b"value1".to_vec(),
                 )
                 .unwrap();
-            writer.write_commit(1).unwrap();
+            writer.write_commit(TransactionId::from(1)).unwrap();
 
             // Transaction 2 (active)
-            writer.write_begin(2).unwrap();
+            writer.write_begin(TransactionId::from(2)).unwrap();
             writer
                 .write_operation(
-                    2,
+                    TransactionId::from(2),
                     "data".to_string(),
                     WriteOpType::Put,
                     b"key2".to_vec(),
@@ -216,24 +219,24 @@ mod tests {
             let checkpoint_lsn = writer.write_checkpoint().unwrap();
 
             // Transaction 2 commits after checkpoint
-            writer.write_commit(2).unwrap();
+            writer.write_commit(TransactionId::from(2)).unwrap();
 
             // Transaction 3
-            writer.write_begin(3).unwrap();
+            writer.write_begin(TransactionId::from(3)).unwrap();
             writer
                 .write_operation(
-                    3,
+                    TransactionId::from(3),
                     "data".to_string(),
                     WriteOpType::Put,
                     b"key3".to_vec(),
                     b"value3".to_vec(),
                 )
                 .unwrap();
-            writer.write_commit(3).unwrap();
+            writer.write_commit(TransactionId::from(3)).unwrap();
 
             writer.flush().unwrap();
 
-            assert!(checkpoint_lsn > 0);
+            assert!(checkpoint_lsn > LogSequenceNumber::from(0));
         }
 
         // Recover
@@ -252,17 +255,17 @@ mod tests {
 
         {
             let writer = WalWriter::create(&fs, path, config).unwrap();
-            writer.write_begin(1).unwrap();
+            writer.write_begin(TransactionId::from(1)).unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "test".to_string(),
                     WriteOpType::Put,
                     b"key".to_vec(),
                     b"value".to_vec(),
                 )
                 .unwrap();
-            writer.write_commit(1).unwrap();
+            writer.write_commit(TransactionId::from(1)).unwrap();
             writer.flush().unwrap();
         }
 
@@ -271,9 +274,15 @@ mod tests {
         let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
 
         assert_eq!(records.len(), 3);
-        assert!(matches!(records[0].data, RecordData::Begin { txn_id: 1 }));
+        assert!(matches!(
+            records[0].data,
+            RecordData::Begin { txn_id } if txn_id == TransactionId::from(1)
+        ));
         assert!(matches!(records[1].data, RecordData::Write { .. }));
-        assert!(matches!(records[2].data, RecordData::Commit { txn_id: 1 }));
+        assert!(matches!(
+            records[2].data,
+            RecordData::Commit { txn_id } if txn_id == TransactionId::from(1)
+        ));
     }
 
     #[test]
@@ -284,12 +293,12 @@ mod tests {
 
         {
             let writer = WalWriter::create(&fs, path, config).unwrap();
-            writer.write_begin(1).unwrap();
+            writer.write_begin(TransactionId::from(1)).unwrap();
 
             // Write to multiple tables in same transaction
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "users".to_string(),
                     WriteOpType::Put,
                     b"user:1".to_vec(),
@@ -298,7 +307,7 @@ mod tests {
                 .unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "posts".to_string(),
                     WriteOpType::Put,
                     b"post:1".to_vec(),
@@ -307,7 +316,7 @@ mod tests {
                 .unwrap();
             writer
                 .write_operation(
-                    1,
+                    TransactionId::from(1),
                     "comments".to_string(),
                     WriteOpType::Put,
                     b"comment:1".to_vec(),
@@ -315,7 +324,7 @@ mod tests {
                 )
                 .unwrap();
 
-            writer.write_commit(1).unwrap();
+            writer.write_commit(TransactionId::from(1)).unwrap();
             writer.flush().unwrap();
         }
 

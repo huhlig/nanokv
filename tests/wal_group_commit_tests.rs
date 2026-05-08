@@ -16,6 +16,7 @@
 
 //! Tests for WAL group commit functionality
 
+use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{GroupCommitConfig, WalWriter, WalWriterConfig, WriteOpType};
 use std::sync::Arc;
@@ -32,17 +33,17 @@ fn test_group_commit_disabled() {
     assert!(!writer.is_group_commit_enabled());
 
     // Should work normally without group commit
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "test".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             b"value".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 }
 
 #[test]
@@ -57,21 +58,26 @@ fn test_group_commit_enabled() {
     assert!(writer.is_group_commit_enabled());
 
     // Should work with group commit
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "test".to_string(),
             WriteOpType::Put,
             b"key".to_vec(),
             b"value".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
     // Check metrics
     if let Some(metrics) = writer.group_commit_metrics() {
-        assert!(metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(
+            metrics
+                .total_commits
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
     }
 }
 
@@ -83,21 +89,23 @@ fn test_group_commit_single_transaction() {
 
     let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
     // Verify metrics
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(commits, 1);
     }
 }
@@ -112,22 +120,25 @@ fn test_group_commit_multiple_transactions_sequential() {
 
     // Write multiple transactions sequentially
     for i in 1..=5 {
-        writer.write_begin(i).unwrap();
+        let txn_id = TransactionId::from(i);
+        writer.write_begin(txn_id).unwrap();
         writer
             .write_operation(
-                i,
+                txn_id,
                 "test".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
             )
             .unwrap();
-        writer.write_commit(i).unwrap();
+        writer.write_commit(txn_id).unwrap();
     }
 
     // Verify all commits were processed
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(commits, 5);
     }
 }
@@ -149,7 +160,8 @@ fn test_group_commit_concurrent_transactions() {
         let writer_clone = writer.clone();
         let handle = thread::spawn(move || {
             for i in 0..transactions_per_thread {
-                let txn_id = (thread_id * transactions_per_thread + i) as u64 + 1;
+                let txn_id =
+                    TransactionId::from((thread_id * transactions_per_thread + i) as u64 + 1);
                 writer_clone.write_begin(txn_id).unwrap();
                 writer_clone
                     .write_operation(
@@ -172,12 +184,21 @@ fn test_group_commit_concurrent_transactions() {
 
     // Verify all commits were processed
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(commits, (num_threads * transactions_per_thread) as u64);
 
         // Check that batching occurred (should have fewer fsyncs than commits)
-        let fsyncs = metrics.total_fsyncs.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(fsyncs < commits, "Expected batching: {} fsyncs for {} commits", fsyncs, commits);
+        let fsyncs = metrics
+            .total_fsyncs
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            fsyncs < commits,
+            "Expected batching: {} fsyncs for {} commits",
+            fsyncs,
+            commits
+        );
 
         println!("Group commit effectiveness:");
         println!("  Total commits: {}", commits);
@@ -205,17 +226,18 @@ fn test_group_commit_batching() {
     for i in 1..=10 {
         let writer_clone = writer.clone();
         let handle = thread::spawn(move || {
-            writer_clone.write_begin(i).unwrap();
+            let txn_id = TransactionId::from(i);
+            writer_clone.write_begin(txn_id).unwrap();
             writer_clone
                 .write_operation(
-                    i,
+                    txn_id,
                     "test".to_string(),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
                 )
                 .unwrap();
-            writer_clone.write_commit(i).unwrap();
+            writer_clone.write_commit(txn_id).unwrap();
         });
         handles.push(handle);
     }
@@ -229,12 +251,19 @@ fn test_group_commit_batching() {
 
     // Verify batching occurred
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
-        let fsyncs = metrics.total_fsyncs.load(std::sync::atomic::Ordering::Relaxed);
-        
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let fsyncs = metrics
+            .total_fsyncs
+            .load(std::sync::atomic::Ordering::Relaxed);
+
         assert_eq!(commits, 10);
         assert!(fsyncs < commits, "Expected batching to reduce fsyncs");
-        assert!(metrics.avg_batch_size() > 1.0, "Expected average batch size > 1");
+        assert!(
+            metrics.avg_batch_size() > 1.0,
+            "Expected average batch size > 1"
+        );
     }
 }
 
@@ -242,13 +271,13 @@ fn test_group_commit_batching() {
 fn test_group_commit_config_presets() {
     let fs = MemoryFileSystem::new();
 
-    // Test high throughput config
+    // Test high-throughput config
     let mut config = WalWriterConfig::default();
     config.group_commit = GroupCommitConfig::high_throughput();
     let writer = WalWriter::create(&fs, "test1.wal", config).unwrap();
     assert!(writer.is_group_commit_enabled());
 
-    // Test low latency config
+    // Test low-latency config
     let mut config = WalWriterConfig::default();
     config.group_commit = GroupCommitConfig::low_latency();
     let writer = WalWriter::create(&fs, "test2.wal", config).unwrap();
@@ -271,24 +300,31 @@ fn test_group_commit_metrics() {
 
     // Write some transactions
     for i in 1..=3 {
-        writer.write_begin(i).unwrap();
+        let txn_id = TransactionId::from(i);
+        writer.write_begin(txn_id).unwrap();
         writer
             .write_operation(
-                i,
+                txn_id,
                 "test".to_string(),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
             )
             .unwrap();
-        writer.write_commit(i).unwrap();
+        writer.write_commit(txn_id).unwrap();
     }
 
     // Check metrics exist and are reasonable
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
-        let batches = metrics.total_batches.load(std::sync::atomic::Ordering::Relaxed);
-        let fsyncs = metrics.total_fsyncs.load(std::sync::atomic::Ordering::Relaxed);
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let batches = metrics
+            .total_batches
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let fsyncs = metrics
+            .total_fsyncs
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         assert!(commits >= 3);
         assert!(batches > 0);
@@ -307,47 +343,49 @@ fn test_group_commit_with_rollback() {
     let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
     // Transaction 1: commit
-    writer.write_begin(1).unwrap();
+    writer.write_begin(TransactionId::from(1)).unwrap();
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "test".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
         )
         .unwrap();
-    writer.write_commit(1).unwrap();
+    writer.write_commit(TransactionId::from(1)).unwrap();
 
     // Transaction 2: rollback (should not use group commit)
-    writer.write_begin(2).unwrap();
+    writer.write_begin(TransactionId::from(2)).unwrap();
     writer
         .write_operation(
-            2,
+            TransactionId::from(2),
             "test".to_string(),
             WriteOpType::Put,
             b"key2".to_vec(),
             b"value2".to_vec(),
         )
         .unwrap();
-    writer.write_rollback(2).unwrap();
+    writer.write_rollback(TransactionId::from(2)).unwrap();
 
     // Transaction 3: commit
-    writer.write_begin(3).unwrap();
+    writer.write_begin(TransactionId::from(3)).unwrap();
     writer
         .write_operation(
-            3,
+            TransactionId::from(3),
             "test".to_string(),
             WriteOpType::Put,
             b"key3".to_vec(),
             b"value3".to_vec(),
         )
         .unwrap();
-    writer.write_commit(3).unwrap();
+    writer.write_commit(TransactionId::from(3)).unwrap();
 
     // Only commits should be counted in group commit metrics
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(commits, 2); // Only transactions 1 and 3
     }
 }
@@ -369,9 +407,10 @@ fn test_group_commit_stress() {
         let writer_clone = writer.clone();
         let handle = thread::spawn(move || {
             for i in 0..transactions_per_thread {
-                let txn_id = (thread_id * transactions_per_thread + i) as u64 + 1;
+                let txn_id =
+                    TransactionId::from((thread_id * transactions_per_thread + i) as u64 + 1);
                 writer_clone.write_begin(txn_id).unwrap();
-                
+
                 // Multiple operations per transaction
                 for j in 0..3 {
                     writer_clone
@@ -384,7 +423,7 @@ fn test_group_commit_stress() {
                         )
                         .unwrap();
                 }
-                
+
                 writer_clone.write_commit(txn_id).unwrap();
             }
         });
@@ -397,13 +436,17 @@ fn test_group_commit_stress() {
 
     // Verify all commits were processed
     if let Some(metrics) = writer.group_commit_metrics() {
-        let commits = metrics.total_commits.load(std::sync::atomic::Ordering::Relaxed);
+        let commits = metrics
+            .total_commits
+            .load(std::sync::atomic::Ordering::Relaxed);
         let expected_commits = (num_threads * transactions_per_thread) as u64;
         assert_eq!(commits, expected_commits);
 
-        let fsyncs = metrics.total_fsyncs.load(std::sync::atomic::Ordering::Relaxed);
+        let fsyncs = metrics
+            .total_fsyncs
+            .load(std::sync::atomic::Ordering::Relaxed);
         let reduction = commits as f64 / fsyncs as f64;
-        
+
         println!("Stress test results:");
         println!("  Threads: {}", num_threads);
         println!("  Transactions per thread: {}", transactions_per_thread);
@@ -411,9 +454,12 @@ fn test_group_commit_stress() {
         println!("  Total fsyncs: {}", fsyncs);
         println!("  Fsync reduction: {:.2}x", reduction);
         println!("  Avg batch size: {:.2}", metrics.avg_batch_size());
-        
+
         // Under high load, we should see significant batching
-        assert!(reduction > 2.0, "Expected at least 2x fsync reduction under load");
+        assert!(
+            reduction > 2.0,
+            "Expected at least 2x fsync reduction under load"
+        );
     }
 }
 

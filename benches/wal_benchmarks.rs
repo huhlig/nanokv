@@ -18,14 +18,15 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nanokv::pager::{CompressionType, EncryptionType};
+use nanokv::txn::TransactionId;
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
-    GroupCommitConfig, WalReader, WalRecordIterator, WalRecovery, WalWriter, WalWriterConfig, WriteOpType,
+    GroupCommitConfig, WalReader, WalRecordIterator, WalRecovery, WalWriter, WalWriterConfig,
+    WriteOpType,
 };
 use std::hint::black_box;
 use std::sync::Arc;
 use std::thread;
-
 // ============================================================================
 // WAL Writer Creation Benchmarks
 // ============================================================================
@@ -72,12 +73,12 @@ fn bench_transactions(c: &mut Criterion) {
         let fs = MemoryFileSystem::new();
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-        let mut txn_id = 1;
+        let mut txn_id = TransactionId::from(1);
 
         b.iter(|| {
             writer.write_begin(txn_id).unwrap();
             writer.write_commit(txn_id).unwrap();
-            txn_id += 1;
+            txn_id = TransactionId::from(txn_id.as_u64() + 1);
         });
     });
 
@@ -86,12 +87,12 @@ fn bench_transactions(c: &mut Criterion) {
         let fs = LocalFileSystem::new(temp_dir.path());
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-        let mut txn_id = 1;
+        let mut txn_id = TransactionId::from(1);
 
         b.iter(|| {
             writer.write_begin(txn_id).unwrap();
             writer.write_commit(txn_id).unwrap();
-            txn_id += 1;
+            txn_id = TransactionId::from(txn_id.as_u64() + 1);
         });
     });
 
@@ -99,12 +100,12 @@ fn bench_transactions(c: &mut Criterion) {
         let fs = MemoryFileSystem::new();
         let config = WalWriterConfig::default();
         let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-        let mut txn_id = 1;
+        let mut txn_id = TransactionId::from(1);
 
         b.iter(|| {
             writer.write_begin(txn_id).unwrap();
             writer.write_rollback(txn_id).unwrap();
-            txn_id += 1;
+            txn_id = TransactionId::from(txn_id.as_u64() + 1);
         });
     });
 
@@ -132,14 +133,14 @@ fn bench_write_operations(c: &mut Criterion) {
                 let mut counter = 0;
 
                 // Begin a transaction for the benchmark
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
                     writer
                         .write_operation(
-                            1,
+                            TransactionId::from(1),
                             "test".to_string(),
                             WriteOpType::Put,
                             key,
@@ -162,14 +163,14 @@ fn bench_write_operations(c: &mut Criterion) {
                 let mut counter = 0;
 
                 // Begin a transaction for the benchmark
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
                     writer
                         .write_operation(
-                            1,
+                            TransactionId::from(1),
                             "test".to_string(),
                             WriteOpType::Put,
                             key,
@@ -188,13 +189,19 @@ fn bench_write_operations(c: &mut Criterion) {
         let mut counter = 0;
 
         // Begin a transaction for the benchmark
-        writer.write_begin(1).unwrap();
+        writer.write_begin(TransactionId::from(1)).unwrap();
 
         b.iter(|| {
             let key = format!("key_{}", counter).into_bytes();
             counter += 1;
             writer
-                .write_operation(1, "test".to_string(), WriteOpType::Delete, key, vec![])
+                .write_operation(
+                    TransactionId::from(1),
+                    "test".to_string(),
+                    WriteOpType::Delete,
+                    key,
+                    vec![],
+                )
                 .unwrap();
         });
     });
@@ -219,11 +226,11 @@ fn bench_flush_operations(c: &mut Criterion) {
                 let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
 
                 b.iter(|| {
-                    writer.write_begin(1).unwrap();
+                    writer.write_begin(TransactionId::from(1)).unwrap();
                     for i in 0..num_writes {
                         writer
                             .write_operation(
-                                1,
+                                TransactionId::from(1),
                                 "test".to_string(),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
@@ -231,7 +238,7 @@ fn bench_flush_operations(c: &mut Criterion) {
                             )
                             .unwrap();
                     }
-                    writer.write_commit(1).unwrap();
+                    writer.write_commit(TransactionId::from(1)).unwrap();
                     writer.flush().unwrap();
                 });
             },
@@ -247,11 +254,11 @@ fn bench_flush_operations(c: &mut Criterion) {
                 let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
 
                 b.iter(|| {
-                    writer.write_begin(1).unwrap();
+                    writer.write_begin(TransactionId::from(1)).unwrap();
                     for i in 0..num_writes {
                         writer
                             .write_operation(
-                                1,
+                                TransactionId::from(1),
                                 "test".to_string(),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
@@ -259,7 +266,7 @@ fn bench_flush_operations(c: &mut Criterion) {
                             )
                             .unwrap();
                     }
-                    writer.write_commit(1).unwrap();
+                    writer.write_commit(TransactionId::from(1)).unwrap();
                     writer.flush().unwrap();
                 });
             },
@@ -287,17 +294,17 @@ fn bench_wal_reader(c: &mut Criterion) {
 
                 // Write test data
                 for i in 0..num_records {
-                    writer.write_begin(i as u64).unwrap();
+                    writer.write_begin(TransactionId::from(i)).unwrap();
                     writer
                         .write_operation(
-                            i as u64,
+                            TransactionId::from(i),
                             "test".to_string(),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
                         )
                         .unwrap();
-                    writer.write_commit(i as u64).unwrap();
+                    writer.write_commit(TransactionId::from(i)).unwrap();
                 }
                 writer.flush().unwrap();
                 drop(writer);
@@ -322,17 +329,17 @@ fn bench_wal_reader(c: &mut Criterion) {
 
                 // Write test data
                 for i in 0..num_records {
-                    writer.write_begin(i as u64).unwrap();
+                    writer.write_begin(TransactionId::from(i)).unwrap();
                     writer
                         .write_operation(
-                            i as u64,
+                            TransactionId::from(i),
                             "test".to_string(),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
                         )
                         .unwrap();
-                    writer.write_commit(i as u64).unwrap();
+                    writer.write_commit(TransactionId::from(i)).unwrap();
                 }
                 writer.flush().unwrap();
                 drop(writer);
@@ -368,17 +375,17 @@ fn bench_recovery(c: &mut Criterion) {
 
                 // Write test data
                 for i in 0..num_transactions {
-                    writer.write_begin(i as u64).unwrap();
+                    writer.write_begin(TransactionId::from(i)).unwrap();
                     writer
                         .write_operation(
-                            i as u64,
+                            TransactionId::from(i),
                             "test".to_string(),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
                         )
                         .unwrap();
-                    writer.write_commit(i as u64).unwrap();
+                    writer.write_commit(TransactionId::from(i)).unwrap();
                 }
                 writer.flush().unwrap();
                 drop(writer);
@@ -401,17 +408,17 @@ fn bench_recovery(c: &mut Criterion) {
 
                 // Write test data
                 for i in 0..num_transactions {
-                    writer.write_begin(i as u64).unwrap();
+                    writer.write_begin(TransactionId::from(i)).unwrap();
                     writer
                         .write_operation(
-                            i as u64,
+                            TransactionId::from(i),
                             "test".to_string(),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
                         )
                         .unwrap();
-                    writer.write_commit(i as u64).unwrap();
+                    writer.write_commit(TransactionId::from(i)).unwrap();
                 }
                 writer.flush().unwrap();
                 drop(writer);
@@ -475,7 +482,7 @@ fn bench_complete_transactions(c: &mut Criterion) {
                 let fs = MemoryFileSystem::new();
                 let config = WalWriterConfig::default();
                 let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                let mut txn_id = 1;
+                let mut txn_id = TransactionId::from(1);
 
                 b.iter(|| {
                     writer.write_begin(txn_id).unwrap();
@@ -491,7 +498,7 @@ fn bench_complete_transactions(c: &mut Criterion) {
                             .unwrap();
                     }
                     writer.write_commit(txn_id).unwrap();
-                    txn_id += 1;
+                    txn_id = TransactionId::from(txn_id.as_u64() + 1);
                 });
             },
         );
@@ -504,7 +511,7 @@ fn bench_complete_transactions(c: &mut Criterion) {
                 let fs = LocalFileSystem::new(temp_dir.path());
                 let config = WalWriterConfig::default();
                 let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                let mut txn_id = 1;
+                let mut txn_id = TransactionId::from(1);
 
                 b.iter(|| {
                     writer.write_begin(txn_id).unwrap();
@@ -520,7 +527,7 @@ fn bench_complete_transactions(c: &mut Criterion) {
                             .unwrap();
                     }
                     writer.write_commit(txn_id).unwrap();
-                    txn_id += 1;
+                    txn_id = TransactionId::from(txn_id.as_u64() + 1);
                 });
             },
         );
@@ -559,7 +566,7 @@ fn bench_compression(c: &mut Criterion) {
                     let mut config = WalWriterConfig::default();
                     config.compression = compression;
                     let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                    
+
                     // Create compressible data (repeated pattern)
                     let pattern = b"The quick brown fox jumps over the lazy dog. ";
                     let mut value = Vec::new();
@@ -567,16 +574,16 @@ fn bench_compression(c: &mut Criterion) {
                         value.extend_from_slice(pattern);
                     }
                     value.truncate(value_size);
-                    
+
                     let mut counter = 0;
-                    writer.write_begin(1).unwrap();
+                    writer.write_begin(TransactionId::from(1)).unwrap();
 
                     b.iter(|| {
                         let key = format!("key_{}", counter).into_bytes();
                         counter += 1;
                         writer
                             .write_operation(
-                                1,
+                                TransactionId::from(1),
                                 "test".to_string(),
                                 WriteOpType::Put,
                                 key,
@@ -595,7 +602,7 @@ fn bench_compression(c: &mut Criterion) {
                     let mut config = WalWriterConfig::default();
                     config.compression = compression;
                     let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                    
+
                     // Create compressible data
                     let pattern = b"The quick brown fox jumps over the lazy dog. ";
                     let mut value = Vec::new();
@@ -603,20 +610,20 @@ fn bench_compression(c: &mut Criterion) {
                         value.extend_from_slice(pattern);
                     }
                     value.truncate(value_size);
-                    
+
                     // Write test data
                     for i in 0..10 {
-                        writer.write_begin(i as u64).unwrap();
+                        writer.write_begin(TransactionId::from(i)).unwrap();
                         writer
                             .write_operation(
-                                i as u64,
+                                TransactionId::from(i),
                                 "test".to_string(),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 value.clone(),
                             )
                             .unwrap();
-                        writer.write_commit(i as u64).unwrap();
+                        writer.write_commit(TransactionId::from(i)).unwrap();
                     }
                     writer.flush().unwrap();
                     drop(writer);
@@ -666,17 +673,17 @@ fn bench_encryption(c: &mut Criterion) {
                         config.encryption_key = Some(encryption_key);
                     }
                     let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                    
+
                     let value = vec![0xAB; value_size];
                     let mut counter = 0;
-                    writer.write_begin(1).unwrap();
+                    writer.write_begin(TransactionId::from(1)).unwrap();
 
                     b.iter(|| {
                         let key = format!("key_{}", counter).into_bytes();
                         counter += 1;
                         writer
                             .write_operation(
-                                1,
+                                TransactionId::from(1),
                                 "test".to_string(),
                                 WriteOpType::Put,
                                 key,
@@ -701,22 +708,22 @@ fn bench_encryption(c: &mut Criterion) {
                         None
                     };
                     let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                    
+
                     let value = vec![0xAB; value_size];
-                    
+
                     // Write test data
                     for i in 0..10 {
-                        writer.write_begin(i as u64).unwrap();
+                        writer.write_begin(TransactionId::from(i)).unwrap();
                         writer
                             .write_operation(
-                                i as u64,
+                                TransactionId::from(i),
                                 "test".to_string(),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 value.clone(),
                             )
                             .unwrap();
-                        writer.write_commit(i as u64).unwrap();
+                        writer.write_commit(TransactionId::from(i)).unwrap();
                     }
                     writer.flush().unwrap();
                     drop(writer);
@@ -769,7 +776,7 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
                 config.encryption = EncryptionType::Aes256Gcm;
                 config.encryption_key = Some(encryption_key);
                 let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                
+
                 // Create compressible data
                 let pattern = b"The quick brown fox jumps over the lazy dog. ";
                 let mut value = Vec::new();
@@ -777,16 +784,16 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
                     value.extend_from_slice(pattern);
                 }
                 value.truncate(value_size);
-                
+
                 let mut counter = 0;
-                writer.write_begin(1).unwrap();
+                writer.write_begin(TransactionId::from(1)).unwrap();
 
                 b.iter(|| {
                     let key = format!("key_{}", counter).into_bytes();
                     counter += 1;
                     writer
                         .write_operation(
-                            1,
+                            TransactionId::from(1),
                             "test".to_string(),
                             WriteOpType::Put,
                             key,
@@ -807,7 +814,7 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
                 config.encryption_key = Some(encryption_key);
                 let key = Some(encryption_key);
                 let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-                
+
                 // Create compressible data
                 let pattern = b"The quick brown fox jumps over the lazy dog. ";
                 let mut value = Vec::new();
@@ -815,20 +822,20 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
                     value.extend_from_slice(pattern);
                 }
                 value.truncate(value_size);
-                
+
                 // Write test data
                 for i in 0..10 {
-                    writer.write_begin(i as u64).unwrap();
+                    writer.write_begin(TransactionId::from(i)).unwrap();
                     writer
                         .write_operation(
-                            i as u64,
+                            TransactionId::from(i),
                             "test".to_string(),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             value.clone(),
                         )
                         .unwrap();
-                    writer.write_commit(i as u64).unwrap();
+                    writer.write_commit(TransactionId::from(i)).unwrap();
                 }
                 writer.flush().unwrap();
                 drop(writer);
@@ -846,7 +853,6 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
     group.finish();
 }
 
-
 // ============================================================================
 // Group Commit Benchmarks
 // ============================================================================
@@ -860,7 +866,7 @@ fn bench_group_commit_single_thread(c: &mut Criterion) {
         let mut config = WalWriterConfig::default();
         config.group_commit.enabled = false;
         let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-        let mut txn_id = 1;
+        let mut txn_id = TransactionId::from(1);
 
         b.iter(|| {
             writer.write_begin(txn_id).unwrap();
@@ -874,7 +880,7 @@ fn bench_group_commit_single_thread(c: &mut Criterion) {
                 )
                 .unwrap();
             writer.write_commit(txn_id).unwrap();
-            txn_id += 1;
+            txn_id = TransactionId::from(txn_id.as_u64() + 1);
         });
     });
 
@@ -884,7 +890,7 @@ fn bench_group_commit_single_thread(c: &mut Criterion) {
         let mut config = WalWriterConfig::default();
         config.group_commit = GroupCommitConfig::high_throughput();
         let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
-        let mut txn_id = 1;
+        let mut txn_id = TransactionId::from(1);
 
         b.iter(|| {
             writer.write_begin(txn_id).unwrap();
@@ -898,7 +904,7 @@ fn bench_group_commit_single_thread(c: &mut Criterion) {
                 )
                 .unwrap();
             writer.write_commit(txn_id).unwrap();
-            txn_id += 1;
+            txn_id = TransactionId::from(txn_id.as_u64() + 1);
         });
     });
 
@@ -925,7 +931,7 @@ fn bench_group_commit_concurrent(c: &mut Criterion) {
                         let writer_clone = writer.clone();
                         let handle = thread::spawn(move || {
                             for i in 0..10 {
-                                let txn_id = (thread_id * 10 + i) as u64 + 1;
+                                let txn_id = TransactionId::from((thread_id * 10 + i) as u64 + 1);
                                 writer_clone.write_begin(txn_id).unwrap();
                                 writer_clone
                                     .write_operation(
@@ -965,7 +971,7 @@ fn bench_group_commit_concurrent(c: &mut Criterion) {
                         let writer_clone = writer.clone();
                         let handle = thread::spawn(move || {
                             for i in 0..10 {
-                                let txn_id = (thread_id * 10 + i) as u64 + 1;
+                                let txn_id = TransactionId::from((thread_id * 10 + i) as u64 + 1);
                                 writer_clone.write_begin(txn_id).unwrap();
                                 writer_clone
                                     .write_operation(
@@ -1006,6 +1012,7 @@ fn bench_group_commit_throughput(c: &mut Criterion) {
             let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
 
             for txn_id in 1..=100 {
+                let txn_id = TransactionId::from(txn_id);
                 writer.write_begin(txn_id).unwrap();
                 writer
                     .write_operation(
@@ -1030,6 +1037,7 @@ fn bench_group_commit_throughput(c: &mut Criterion) {
             let writer = WalWriter::create(&fs, "/bench.wal", config).unwrap();
 
             for txn_id in 1..=100 {
+                let txn_id = TransactionId::from(txn_id);
                 writer.write_begin(txn_id).unwrap();
                 writer
                     .write_operation(
@@ -1070,7 +1078,7 @@ fn bench_group_commit_configs(c: &mut Criterion) {
                     let writer_clone = writer.clone();
                     let handle = thread::spawn(move || {
                         for i in 0..25 {
-                            let txn_id = (thread_id * 25 + i) as u64 + 1;
+                            let txn_id = TransactionId::from((thread_id * 25 + i) as u64 + 1);
                             writer_clone.write_begin(txn_id).unwrap();
                             writer_clone
                                 .write_operation(

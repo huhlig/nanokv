@@ -19,11 +19,12 @@
 //! This module implements group commit, which batches multiple transaction commits
 //! into a single fsync operation to improve throughput under high concurrency.
 
-use crate::wal::{Lsn, TransactionId, WalResult};
+use crate::txn::TransactionId;
+use crate::wal::{LogSequenceNumber, WalResult};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -136,11 +137,13 @@ impl GroupCommitMetrics {
 
     /// Record a batch
     pub fn record_batch(&self, batch_size: usize, wait_time_us: u64) {
-        self.total_commits.fetch_add(batch_size as u64, Ordering::Relaxed);
+        self.total_commits
+            .fetch_add(batch_size as u64, Ordering::Relaxed);
         self.total_batches.fetch_add(1, Ordering::Relaxed);
         self.total_fsyncs.fetch_add(1, Ordering::Relaxed);
-        self.total_wait_time_us.fetch_add(wait_time_us * batch_size as u64, Ordering::Relaxed);
-        
+        self.total_wait_time_us
+            .fetch_add(wait_time_us * batch_size as u64, Ordering::Relaxed);
+
         // Update max batch size
         let mut current_max = self.max_batch_size.load(Ordering::Relaxed);
         while batch_size as u64 > current_max {
@@ -171,7 +174,7 @@ pub struct CommitRequest {
     /// Transaction ID
     pub txn_id: TransactionId,
     /// LSN of the commit record
-    pub lsn: Lsn,
+    pub lsn: LogSequenceNumber,
     /// Time when request was queued
     pub queued_at: Instant,
     /// Channel to notify when commit completes
@@ -329,7 +332,9 @@ impl GroupCommitCoordinator {
                         Err(e) => {
                             let error_msg = format!("{}", e);
                             for request in batch {
-                                let _ = request.notifier.send(CommitResult::Error(error_msg.clone()));
+                                let _ = request
+                                    .notifier
+                                    .send(CommitResult::Error(error_msg.clone()));
                             }
                         }
                     }
@@ -344,13 +349,9 @@ impl GroupCommitCoordinator {
     }
 
     /// Submit a commit request
-    pub fn submit_commit(
-        &self,
-        txn_id: TransactionId,
-        lsn: Lsn,
-    ) -> WalResult<()> {
+    pub fn submit_commit(&self, txn_id: TransactionId, lsn: LogSequenceNumber) -> WalResult<()> {
         let (sender, receiver) = crossbeam_channel::bounded(1);
-        
+
         let request = CommitRequest {
             txn_id,
             lsn,
@@ -368,7 +369,9 @@ impl GroupCommitCoordinator {
         match receiver.recv() {
             Ok(CommitResult::Success) => Ok(()),
             Ok(CommitResult::Error(msg)) => Err(crate::wal::WalError::InternalError(msg)),
-            Err(_) => Err(crate::wal::WalError::InternalError("Commit notification failed".to_string())),
+            Err(_) => Err(crate::wal::WalError::InternalError(
+                "Commit notification failed".to_string(),
+            )),
         }
     }
 
@@ -380,7 +383,7 @@ impl GroupCommitCoordinator {
     /// Shutdown the coordinator
     pub fn shutdown(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
-        
+
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
         }
@@ -393,9 +396,9 @@ impl GroupCommitCoordinator {
 
         // Notify remaining requests with error
         for request in remaining {
-            let _ = request.notifier.send(CommitResult::Error(
-                "Coordinator shutdown".to_string(),
-            ));
+            let _ = request
+                .notifier
+                .send(CommitResult::Error("Coordinator shutdown".to_string()));
         }
     }
 }
@@ -426,12 +429,12 @@ mod tests {
     #[test]
     fn test_metrics() {
         let metrics = GroupCommitMetrics::new();
-        
+
         metrics.record_batch(10, 1000);
         assert_eq!(metrics.total_commits.load(Ordering::Relaxed), 10);
         assert_eq!(metrics.total_batches.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.total_fsyncs.load(Ordering::Relaxed), 1);
-        
+
         metrics.record_batch(20, 2000);
         assert_eq!(metrics.total_commits.load(Ordering::Relaxed), 30);
         assert_eq!(metrics.avg_batch_size(), 15.0);
@@ -440,8 +443,8 @@ mod tests {
     #[test]
     fn test_commit_queue() {
         let config = GroupCommitConfig::default();
-        let mut queue = CommitQueue::new(config);
-        
+        let queue = CommitQueue::new(config);
+
         assert_eq!(queue.len(), 0);
         assert!(!queue.should_flush(Instant::now()));
     }
@@ -455,18 +458,18 @@ mod tests {
             min_batch_size: 2,
         };
         let mut queue = CommitQueue::new(config);
-        
+
         // Add requests up to max batch size
         for i in 0..5 {
             let (sender, _) = crossbeam_channel::bounded(1);
             queue.enqueue(CommitRequest {
-                txn_id: i,
-                lsn: i,
+                txn_id: TransactionId::from(i),
+                lsn: LogSequenceNumber::from(i),
                 queued_at: Instant::now(),
                 notifier: sender,
             });
         }
-        
+
         assert!(queue.should_flush(Instant::now()));
     }
 
@@ -479,15 +482,15 @@ mod tests {
             min_batch_size: 2,
         };
         let mut queue = CommitQueue::new(config);
-        
+
         let (sender, _) = crossbeam_channel::bounded(1);
         queue.enqueue(CommitRequest {
-            txn_id: 1,
-            lsn: 1,
+            txn_id: TransactionId::from(1),
+            lsn: LogSequenceNumber::from(1),
             queued_at: Instant::now(),
             notifier: sender,
         });
-        
+
         let last_flush = Instant::now() - Duration::from_micros(200);
         assert!(queue.should_flush(last_flush));
     }

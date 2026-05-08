@@ -21,14 +21,13 @@
 //! and corrupted metadata structures.
 
 use nanokv::pager::{
-    CompressionType, EncryptionType, Page, PageType, Pager, PagerConfig,
-    PagerError,
+    CompressionType, EncryptionType, Page, PageId, PageType, Pager, PagerConfig, PagerError,
 };
+use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::panic;
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -60,16 +59,15 @@ fn create_test_pager_with_data() -> (MemoryFileSystem, String) {
 /// Corrupt bytes at a specific offset in a file
 fn corrupt_file_at_offset(fs: &MemoryFileSystem, path: &str, offset: u64, corruption: &[u8]) {
     let mut file = fs.open_file(path).expect("Failed to open file");
-    file.seek(SeekFrom::Start(offset))
-        .expect("Failed to seek");
-    file.write_all(corruption).expect("Failed to write corruption");
+    file.seek(SeekFrom::Start(offset)).expect("Failed to seek");
+    file.write_all(corruption)
+        .expect("Failed to write corruption");
 }
 
 /// Read bytes from a file at a specific offset
 fn read_file_at_offset(fs: &MemoryFileSystem, path: &str, offset: u64, len: usize) -> Vec<u8> {
     let mut file = fs.open_file(path).expect("Failed to open file");
-    file.seek(SeekFrom::Start(offset))
-        .expect("Failed to seek");
+    file.seek(SeekFrom::Start(offset)).expect("Failed to seek");
     let mut buffer = vec![0u8; len];
     file.read_exact(&mut buffer).expect("Failed to read");
     buffer
@@ -216,7 +214,10 @@ fn test_corrupted_superblock_magic() {
     if let Err(e) = result {
         match e {
             PagerError::InvalidSuperblock(_) | PagerError::ChecksumMismatch(_) => {}
-            e => panic!("Expected InvalidSuperblock or ChecksumMismatch error, got: {:?}", e),
+            e => panic!(
+                "Expected InvalidSuperblock or ChecksumMismatch error, got: {:?}",
+                e
+            ),
         }
     }
 }
@@ -239,7 +240,10 @@ fn test_corrupted_superblock_version() {
     if let Err(e) = result {
         match e {
             PagerError::InvalidSuperblock(_) | PagerError::ChecksumMismatch(_) => {}
-            e => panic!("Expected InvalidSuperblock or ChecksumMismatch error, got: {:?}", e),
+            e => panic!(
+                "Expected InvalidSuperblock or ChecksumMismatch error, got: {:?}",
+                e
+            ),
         }
     }
 }
@@ -264,13 +268,13 @@ fn test_corrupted_page_checksum() {
     let pager = Pager::open(&fs, &path).expect("Failed to open pager");
 
     // Try to read the corrupted page
-    let result = pager.read_page(2);
+    let result = pager.read_page(PageId::from(2));
 
     // Should fail with ChecksumMismatch error
     assert!(result.is_err());
     match result.unwrap_err() {
         PagerError::ChecksumMismatch(page_id) => {
-            assert_eq!(page_id, 2);
+            assert_eq!(page_id, PageId::from(2));
         }
         e => panic!("Expected ChecksumMismatch error, got: {:?}", e),
     }
@@ -291,7 +295,7 @@ fn test_corrupted_page_header() {
     let pager = Pager::open(&fs, &path).expect("Failed to open pager");
 
     // Try to read the corrupted page
-    let result = pager.read_page(2);
+    let result = pager.read_page(PageId::from(2));
 
     // Should fail with InvalidPageType error
     assert!(result.is_err());
@@ -317,13 +321,13 @@ fn test_torn_page_write() {
     let pager = Pager::open(&fs, &path).expect("Failed to open pager");
 
     // Try to read the torn page
-    let result = pager.read_page(2);
+    let result = pager.read_page(PageId::from(2));
 
     // Should fail with ChecksumMismatch error (checksum won't match)
     assert!(result.is_err());
     match result.unwrap_err() {
         PagerError::ChecksumMismatch(page_id) => {
-            assert_eq!(page_id, 2);
+            assert_eq!(page_id, PageId::from(2));
         }
         e => panic!("Expected ChecksumMismatch error, got: {:?}", e),
     }
@@ -372,7 +376,7 @@ fn test_random_bit_flips_in_page_data() {
     // Attempt to read the corrupted page
     let pager = Pager::open(&fs, &path).expect("Failed to open pager");
 
-    let result = pager.read_page(2);
+    let result = pager.read_page(PageId::from(2));
 
     // Should fail with ChecksumMismatch or succeed if bit flip was in padding
     if result.is_err() {
@@ -406,7 +410,7 @@ fn test_corrupted_compressed_page() {
 
     // Corrupt the compressed data
     let page_size = 4096u64;
-    let page_offset = page_size * page_id;
+    let page_offset = page_size * page_id.as_u64();
     let compressed_data_offset = page_offset + 32 + 10; // In the compressed data
 
     corrupt_file_at_offset(&fs, path, compressed_data_offset, &[0xFF; 20]);
@@ -450,7 +454,7 @@ fn test_corrupted_encrypted_page() {
 
     // Corrupt the encrypted data
     let page_size = 4096u64;
-    let page_offset = page_size * page_id;
+    let page_offset = page_size * page_id.as_u64();
     let encrypted_data_offset = page_offset + 32 + 10;
 
     corrupt_file_at_offset(&fs, path, encrypted_data_offset, &[0xFF; 20]);
@@ -458,12 +462,14 @@ fn test_corrupted_encrypted_page() {
     // Attempt to read the corrupted encrypted page
     // Note: Pager::open doesn't accept config, so it will fail to open encrypted DB
     let result = Pager::open(&fs, path);
-    
+
     // Should fail with MissingEncryptionKey when trying to open encrypted database
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::MissingEncryptionKey | PagerError::ChecksumMismatch(_) | PagerError::DecryptionError(_) => {}
+            PagerError::MissingEncryptionKey
+            | PagerError::ChecksumMismatch(_)
+            | PagerError::DecryptionError(_) => {}
             e => panic!(
                 "Expected MissingEncryptionKey, ChecksumMismatch or DecryptionError, got: {:?}",
                 e
@@ -485,17 +491,21 @@ fn test_corrupted_wal_record_checksum() {
     let writer = WalWriter::create(&fs, path, config).expect("Failed to create WAL");
 
     // Write a transaction
-    writer.write_begin(1).expect("Failed to write begin");
+    writer
+        .write_begin(TransactionId::from(1))
+        .expect("Failed to write begin");
     writer
         .write_operation(
-            1,
+            TransactionId::from(1),
             "users".to_string(),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
         )
         .expect("Failed to write operation");
-    writer.write_commit(1).expect("Failed to write commit");
+    writer
+        .write_commit(TransactionId::from(1))
+        .expect("Failed to write commit");
     writer.flush().expect("Failed to flush");
     drop(writer);
 
@@ -503,9 +513,7 @@ fn test_corrupted_wal_record_checksum() {
     corrupt_file_at_offset(&fs, path, 100, &[0xFF]);
 
     // Attempt recovery - may panic in VFS layer due to corrupted size fields
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        WalRecovery::recover(&fs, path)
-    }));
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| WalRecovery::recover(&fs, path)));
 
     // Key is that it doesn't crash the test suite
     let _ = result;
@@ -521,9 +529,8 @@ fn test_truncated_wal_file() {
 
     // Write multiple transactions
     for txn_id in 1..=3 {
-        writer
-            .write_begin(txn_id)
-            .expect("Failed to write begin");
+        let txn_id = TransactionId::from(txn_id);
+        writer.write_begin(txn_id).expect("Failed to write begin");
         writer
             .write_operation(
                 txn_id,
@@ -533,9 +540,7 @@ fn test_truncated_wal_file() {
                 format!("value{}", txn_id).into_bytes(),
             )
             .expect("Failed to write operation");
-        writer
-            .write_commit(txn_id)
-            .expect("Failed to write commit");
+        writer.write_commit(txn_id).expect("Failed to write commit");
     }
     writer.flush().expect("Failed to flush");
     drop(writer);
@@ -549,9 +554,7 @@ fn test_truncated_wal_file() {
     drop(file);
 
     // Attempt recovery - may panic in VFS layer due to truncated size fields
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        WalRecovery::recover(&fs, path)
-    }));
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| WalRecovery::recover(&fs, path)));
 
     // Key is that it doesn't crash the test suite - may succeed or fail
     let _ = result;
@@ -564,7 +567,9 @@ fn test_wal_with_invalid_record_type() {
     let config = WalWriterConfig::default();
 
     let writer = WalWriter::create(&fs, path, config).expect("Failed to create WAL");
-    writer.write_begin(1).expect("Failed to write begin");
+    writer
+        .write_begin(TransactionId::from(1))
+        .expect("Failed to write begin");
     writer.flush().expect("Failed to flush");
     drop(writer);
 
@@ -592,18 +597,20 @@ fn test_recovery_with_checksum_disabled() {
     config.enable_checksums = false;
 
     let pager = Pager::create(&fs, path, config).expect("Failed to create pager");
-    
+
     // Write some data
-    let page_id = pager.allocate_page(PageType::BTreeLeaf).expect("Failed to allocate");
+    let page_id = pager
+        .allocate_page(PageType::BTreeLeaf)
+        .expect("Failed to allocate");
     let mut page = Page::new(page_id, PageType::BTreeLeaf, 100);
     page.data_mut().extend_from_slice(b"test data");
     pager.write_page(&page).expect("Failed to write");
     drop(pager);
-    
+
     // Now corrupt the page
-    let page_offset = 4096u64 * page_id + 32;
+    let page_offset = 4096u64 * page_id.as_u64() + 32;
     corrupt_file_at_offset(&fs, path, page_offset, b"CORRUPTED");
-    
+
     // Open and try to read - with checksums disabled during creation,
     // the database should still validate checksums on read by default
     let pager = Pager::open(&fs, path).expect("Failed to open pager");
@@ -631,6 +638,7 @@ fn test_multiple_corrupted_pages() {
 
     // All corrupted pages should fail checksum verification
     for page_id in 2..=4 {
+        let page_id = PageId::from(page_id);
         let result = pager.read_page(page_id);
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -640,7 +648,7 @@ fn test_multiple_corrupted_pages() {
     }
 
     // Non-corrupted pages should still be readable
-    let result = pager.read_page(5);
+    let result = pager.read_page(PageId::from(5));
     assert!(result.is_ok() || matches!(result.unwrap_err(), PagerError::PageNotFound(_)));
 }
 
@@ -671,7 +679,7 @@ fn test_corruption_detection_with_compression_and_encryption() {
 
     // Corrupt the page
     let page_size = 4096u64;
-    let page_offset = page_size * page_id + 32 + 50;
+    let page_offset = page_size * page_id.as_u64() + 32 + 50;
     corrupt_file_at_offset(&fs, path, page_offset, &[0xFF; 30]);
 
     // Attempt to open - will fail because encryption key is not provided
@@ -733,9 +741,7 @@ fn test_zero_length_file() {
     drop(_file);
 
     // Attempt to open - may panic in VFS layer due to buffer size mismatch
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        Pager::open(&fs, path)
-    }));
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| Pager::open(&fs, path)));
 
     // Should fail gracefully (either error or panic is acceptable for corrupted file)
     assert!(result.is_err() || result.as_ref().unwrap().is_err());
@@ -752,9 +758,7 @@ fn test_file_smaller_than_header() {
     drop(file);
 
     // Attempt to open - may panic in VFS layer due to buffer size mismatch
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        Pager::open(&fs, path)
-    }));
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| Pager::open(&fs, path)));
 
     // Should fail gracefully (either error or panic is acceptable for corrupted file)
     // The key is it doesn't crash the test suite

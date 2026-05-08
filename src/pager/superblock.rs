@@ -17,8 +17,8 @@
 //! Superblock - Database state and metadata
 
 use crate::pager::{PageId, PagerError, PagerResult};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Superblock structure (stored in page 1)
 ///
@@ -101,18 +101,18 @@ impl Superblock {
             version: Self::VERSION,
             total_pages: 2, // Header (0) + Superblock (1)
             free_pages: 0,
-            first_free_list_page: 0,
-            last_free_list_page: 0,
+            first_free_list_page: PageId::from(0),
+            last_free_list_page: PageId::from(0),
             next_page_id: Arc::new(AtomicU64::new(2)), // Next page to allocate
             transaction_counter: 0,
             last_checkpoint_lsn: 0,
-            root_btree_page: 0,
+            root_btree_page: PageId::from(0),
         }
     }
 
     /// Get the current next page ID (for serialization/inspection)
     pub fn next_page_id(&self) -> PageId {
-        self.next_page_id.load(Ordering::SeqCst)
+        PageId::from(self.next_page_id.load(Ordering::SeqCst))
     }
 
     /// Serialize the superblock to bytes
@@ -123,12 +123,12 @@ impl Superblock {
         bytes.extend_from_slice(&self.version.to_le_bytes());
         bytes.extend_from_slice(&self.total_pages.to_le_bytes());
         bytes.extend_from_slice(&self.free_pages.to_le_bytes());
-        bytes.extend_from_slice(&self.first_free_list_page.to_le_bytes());
-        bytes.extend_from_slice(&self.last_free_list_page.to_le_bytes());
+        bytes.extend_from_slice(&self.first_free_list_page.to_bytes());
+        bytes.extend_from_slice(&self.last_free_list_page.to_bytes());
         bytes.extend_from_slice(&self.next_page_id.load(Ordering::SeqCst).to_le_bytes());
         bytes.extend_from_slice(&self.transaction_counter.to_le_bytes());
         bytes.extend_from_slice(&self.last_checkpoint_lsn.to_le_bytes());
-        bytes.extend_from_slice(&self.root_btree_page.to_le_bytes());
+        bytes.extend_from_slice(&self.root_btree_page.to_bytes());
 
         // Add reserved bytes
         bytes.resize(Self::SIZE, 0);
@@ -146,26 +146,30 @@ impl Superblock {
 
         let magic = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         if magic != Self::MAGIC {
-            return Err(PagerError::InvalidSuperblock(
-                format!("Invalid magic number: 0x{:X}", magic),
-            ));
+            return Err(PagerError::InvalidSuperblock(format!(
+                "Invalid magic number: 0x{:X}",
+                magic
+            )));
         }
 
         let version = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         if version != Self::VERSION {
-            return Err(PagerError::InvalidSuperblock(
-                format!("Unsupported version: {}", version),
-            ));
+            return Err(PagerError::InvalidSuperblock(format!(
+                "Unsupported version: {}",
+                version
+            )));
         }
 
         let total_pages = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
         let free_pages = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-        let first_free_list_page = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
-        let last_free_list_page = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+        let first_free_list_page =
+            PageId::from(u64::from_le_bytes(bytes[32..40].try_into().unwrap()));
+        let last_free_list_page =
+            PageId::from(u64::from_le_bytes(bytes[40..48].try_into().unwrap()));
         let next_page_id_value = u64::from_le_bytes(bytes[48..56].try_into().unwrap());
         let transaction_counter = u64::from_le_bytes(bytes[56..64].try_into().unwrap());
         let last_checkpoint_lsn = u64::from_le_bytes(bytes[64..72].try_into().unwrap());
-        let root_btree_page = u64::from_le_bytes(bytes[72..80].try_into().unwrap());
+        let root_btree_page = PageId::from(u64::from_le_bytes(bytes[72..80].try_into().unwrap()));
 
         Ok(Self {
             magic,
@@ -200,7 +204,7 @@ impl Superblock {
         // This is the KEY FIX for the race condition - fetch_add is atomic!
         let page_id = self.next_page_id.fetch_add(1, Ordering::SeqCst);
         self.total_pages += 1;
-        page_id
+        PageId::from(page_id)
     }
 
     /// Mark a page as freed (add to free list)
@@ -231,7 +235,7 @@ mod tests {
         let sb = Superblock::new();
         assert_eq!(sb.total_pages, 2);
         assert_eq!(sb.free_pages, 0);
-        assert_eq!(sb.next_page_id(), 2);
+        assert_eq!(sb.next_page_id(), PageId::from(2));
         assert_eq!(sb.transaction_counter, 0);
     }
 
@@ -254,18 +258,21 @@ mod tests {
 
         let result = Superblock::from_bytes(&bytes);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PagerError::InvalidSuperblock(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            PagerError::InvalidSuperblock(_)
+        ));
     }
 
     #[test]
     fn test_page_allocation() {
         let mut sb = Superblock::new();
-        assert_eq!(sb.next_page_id(), 2);
+        assert_eq!(sb.next_page_id(), PageId::from(2));
         assert_eq!(sb.total_pages, 2);
 
         let page_id = sb.allocate_new_page();
-        assert_eq!(page_id, 2);
-        assert_eq!(sb.next_page_id(), 3);
+        assert_eq!(page_id, PageId::from(2));
+        assert_eq!(sb.next_page_id(), PageId::from(3));
         assert_eq!(sb.total_pages, 3);
     }
 
