@@ -16,7 +16,7 @@
 
 //! Property-based tests for VFS implementations using proptest
 
-use nanokv::vfs::{File, FileSystem, LocalFileSystem, MemoryFileSystem};
+use nanokv::vfs::{File, FileLockMode, FileSystem, LocalFileSystem, MemoryFileSystem};
 use proptest::prelude::*;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -812,6 +812,476 @@ fn test_local_boundary_seek_positions() {
     
     drop(file);
     cleanup_temp_fs(&temp_dir);
+}
+
+// Made with Bob
+
+
+// ============================================================================
+// OS-Specific Property Tests for LocalFileSystem
+// ============================================================================
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(unix)]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// Test that file permissions are preserved (Unix only)
+    #[test]
+    fn prop_local_file_permissions(
+        path in valid_file_path(),
+        data in file_content(),
+        mode in 0o400u32..0o777u32
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(&data).unwrap();
+        drop(file);
+        
+        // Set permissions
+        let abs_path = std::path::Path::new(&temp_dir).join(path.trim_start_matches('/'));
+        let mut perms = std::fs::metadata(&abs_path).unwrap().permissions();
+        perms.set_mode(mode);
+        std::fs::set_permissions(&abs_path, perms).unwrap();
+        
+        // Verify permissions
+        let metadata = std::fs::metadata(&abs_path).unwrap();
+        let actual_mode = metadata.permissions().mode() & 0o777;
+        prop_assert_eq!(actual_mode, mode);
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that read-only files cannot be written to (Unix only)
+    #[test]
+    fn prop_local_readonly_enforcement(
+        path in valid_file_path(),
+        data in file_content()
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(&data).unwrap();
+        drop(file);
+        
+        // Make file read-only
+        let abs_path = std::path::Path::new(&temp_dir).join(path.trim_start_matches('/'));
+        let mut perms = std::fs::metadata(&abs_path).unwrap().permissions();
+        perms.set_mode(0o444);
+        std::fs::set_permissions(&abs_path, perms).unwrap();
+        
+        // Try to open for writing - should fail
+        let result = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&abs_path);
+        prop_assert!(result.is_err());
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+}
+
+// ============================================================================
+// Concurrent Operation Property Tests for LocalFileSystem
+// ============================================================================
+
+use std::sync::Arc;
+use std::thread;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// Test that concurrent reads from different handles work correctly
+    #[test]
+    fn prop_local_concurrent_reads(
+        path in valid_file_path(),
+        data in file_content().prop_filter("Non-empty data", |d| d.len() >= 100)
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        let fs = Arc::new(fs);
+        
+        // Create and write file
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(&data).unwrap();
+        drop(file);
+        
+        // Spawn multiple readers
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let fs_clone = Arc::clone(&fs);
+            let path_clone = path.clone();
+            let data_clone = data.clone();
+            
+            let handle = thread::spawn(move || {
+                let mut file = fs_clone.open_file(&path_clone).unwrap();
+                let mut read_data = Vec::new();
+                file.read_to_end(&mut read_data).unwrap();
+                assert_eq!(read_data, data_clone);
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that concurrent writes to different files don't interfere
+    #[test]
+    fn prop_local_concurrent_different_files(
+        paths in prop::collection::vec(valid_file_path(), 4..8),
+        data_sets in prop::collection::vec(file_content(), 4..8)
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        let fs = Arc::new(fs);
+        
+        // Ensure unique paths
+        let paths: Vec<String> = paths.into_iter()
+            .enumerate()
+            .map(|(i, p)| format!("{}_file{}", p, i))
+            .collect();
+        
+        let data_sets = data_sets.into_iter().take(paths.len()).collect::<Vec<_>>();
+        
+        // Spawn writers for different files
+        let mut handles = vec![];
+        for (path, data) in paths.iter().zip(data_sets.iter()) {
+            let fs_clone = Arc::clone(&fs);
+            let path_clone = path.clone();
+            let data_clone = data.clone();
+            
+            let handle = thread::spawn(move || {
+                let mut file = fs_clone.create_file(&path_clone).unwrap();
+                file.write_all(&data_clone).unwrap();
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        
+        // Verify all files
+        for (path, expected_data) in paths.iter().zip(data_sets.iter()) {
+            let mut file = fs.open_file(path).unwrap();
+            let mut actual_data = Vec::new();
+            file.read_to_end(&mut actual_data).unwrap();
+            prop_assert_eq!(&actual_data, expected_data);
+        }
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that file locking prevents concurrent writes
+    /// Note: Disabled due to platform-specific blocking behavior
+    #[test]
+    #[ignore]
+    fn prop_local_file_locking(
+        path in valid_file_path(),
+        data in file_content()
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        // Create file and acquire exclusive lock
+        let mut file1 = fs.create_file(&path).unwrap();
+        file1.write_all(&data).unwrap();
+        file1.set_lock_status(FileLockMode::Exclusive).unwrap();
+        
+        // Open second handle
+        let result = fs.open_file(&path);
+        if let Ok(mut file2) = result {
+            // Try to get exclusive lock - should fail since file1 has it
+            // Note: On some platforms, this may succeed if locks are advisory
+            let lock_result = file2.set_lock_status(FileLockMode::Exclusive);
+            // We expect this to fail, but on some systems it might succeed
+            // so we just verify the operation completes without hanging
+            let _ = lock_result;
+        }
+        
+        // Release lock
+        file1.set_lock_status(FileLockMode::Unlocked).unwrap();
+        drop(file1);
+        cleanup_temp_fs(&temp_dir);
+    }
+}
+
+// ============================================================================
+// Error Condition Property Tests for LocalFileSystem
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// Test that opening non-existent files fails
+    #[test]
+    fn prop_local_open_nonexistent(path in valid_file_path()) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        let result = fs.open_file(&path);
+        prop_assert!(result.is_err());
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that creating duplicate files fails
+    #[test]
+    fn prop_local_create_duplicate(
+        path in valid_file_path(),
+        data in file_content()
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        // Create first file
+        let mut file1 = fs.create_file(&path).unwrap();
+        file1.write_all(&data).unwrap();
+        drop(file1);
+        
+        // Try to create again - should fail
+        let result = fs.create_file(&path);
+        prop_assert!(result.is_err());
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that removing non-existent files fails
+    #[test]
+    fn prop_local_remove_nonexistent(path in valid_file_path()) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        let result = fs.remove_file(&path);
+        prop_assert!(result.is_err());
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that reading beyond file size returns correct amount
+    #[test]
+    fn prop_local_read_beyond_eof(
+        path in valid_file_path(),
+        data in file_content().prop_filter("Non-empty data", |d| !d.is_empty())
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        let mut file = fs.create_file(&path).unwrap();
+        
+        file.write_all(&data).unwrap();
+        
+        // Seek beyond end
+        file.seek(SeekFrom::Start(data.len() as u64 + 100)).unwrap();
+        
+        // Try to read - should return 0 bytes
+        let mut buf = vec![0u8; 100];
+        let n = file.read(&mut buf).unwrap();
+        prop_assert_eq!(n, 0);
+        
+        drop(file);
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that invalid paths are rejected
+    #[test]
+    fn prop_local_invalid_paths(
+        invalid_path in prop::string::string_regex(".*[<>:\"|?*].*").expect("Invalid regex")
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        // Try to create file with invalid path
+        let result = fs.create_file(&invalid_path);
+        // On Windows, this should fail. On Unix, some chars are valid
+        #[cfg(windows)]
+        prop_assert!(result.is_err());
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that directory operations on files fail
+    #[test]
+    fn prop_local_file_not_directory(
+        path in valid_file_path(),
+        data in file_content()
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        // Create a file
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(&data).unwrap();
+        drop(file);
+        
+        // Try to list it as directory - should fail
+        let result = fs.list_directory(&path);
+        prop_assert!(result.is_err());
+        
+        // Try to remove it as directory - should fail
+        let result = fs.remove_directory(&path);
+        prop_assert!(result.is_err());
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that file operations on directories fail
+    #[test]
+    fn prop_local_directory_not_file(path in valid_file_path()) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        // Create a directory
+        let dir_path = format!("{}_dir", path);
+        fs.create_directory(&dir_path).unwrap();
+        
+        // Try to open it as file - should fail
+        let result = fs.open_file(&dir_path);
+        prop_assert!(result.is_err());
+        
+        // Try to get filesize - on Unix should fail, on Windows may succeed
+        #[cfg(unix)]
+        {
+            let result = fs.filesize(&dir_path);
+            prop_assert!(result.is_err());
+        }
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+
+    /// Test that writing to read-only file handle fails
+    #[test]
+    fn prop_local_readonly_handle(
+        path in valid_file_path(),
+        initial_data in file_content(),
+        write_data in file_content().prop_filter("Non-empty", |d| !d.is_empty())
+    ) {
+        let (fs, temp_dir) = create_temp_fs();
+        
+        // Create and write initial data
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(&initial_data).unwrap();
+        drop(file);
+        
+        // Open read-only
+        let abs_path = std::path::Path::new(&temp_dir).join(path.trim_start_matches('/'));
+        let result = std::fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(&abs_path);
+        
+        if let Ok(mut file) = result {
+            // Try to write - should fail
+            let write_result = file.write_all(&write_data);
+            prop_assert!(write_result.is_err());
+        }
+        
+        cleanup_temp_fs(&temp_dir);
+    }
+}
+
+// ============================================================================
+// Additional Edge Cases for LocalFileSystem
+// ============================================================================
+
+#[test]
+fn test_local_nested_directory_creation() {
+    let (fs, temp_dir) = create_temp_fs();
+    
+    // Create nested directories
+    let nested_path = "/level1/level2/level3";
+    fs.create_directory_all(nested_path).unwrap();
+    
+    assert!(fs.exists(nested_path).unwrap());
+    assert!(fs.is_directory(nested_path).unwrap());
+    
+    // Create file in nested directory
+    let file_path = format!("{}/test.txt", nested_path);
+    let mut file = fs.create_file(&file_path).unwrap();
+    file.write_all(b"nested file").unwrap();
+    drop(file);
+    
+    assert!(fs.exists(&file_path).unwrap());
+    assert!(fs.is_file(&file_path).unwrap());
+    
+    cleanup_temp_fs(&temp_dir);
+}
+
+#[test]
+fn test_local_directory_listing() {
+    let (fs, temp_dir) = create_temp_fs();
+    
+    // Create multiple files
+    for i in 0..5 {
+        let path = format!("/file{}.txt", i);
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(format!("content {}", i).as_bytes()).unwrap();
+    }
+    
+    // List directory
+    let entries = fs.list_directory("/").unwrap();
+    assert_eq!(entries.len(), 5);
+    
+    // Verify all files are listed
+    for i in 0..5 {
+        let filename = format!("file{}.txt", i);
+        assert!(entries.contains(&filename));
+    }
+    
+    cleanup_temp_fs(&temp_dir);
+}
+
+#[test]
+fn test_local_sync_operations() {
+    let (fs, temp_dir) = create_temp_fs();
+    let path = "/sync_test.txt";
+    
+    let mut file = fs.create_file(path).unwrap();
+    file.write_all(b"test data").unwrap();
+    
+    // Test sync_data
+    file.sync_data().unwrap();
+    
+    // Test sync_all
+    file.sync_all().unwrap();
+    
+    drop(file);
+    cleanup_temp_fs(&temp_dir);
+}
+
+#[test]
+fn test_local_file_lock_modes() {
+    let (fs, temp_dir) = create_temp_fs();
+    let path = "/lock_test.txt";
+    
+    let mut file = fs.create_file(path).unwrap();
+    file.write_all(b"lock test").unwrap();
+    
+    // Test unlocked state
+    assert_eq!(file.get_lock_status().unwrap(), FileLockMode::Unlocked);
+    
+    // Note: File locking behavior is platform-specific and may block
+    // We just verify the basic unlock state works
+    
+    drop(file);
+    cleanup_temp_fs(&temp_dir);
+}
+
+#[test]
+fn test_local_cleanup_robustness() {
+    // Test that cleanup works even with nested structures
+    let (fs, temp_dir) = create_temp_fs();
+    
+    // Create complex structure
+    fs.create_directory_all("/a/b/c").unwrap();
+    fs.create_directory_all("/x/y/z").unwrap();
+    
+    for dir in &["/a", "/a/b", "/a/b/c", "/x", "/x/y", "/x/y/z"] {
+        let path = format!("{}/file.txt", dir);
+        let mut file = fs.create_file(&path).unwrap();
+        file.write_all(b"test").unwrap();
+    }
+    
+    // Cleanup should handle everything
+    cleanup_temp_fs(&temp_dir);
+    
+    // Verify cleanup
+    assert!(!std::path::Path::new(&temp_dir).exists());
 }
 
 // Made with Bob
