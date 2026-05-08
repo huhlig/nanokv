@@ -300,7 +300,7 @@ fn bench_wal_reader(c: &mut Criterion) {
                 drop(writer);
 
                 b.iter(|| {
-                    let reader = WalReader::open(&fs, "/bench.wal").unwrap();
+                    let reader = WalReader::open(&fs, "/bench.wal", None).unwrap();
                     let iter = WalRecordIterator::new(reader);
                     let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
                     black_box(records);
@@ -335,7 +335,7 @@ fn bench_wal_reader(c: &mut Criterion) {
                 drop(writer);
 
                 b.iter(|| {
-                    let reader = WalReader::open(&fs, "/bench.wal").unwrap();
+                    let reader = WalReader::open(&fs, "/bench.wal", None).unwrap();
                     let iter = WalRecordIterator::new(reader);
                     let records: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
                     black_box(records);
