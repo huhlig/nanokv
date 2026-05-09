@@ -97,11 +97,12 @@ pub struct Transaction {
     // TODO(MVCC): Implement read/write set tracking for conflict detection
     // For Serializable isolation: track all keys read to detect read-write conflicts
     // Only populated when isolation == Serializable
-    read_set: HashSet<Vec<u8>>,
+    read_set: HashSet<(TableId, Vec<u8>)>,
 
     // Track all writes for commit/rollback
-    // Key -> Value mapping of all mutations in this transaction
-    write_set: HashMap<Vec<u8>, Vec<u8>>,
+    // (TableId, Key) -> Option<Value> mapping of all mutations in this transaction
+    // None represents a delete, Some(value) represents a put
+    write_set: HashMap<(TableId, Vec<u8>), Option<Vec<u8>>>,
 }
 
 impl Transaction {
@@ -123,16 +124,22 @@ impl Transaction {
 
     /// TODO(MVCC): Implement read tracking for conflict detection
     /// Called by get() to track reads for Serializable isolation
-    pub fn record_read(&mut self, key: Vec<u8>) {
+    pub fn record_read(&mut self, table_id: TableId, key: Vec<u8>) {
         if self.isolation == IsolationLevel::Serializable {
-            self.read_set.insert(key);
+            self.read_set.insert((table_id, key));
         }
     }
 
-    /// TODO(MVCC): Implement write tracking
+    /// TODO(MVCC): Implement write tracking for put operations
     /// Called by put() to track writes for commit/rollback
-    pub fn record_write(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.write_set.insert(key, value);
+    pub fn record_write(&mut self, table_id: TableId, key: Vec<u8>, value: Vec<u8>) {
+        self.write_set.insert((table_id, key), Some(value));
+    }
+
+    /// TODO(MVCC): Implement delete tracking
+    /// Called by delete() to track deletes for commit/rollback
+    pub fn record_delete(&mut self, table_id: TableId, key: Vec<u8>) {
+        self.write_set.insert((table_id, key), None);
     }
 
     /// TODO(MVCC): Implement state machine transitions

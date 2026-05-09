@@ -20,6 +20,7 @@
 //! transaction isolation. It tracks which transactions have accessed
 //! which keys and detects conflicts based on the isolation level.
 
+use crate::table::TableId;
 use crate::txn::{TransactionError, TransactionId, TransactionResult};
 use std::collections::{HashMap, HashSet};
 
@@ -44,8 +45,8 @@ pub enum ConflictType {
 // 2. If no conflict, call acquire_write_lock()
 // 3. On commit/abort, call release_locks()
 pub struct ConflictDetector {
-    // Maps key -> transaction ID that has write lock
-    write_locks: HashMap<Vec<u8>, TransactionId>,
+    // Maps (table_id, key) -> transaction ID that has write lock
+    write_locks: HashMap<(TableId, Vec<u8>), TransactionId>,
 }
 
 impl ConflictDetector {
@@ -56,10 +57,12 @@ impl ConflictDetector {
     }
 
     /// TODO(MVCC): Implement write conflict detection
-    pub fn check_write_conflict(&self, key: &[u8], txn_id: TransactionId) -> TransactionResult<()> {
-        if let Some(&other_txn) = self.write_locks.get(key) {
+    pub fn check_write_conflict(&self, table_id: TableId, key: &[u8], txn_id: TransactionId) -> TransactionResult<()> {
+        let lock_key = (table_id, key.to_vec());
+        if let Some(&other_txn) = self.write_locks.get(&lock_key) {
             if other_txn != txn_id {
                 return Err(TransactionError::WriteWriteConflict(
+                    table_id,
                     key.to_vec(),
                     other_txn,
                 ));
@@ -69,8 +72,8 @@ impl ConflictDetector {
     }
 
     /// TODO(MVCC): Implement lock acquisition
-    pub fn acquire_write_lock(&mut self, key: Vec<u8>, txn_id: TransactionId) {
-        self.write_locks.insert(key, txn_id);
+    pub fn acquire_write_lock(&mut self, table_id: TableId, key: Vec<u8>, txn_id: TransactionId) {
+        self.write_locks.insert((table_id, key), txn_id);
     }
 
     /// TODO(MVCC): Implement lock release
@@ -83,10 +86,20 @@ impl ConflictDetector {
     /// has been written by another transaction
     pub fn check_read_write_conflicts(
         &self,
-        read_set: &HashSet<Vec<u8>>,
+        read_set: &HashSet<(TableId, Vec<u8>)>,
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
-        todo!("Implement ")
+        for (table_id, key) in read_set {
+            if let Some(&other_txn) = self.write_locks.get(&(*table_id, key.clone())) {
+                if other_txn != txn_id {
+                    return Err(TransactionError::ReadWriteConflict(
+                        *table_id,
+                        key.clone(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

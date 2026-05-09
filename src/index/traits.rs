@@ -25,8 +25,9 @@
 //! - Time-series
 //! - Geospatial
 
-use crate::types::{Bound, KeyBuf, KeyEncoding, ScanBounds};
+use crate::pager::PhysicalLocation;
 use crate::table::{TableId, VerificationReport};
+use crate::types::{Bound, KeyBuf, KeyEncoding, ScanBounds};
 use crate::wal::LogSequenceNumber;
 
 /// Logical index identifier assigned by the catalog.
@@ -567,13 +568,6 @@ pub struct RebuildProgress {
     pub rows_scanned: u64,
     pub rows_indexed: u64,
     pub resume_key: Option<KeyBuf>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PhysicalLocation {
-    pub page_id: crate::pager::PageId,
-    pub offset: u32,
-    pub length: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -14,6 +14,7 @@
 // limitations under the License.
 //
 
+use crate::table::TableId;
 use crate::txn::TransactionId;
 
 /// Transaction Result Type
@@ -25,11 +26,11 @@ pub enum TransactionError {
     #[error("Transaction {0} has invalid state for this operation")]
     InvalidState(TransactionId),
 
-    #[error("Write-write conflict: key {0:?} already locked by transaction {1}")]
-    WriteWriteConflict(Vec<u8>, TransactionId),
+    #[error("Write-write conflict: table {0}, key {1:?} already locked by transaction {2}")]
+    WriteWriteConflict(TableId, Vec<u8>, TransactionId),
 
-    #[error("Read-write conflict: key {0:?} was modified after read")]
-    ReadWriteConflict(Vec<u8>),
+    #[error("Read-write conflict: table {0}, key {1:?} was modified after read")]
+    ReadWriteConflict(TableId, Vec<u8>),
 
     #[error("Serialization conflict detected")]
     SerializationConflict,
