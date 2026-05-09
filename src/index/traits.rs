@@ -25,7 +25,8 @@
 //! - Time-series
 //! - Geospatial
 
-use crate::pager::PhysicalLocation;
+use crate::index::IndexResult;
+use crate::pager::{PageId, PhysicalLocation};
 use crate::table::{TableId, VerificationReport};
 use crate::types::{Bound, KeyBuf, KeyEncoding, ScanBounds};
 use crate::wal::LogSequenceNumber;
@@ -157,47 +158,44 @@ pub struct IndexCapabilities {
 }
 
 /// Cursor over ordered index entries.
+///
+/// Uses concrete `IndexResult` error type for consistency with `TableCursor`,
+/// enabling uniform error handling at the transaction layer.
 pub trait IndexCursor {
-    type Error;
-
     fn valid(&self) -> bool;
 
     fn index_key(&self) -> Option<&[u8]>;
 
     fn primary_key(&self) -> Option<&[u8]>;
 
-    fn next(&mut self) -> Result<(), Self::Error>;
+    fn next(&mut self) -> IndexResult<()>;
 
-    fn prev(&mut self) -> Result<(), Self::Error>;
+    fn prev(&mut self) -> IndexResult<()>;
 
-    fn seek(&mut self, index_key: &[u8]) -> Result<(), Self::Error>;
+    fn seek(&mut self, index_key: &[u8]) -> IndexResult<()>;
 }
 
 /// Cursor over time-series data points.
 pub trait TimeSeriesCursor {
-    type Error;
-
     fn valid(&self) -> bool;
 
     fn current(&self) -> Option<TimePointRef>;
 
-    fn next(&mut self) -> Result<(), Self::Error>;
+    fn next(&mut self) -> IndexResult<()>;
 }
 
 /// Cursor over graph edges.
 pub trait EdgeCursor {
-    type Error;
-
     fn valid(&self) -> bool;
 
     fn current(&self) -> Option<EdgeRef>;
 
-    fn next(&mut self) -> Result<(), Self::Error>;
+    fn next(&mut self) -> IndexResult<()>;
 }
 
 /// Dense index: one or more index entries per logical record.
 pub trait DenseOrderedIndex: Index {
-    type Cursor<'a>: IndexCursor<Error = Self::Error>
+    type Cursor<'a>: IndexCursor
     where
         Self: 'a;
 
@@ -216,16 +214,28 @@ pub trait SparseIndex: Index {
         target: PhysicalLocation,
     ) -> Result<(), Self::Error>;
 
+    /// Remove a marker by key and page ID.
+    ///
+    /// For LSM SST file removal, the caller typically knows the marker key and page ID
+    /// but not the exact byte range within the page. This signature is more practical
+    /// than requiring a full `PhysicalLocation`.
     fn remove_marker(
         &mut self,
         marker_key: &[u8],
-        target: PhysicalLocation,
+        page_id: PageId,
     ) -> Result<bool, Self::Error>;
 
     fn find_candidate_ranges(
         &self,
         query: SparseQuery<'_>,
     ) -> Result<Vec<PhysicalRange>, Self::Error>;
+
+    /// Convert physical ranges to scan bounds for ordered scan layer.
+    ///
+    /// This enables sparse indexes to participate in query planning by translating
+    /// their physical range candidates into logical key ranges that can be used
+    /// with the ordered scan interface.
+    fn to_scan_bounds(&self, ranges: &[PhysicalRange]) -> Result<Vec<ScanBounds>, Self::Error>;
 }
 
 /// Approximate membership index such as a Bloom filter.
@@ -242,6 +252,16 @@ pub trait ApproximateMembershipIndex: Index {
 /// Full-text index with field-aware tokenization, posting lists, and scoring.
 pub trait FullTextIndex: Index {
     fn index_document(
+        &mut self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+    ) -> Result<(), Self::Error>;
+
+    /// Update an existing document, replacing its indexed content.
+    ///
+    /// This is more efficient than delete-then-insert for posting list updates,
+    /// as it can reuse existing posting list entries where terms haven't changed.
+    fn update_document(
         &mut self,
         doc_id: &[u8],
         fields: &[TextField<'_>],
@@ -289,7 +309,7 @@ pub trait IvfIndex: VectorIndex {
 
 /// Graph adjacency index optimized for incoming/outgoing edge traversal.
 pub trait GraphAdjacencyIndex: Index {
-    type EdgeCursor<'a>: EdgeCursor<Error = Self::Error>
+    type EdgeCursor<'a>: EdgeCursor
     where
         Self: 'a;
 
@@ -324,7 +344,7 @@ pub trait GraphAdjacencyIndex: Index {
 
 /// Time-series index optimized for append, range, retention, and latest-before queries.
 pub trait TimeSeriesIndex: Index {
-    type TimeSeriesCursor<'a>: TimeSeriesCursor<Error = Self::Error>
+    type TimeSeriesCursor<'a>: TimeSeriesCursor
     where
         Self: 'a;
 
@@ -520,6 +540,8 @@ pub struct VectorSearchOptions<'a> {
 #[derive(Clone, Debug)]
 pub struct VectorHit {
     pub id: KeyBuf,
+    /// Distance metric value (lower is closer for most metrics).
+    /// Uses f32 for consistency with vector data representation.
     pub distance: f32,
 }
 
@@ -538,6 +560,20 @@ pub struct TimePointRef {
     pub value_key: KeyBuf,
 }
 
+/// Geographic point with double-precision coordinates.
+///
+/// Uses f64 (not f32) for geographic coordinates because:
+/// - Standard geographic coordinate systems (WGS84, etc.) are defined with double precision
+/// - f32 provides only ~7 decimal digits, which is ~11m precision at the equator
+/// - f64 provides ~15 decimal digits, which is ~1mm precision - essential for accurate GIS
+/// - Geospatial standards (GeoJSON, WKT, etc.) use double precision
+/// - The precision loss from f32 accumulates in distance calculations and transformations
+///
+/// In contrast, VectorIndex uses f32 because:
+/// - Vector embeddings are approximate by nature (trained with noise/quantization)
+/// - Memory efficiency is critical for large vector collections
+/// - Distance calculations are relative, not absolute measurements
+/// - Most ML frameworks produce f32 embeddings
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeoPoint {
     pub x: f64,
@@ -554,7 +590,10 @@ pub enum GeometryRef<'a> {
 #[derive(Clone, Debug)]
 pub struct GeoHit {
     pub id: KeyBuf,
-    pub distance: Option<f64>,
+    /// Distance in meters (or coordinate system units).
+    /// Uses f32 for consistency with VectorHit and memory efficiency.
+    /// Optional because some queries (intersects) don't compute distance.
+    pub distance: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default)]
