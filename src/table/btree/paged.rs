@@ -1296,15 +1296,38 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
         let mut cursor = Self {
             table,
             snapshot_lsn,
-            bounds,
+            bounds: bounds.clone(),
             current_page_id: PageId::from(0),
             current_position: 0,
             current_key: None,
             current_value: None,
             exhausted: false,
         };
-        // Position at first valid entry
-        let _ = cursor.first();
+        
+        // Position cursor based on bounds
+        let _ = match &bounds {
+            ScanBounds::All => cursor.first(),
+            ScanBounds::Prefix(prefix) => {
+                // Seek to the prefix start
+                cursor.seek(&prefix.0)
+            }
+            ScanBounds::Range { start, .. } => {
+                match start {
+                    Bound::Included(k) => cursor.seek(&k.0),
+                    Bound::Excluded(k) => {
+                        // Seek to key and advance past it
+                        let _ = cursor.seek(&k.0);
+                        if cursor.valid() && cursor.key() == Some(&k.0[..]) {
+                            cursor.next()
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Bound::Unbounded => cursor.first(),
+                }
+            }
+        };
+        
         cursor
     }
 

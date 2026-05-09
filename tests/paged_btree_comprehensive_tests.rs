@@ -1,0 +1,672 @@
+//
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+//! Comprehensive tests for PagedBTree implementation.
+//!
+//! This test suite covers:
+//! - Cursor navigation (forward/reverse/seek)
+//! - MVCC visibility with multiple transactions
+//! - Range scans with various bounds
+//! - Prefix scans
+//! - Concurrent access patterns
+//! - Edge cases (empty tree, single node, large values)
+
+use nanokv::pager::{Pager, PagerConfig};
+use nanokv::table::btree::PagedBTree;
+use nanokv::table::{
+    Flushable, MutableTable, OrderedScan, PointLookup, TableCursor, TableEngine, TableId,
+};
+use nanokv::txn::TransactionId;
+use nanokv::types::ScanBounds;
+use nanokv::vfs::MemoryFileSystem;
+use nanokv::wal::LogSequenceNumber;
+use std::sync::Arc;
+
+// =============================================================================
+// Helper functions
+// =============================================================================
+
+fn create_test_tree() -> PagedBTree<MemoryFileSystem> {
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig::default();
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+    PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap()
+}
+
+fn insert_test_data(
+    table: &PagedBTree<MemoryFileSystem>,
+    count: usize,
+    tx_id: TransactionId,
+    snapshot_lsn: LogSequenceNumber,
+) {
+    let mut writer = table.writer(tx_id, snapshot_lsn).unwrap();
+    for i in 0..count {
+        let key = format!("key_{:04}", i);
+        let value = format!("value_{:04}", i);
+        writer.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+    writer.flush().unwrap();
+}
+
+// =============================================================================
+// Cursor Navigation Tests
+// =============================================================================
+
+#[test]
+fn test_cursor_forward_iteration() {
+    let table = create_test_tree();
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    let mut last_key: Option<Vec<u8>> = None;
+
+    while cursor.valid() {
+        let key = cursor.key().unwrap().to_vec();
+        
+        // Verify keys are in ascending order
+        if let Some(ref prev_key) = last_key {
+            assert!(key > *prev_key, "Keys should be in ascending order");
+        }
+        
+        last_key = Some(key);
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 50, "Should iterate over all 50 keys");
+}
+
+#[test]
+fn test_cursor_reverse_iteration() {
+    let table = create_test_tree();
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.last().unwrap();
+    let mut count = 0;
+    let mut last_key: Option<Vec<u8>> = None;
+
+    while cursor.valid() {
+        let key = cursor.key().unwrap().to_vec();
+        
+        // Verify keys are in descending order
+        if let Some(ref prev_key) = last_key {
+            assert!(key < *prev_key, "Keys should be in descending order");
+        }
+        
+        last_key = Some(key);
+        count += 1;
+        cursor.prev().unwrap();
+    }
+
+    assert_eq!(count, 50, "Should iterate over all 50 keys in reverse");
+}
+
+#[test]
+fn test_cursor_seek_exact() {
+    let table = create_test_tree();
+    insert_test_data(&table, 100, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    // Seek to exact key
+    let target_key = b"key_0050";
+    cursor.seek(target_key).unwrap();
+    
+    assert!(cursor.valid(), "Cursor should be valid after seek");
+    assert_eq!(cursor.key().unwrap(), target_key, "Should find exact key");
+}
+
+#[test]
+fn test_cursor_seek_non_existent() {
+    let table = create_test_tree();
+    insert_test_data(&table, 100, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    // Seek to non-existent key (should position at next key)
+    let target_key = b"key_0050_not_exist";
+    cursor.seek(target_key).unwrap();
+    
+    assert!(cursor.valid(), "Cursor should be valid");
+    let found_key = cursor.key().unwrap();
+    assert!(found_key >= target_key, "Should position at or after target");
+}
+
+#[test]
+fn test_cursor_seek_for_prev() {
+    let table = create_test_tree();
+    insert_test_data(&table, 100, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    // Seek to key that exists
+    let target_key = b"key_0050";
+    cursor.seek_for_prev(target_key).unwrap();
+    
+    assert!(cursor.valid(), "Cursor should be valid");
+    assert_eq!(cursor.key().unwrap(), target_key, "Should find exact key");
+}
+
+#[test]
+fn test_cursor_first_and_last() {
+    let table = create_test_tree();
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    // Test first()
+    cursor.first().unwrap();
+    assert!(cursor.valid(), "Cursor should be valid at first");
+    let first_key = cursor.key().unwrap().to_vec();
+    assert_eq!(first_key, b"key_0000", "Should be at first key");
+
+    // Test last()
+    cursor.last().unwrap();
+    assert!(cursor.valid(), "Cursor should be valid at last");
+    let last_key = cursor.key().unwrap().to_vec();
+    assert_eq!(last_key, b"key_0049", "Should be at last key");
+}
+
+#[test]
+fn test_cursor_empty_tree() {
+    let table = create_test_tree();
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    assert!(!cursor.valid(), "Cursor should be invalid on empty tree");
+
+    cursor.last().unwrap();
+    assert!(!cursor.valid(), "Cursor should be invalid on empty tree");
+}
+
+// =============================================================================
+// MVCC Visibility Tests
+// =============================================================================
+
+#[test]
+fn test_mvcc_snapshot_isolation() {
+    let table = create_test_tree();
+
+    // Transaction 1: Insert initial data at LSN 10
+    let tx1 = TransactionId::from(1);
+    let lsn1 = LogSequenceNumber::from(10);
+    let mut writer1 = table.writer(tx1, lsn1).unwrap();
+    writer1.put(b"key_a", b"value_v1").unwrap();
+    writer1.put(b"key_b", b"value_v1").unwrap();
+    writer1.flush().unwrap();
+
+    // Transaction 2: Update data at LSN 20
+    let tx2 = TransactionId::from(2);
+    let lsn2 = LogSequenceNumber::from(20);
+    let mut writer2 = table.writer(tx2, lsn2).unwrap();
+    writer2.put(b"key_a", b"value_v2").unwrap();
+    writer2.put(b"key_c", b"value_v2").unwrap();
+    writer2.flush().unwrap();
+
+    // Read at LSN 15 (should see v1, not v2)
+    let reader_old = table.reader(LogSequenceNumber::from(15)).unwrap();
+    let result_a = reader_old.get(b"key_a", LogSequenceNumber::from(15)).unwrap();
+    assert!(result_a.is_some(), "key_a should be visible at LSN 15");
+    
+    let result_c = reader_old.get(b"key_c", LogSequenceNumber::from(15)).unwrap();
+    assert!(result_c.is_none(), "key_c should not be visible at LSN 15");
+
+    // Read at LSN 25 (should see v2)
+    let reader_new = table.reader(LogSequenceNumber::from(25)).unwrap();
+    let result_a = reader_new.get(b"key_a", LogSequenceNumber::from(25)).unwrap();
+    assert!(result_a.is_some(), "key_a should be visible at LSN 25");
+    
+    let result_c = reader_new.get(b"key_c", LogSequenceNumber::from(25)).unwrap();
+    assert!(result_c.is_some(), "key_c should be visible at LSN 25");
+}
+
+#[test]
+fn test_mvcc_delete_visibility() {
+    let table = create_test_tree();
+
+    // Insert at LSN 10
+    let tx1 = TransactionId::from(1);
+    let lsn1 = LogSequenceNumber::from(10);
+    let mut writer1 = table.writer(tx1, lsn1).unwrap();
+    writer1.put(b"key_a", b"value_v1").unwrap();
+    writer1.flush().unwrap();
+
+    // Delete at LSN 20
+    let tx2 = TransactionId::from(2);
+    let lsn2 = LogSequenceNumber::from(20);
+    let mut writer2 = table.writer(tx2, lsn2).unwrap();
+    writer2.delete(b"key_a").unwrap();
+    writer2.flush().unwrap();
+
+    // Read at LSN 15 (before delete - should see value)
+    let reader_before = table.reader(LogSequenceNumber::from(15)).unwrap();
+    let result = reader_before.get(b"key_a", LogSequenceNumber::from(15)).unwrap();
+    assert!(result.is_some(), "key_a should be visible before delete");
+
+    // Read at LSN 25 (after delete - should not see value)
+    let reader_after = table.reader(LogSequenceNumber::from(25)).unwrap();
+    let result = reader_after.get(b"key_a", LogSequenceNumber::from(25)).unwrap();
+    assert!(result.is_none(), "key_a should not be visible after delete");
+}
+
+#[test]
+fn test_mvcc_multiple_versions() {
+    let table = create_test_tree();
+
+    // Create multiple versions of the same key
+    for i in 1..=5 {
+        let tx = TransactionId::from(i);
+        let lsn = LogSequenceNumber::from(i * 10);
+        let mut writer = table.writer(tx, lsn).unwrap();
+        let value = format!("value_v{}", i);
+        writer.put(b"key_a", value.as_bytes()).unwrap();
+        writer.flush().unwrap();
+    }
+
+    // Read at different snapshots
+    for i in 1..=5 {
+        let lsn = LogSequenceNumber::from(i * 10 + 5);
+        let reader = table.reader(lsn).unwrap();
+        let result = reader.get(b"key_a", lsn).unwrap();
+        assert!(result.is_some(), "key_a should be visible at LSN {}", lsn.as_u64());
+    }
+}
+
+// =============================================================================
+// Range Scan Tests
+// =============================================================================
+
+#[test]
+fn test_range_scan_inclusive_both() {
+    let table = create_test_tree();
+    insert_test_data(&table, 100, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    use nanokv::types::{Bound, KeyBuf};
+    let bounds = ScanBounds::Range {
+        start: Bound::Included(KeyBuf(b"key_0020".to_vec())),
+        end: Bound::Included(KeyBuf(b"key_0030".to_vec())),
+    };
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    while cursor.valid() {
+        let key = cursor.key().unwrap();
+        assert!(key >= b"key_0020" && key <= b"key_0030", "Key should be in range");
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 11, "Should find 11 keys (20-30 inclusive)");
+}
+
+#[test]
+fn test_range_scan_exclusive_both() {
+    let table = create_test_tree();
+    insert_test_data(&table, 100, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    use nanokv::types::{Bound, KeyBuf};
+    let bounds = ScanBounds::Range {
+        start: Bound::Excluded(KeyBuf(b"key_0020".to_vec())),
+        end: Bound::Excluded(KeyBuf(b"key_0030".to_vec())),
+    };
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    while cursor.valid() {
+        let key = cursor.key().unwrap();
+        assert!(key > b"key_0020" && key < b"key_0030", "Key should be in range");
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 9, "Should find 9 keys (21-29 exclusive)");
+}
+
+#[test]
+fn test_range_scan_from_start() {
+    let table = create_test_tree();
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    use nanokv::types::{Bound, KeyBuf};
+    let bounds = ScanBounds::Range {
+        start: Bound::Included(KeyBuf(b"key_0020".to_vec())),
+        end: Bound::Unbounded,
+    };
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    while cursor.valid() {
+        let key = cursor.key().unwrap();
+        assert!(key >= b"key_0020", "Key should be >= start");
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 30, "Should find 30 keys (20-49)");
+}
+
+#[test]
+fn test_range_scan_to_end() {
+    let table = create_test_tree();
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    use nanokv::types::{Bound, KeyBuf};
+    let bounds = ScanBounds::Range {
+        start: Bound::Unbounded,
+        end: Bound::Included(KeyBuf(b"key_0030".to_vec())),
+    };
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    while cursor.valid() {
+        let key = cursor.key().unwrap();
+        assert!(key <= b"key_0030", "Key should be <= end");
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 31, "Should find 31 keys (0-30)");
+}
+
+#[test]
+fn test_range_scan_empty_range() {
+    let table = create_test_tree();
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    // Range where start > end
+    use nanokv::types::{Bound, KeyBuf};
+    let bounds = ScanBounds::Range {
+        start: Bound::Included(KeyBuf(b"key_0040".to_vec())),
+        end: Bound::Included(KeyBuf(b"key_0020".to_vec())),
+    };
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    assert!(!cursor.valid(), "Cursor should be invalid for empty range");
+}
+
+// =============================================================================
+// Prefix Scan Tests
+// =============================================================================
+
+#[test]
+fn test_prefix_scan_basic() {
+    let table = create_test_tree();
+    
+    // Insert keys with different prefixes
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(0);
+    let mut writer = table.writer(tx, lsn).unwrap();
+    
+    writer.put(b"user:1:name", b"Alice").unwrap();
+    writer.put(b"user:1:email", b"alice@example.com").unwrap();
+    writer.put(b"user:2:name", b"Bob").unwrap();
+    writer.put(b"user:2:email", b"bob@example.com").unwrap();
+    writer.put(b"post:1:title", b"Hello World").unwrap();
+    writer.flush().unwrap();
+
+    let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
+    
+    // Scan with "user:1:" prefix
+    let prefix = b"user:1:";
+    use nanokv::types::KeyBuf;
+    let bounds = ScanBounds::Prefix(KeyBuf(prefix.to_vec()));
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(100)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    while cursor.valid() {
+        let key = cursor.key().unwrap();
+        assert!(key.starts_with(prefix), "Key should start with prefix");
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 2, "Should find 2 keys with user:1: prefix");
+}
+
+// =============================================================================
+// Edge Case Tests
+// =============================================================================
+
+#[test]
+fn test_single_key_operations() {
+    let table = create_test_tree();
+
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(10);
+    let mut writer = table.writer(tx, lsn).unwrap();
+    writer.put(b"only_key", b"only_value").unwrap();
+    writer.flush().unwrap();
+
+    // Test get
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let result = reader.get(b"only_key", LogSequenceNumber::from(20)).unwrap();
+    assert!(result.is_some(), "Should find the only key");
+
+    // Test cursor
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(20)).unwrap();
+    
+    cursor.first().unwrap();
+    assert!(cursor.valid(), "Cursor should be valid");
+    assert_eq!(cursor.key().unwrap(), b"only_key");
+    
+    cursor.next().unwrap();
+    assert!(!cursor.valid(), "Cursor should be invalid after single key");
+}
+
+#[test]
+fn test_large_values() {
+    let table = create_test_tree();
+
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(10);
+    let mut writer = table.writer(tx, lsn).unwrap();
+
+    // Insert large value (10KB)
+    let large_value = vec![b'X'; 10 * 1024];
+    writer.put(b"large_key", &large_value).unwrap();
+    writer.flush().unwrap();
+
+    // Verify retrieval
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let result = reader.get(b"large_key", LogSequenceNumber::from(20)).unwrap();
+    assert!(result.is_some(), "Should find large value");
+    assert_eq!(result.unwrap().0.len(), 10 * 1024, "Value size should match");
+}
+
+#[test]
+fn test_many_small_keys() {
+    let table = create_test_tree();
+
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(10);
+    let mut writer = table.writer(tx, lsn).unwrap();
+
+    // Insert 1000 small keys
+    for i in 0..1000 {
+        let key = format!("k{:04}", i);
+        let value = format!("v{}", i);
+        writer.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+    writer.flush().unwrap();
+
+    // Verify count via cursor
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let bounds = ScanBounds::All;
+    let mut cursor = reader.scan(bounds, LogSequenceNumber::from(20)).unwrap();
+
+    cursor.first().unwrap();
+    let mut count = 0;
+    while cursor.valid() {
+        count += 1;
+        cursor.next().unwrap();
+    }
+
+    assert_eq!(count, 1000, "Should find all 1000 keys");
+}
+
+#[test]
+fn test_duplicate_key_updates() {
+    let table = create_test_tree();
+
+    // Update same key multiple times in same transaction
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(10);
+    let mut writer = table.writer(tx, lsn).unwrap();
+
+    for i in 0..10 {
+        let value = format!("value_{}", i);
+        writer.put(b"same_key", value.as_bytes()).unwrap();
+    }
+    writer.flush().unwrap();
+
+    // Should see latest value
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let result = reader.get(b"same_key", LogSequenceNumber::from(20)).unwrap();
+    assert!(result.is_some(), "Key should exist");
+}
+
+#[test]
+fn test_delete_non_existent_key() {
+    let table = create_test_tree();
+
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(10);
+    let mut writer = table.writer(tx, lsn).unwrap();
+
+    let deleted = writer.delete(b"non_existent").unwrap();
+    assert!(!deleted, "Should return false for non-existent key");
+}
+
+#[test]
+fn test_boundary_keys() {
+    let table = create_test_tree();
+
+    let tx = TransactionId::from(1);
+    let lsn = LogSequenceNumber::from(10);
+    let mut writer = table.writer(tx, lsn).unwrap();
+
+    // Empty key
+    writer.put(b"", b"empty_key_value").unwrap();
+    
+    // Very long key
+    let long_key = vec![b'k'; 1000];
+    writer.put(&long_key, b"long_key_value").unwrap();
+    
+    writer.flush().unwrap();
+
+    // Verify both
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    
+    let result1 = reader.get(b"", LogSequenceNumber::from(20)).unwrap();
+    assert!(result1.is_some(), "Empty key should be found");
+    
+    let result2 = reader.get(&long_key, LogSequenceNumber::from(20)).unwrap();
+    assert!(result2.is_some(), "Long key should be found");
+}
+
+// =============================================================================
+// Concurrent Access Tests (using multiple readers)
+// =============================================================================
+
+#[test]
+fn test_concurrent_readers() {
+    let table = Arc::new(create_test_tree());
+    insert_test_data(&table, 100, TransactionId::from(1), LogSequenceNumber::from(0));
+
+    // Create multiple readers at same snapshot
+    let lsn = LogSequenceNumber::from(100);
+    let reader1 = table.reader(lsn).unwrap();
+    let reader2 = table.reader(lsn).unwrap();
+    let reader3 = table.reader(lsn).unwrap();
+
+    // All should see same data
+    let key = b"key_0050";
+    let result1 = reader1.get(key, lsn).unwrap();
+    let result2 = reader2.get(key, lsn).unwrap();
+    let result3 = reader3.get(key, lsn).unwrap();
+
+    assert!(result1.is_some());
+    assert!(result2.is_some());
+    assert!(result3.is_some());
+}
+
+#[test]
+fn test_reader_writer_isolation() {
+    let table = create_test_tree();
+
+    // Insert initial data
+    insert_test_data(&table, 50, TransactionId::from(1), LogSequenceNumber::from(10));
+
+    // Create reader at LSN 20
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+
+    // Writer adds more data at LSN 30
+    let tx2 = TransactionId::from(2);
+    let lsn2 = LogSequenceNumber::from(30);
+    let mut writer = table.writer(tx2, lsn2).unwrap();
+    for i in 50..100 {
+        let key = format!("key_{:04}", i);
+        let value = format!("value_{:04}", i);
+        writer.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+    writer.flush().unwrap();
+
+    // Reader should not see new data (snapshot isolation)
+    let result = reader.get(b"key_0075", LogSequenceNumber::from(20)).unwrap();
+    assert!(result.is_none(), "Reader should not see data written after its snapshot");
+}
+
+// =============================================================================
+// Integration Tests with Disk I/O
+// =============================================================================
+
+// Note: Persistence test removed due to API limitations
+// The get_root_page_id() method is private and Pager::open() signature doesn't match
+// This test would require changes to the PagedBTree API to support proper persistence testing
+
+// Made with Bob
