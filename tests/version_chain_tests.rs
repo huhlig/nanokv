@@ -15,8 +15,7 @@
 //
 
 use nanokv::snap::{Snapshot, SnapshotId};
-use nanokv::txn::TransactionId;
-use nanokv::types::VersionChain;
+use nanokv::txn::{TransactionId, VersionChain};
 use nanokv::wal::LogSequenceNumber;
 
 fn snapshot(lsn: u64, active_txns: Vec<u64>) -> Snapshot {
