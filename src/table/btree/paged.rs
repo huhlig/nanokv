@@ -468,6 +468,9 @@ impl<FS: FileSystem> PagedBTree<FS> {
                     Vec::new(),
                 );
                 if let Some(value) = entries[pos].chain.find_visible_version(&snapshot) {
+                    if value.is_empty() {
+                        return Ok(None);
+                    }
                     return Ok(Some(ValueBuf(value.to_vec())));
                 }
             }
@@ -822,6 +825,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
         key: Vec<u8>,
         value: Vec<u8>,
         tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
         // Find the leaf page with path
         let (leaf_page_id, pos, path) = self.search_with_path(&key)?;
@@ -834,13 +838,13 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 let old_chain = entries[pos].chain.clone();
                 let mut new_chain = old_chain.prepend(value, tx_id);
                 // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
-                new_chain.commit(LogSequenceNumber::from(tx_id.as_u64()));
+                new_chain.commit(commit_lsn);
                 entries[pos].chain = new_chain;
             } else {
                 // Insert new entry with new version chain
                 let mut chain = VersionChain::new(value, tx_id);
                 // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
-                chain.commit(LogSequenceNumber::from(tx_id.as_u64()));
+                chain.commit(commit_lsn);
                 entries.insert(pos, LeafEntry { key: key.clone(), chain });
             }
 
@@ -1021,7 +1025,12 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Delete a key from the tree, handling merges and redistributions as needed.
-    fn delete_internal(&self, key: &[u8], tx_id: TransactionId) -> TableResult<bool> {
+    fn delete_internal(
+        &self,
+        key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<bool> {
         // Find the leaf page
         let (leaf_page_id, pos) = self.search(key)?;
         let mut node = self.read_node(leaf_page_id)?;
@@ -1033,7 +1042,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 let old_chain = entries[pos].chain.clone();
                 let mut new_chain = old_chain.prepend(Vec::new(), tx_id);
                 // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
-                new_chain.commit(LogSequenceNumber::from(tx_id.as_u64()));
+                new_chain.commit(commit_lsn);
                 entries[pos].chain = new_chain;
 
                 // Write updated node
@@ -1241,11 +1250,13 @@ impl<'a, FS: FileSystem> Flushable for PagedBTreeWriter<'a, FS> {
             match value_opt {
                 Some(value) => {
                     // Insert or update
-                    self.table.insert_internal(key, value, self.tx_id)?;
+                    self.table
+                        .insert_internal(key, value, self.tx_id, self.snapshot_lsn)?;
                 }
                 None => {
                     // Delete
-                    self.table.delete_internal(&key, self.tx_id)?;
+                    self.table
+                        .delete_internal(&key, self.tx_id, self.snapshot_lsn)?;
                 }
             }
         }
@@ -1385,8 +1396,13 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
                 );
 
                 if let Some(value) = entry.chain.find_visible_version(&snapshot) {
-                    self.current_key = Some(entry.key.clone());
-                    self.current_value = Some(value.to_vec());
+                    if value.is_empty() {
+                        self.current_key = None;
+                        self.current_value = None;
+                    } else {
+                        self.current_key = Some(entry.key.clone());
+                        self.current_value = Some(value.to_vec());
+                    }
                 } else {
                     // Version not visible, mark as exhausted at this position
                     self.current_key = None;
