@@ -16,12 +16,16 @@
 
 //! Large binary object (blob) storage.
 //!
-//! Blobs are stored as linked pages in the pager for values that are too large
-//! to fit efficiently in table pages. This provides unified storage management
-//! while supporting arbitrarily large values.
+//! Provides trait-based abstraction for blob storage with multiple implementations:
+//! - `PagedBlobStore`: Disk-backed storage using linked pages in the pager
+//! - Future: `MemoryBlobStore` for in-memory tables
+//! - Future: Compressed/encrypted wrappers
+//!
+//! This follows the architectural pattern used throughout the codebase where
+//! capabilities are defined through traits with concrete implementations.
 
 mod error;
 mod store;
 
 pub use self::error::{BlobError, BlobResult};
-pub use self::store::{BlobRef, BlobStore};
+pub use self::store::{BlobRef, BlobStore, FreedPages, PagedBlobStore};

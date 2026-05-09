@@ -29,6 +29,9 @@ pub enum BlobError {
     #[error("Invalid blob reference: {0}")]
     InvalidReference(String),
 
+    #[error("Stale blob reference: checksum mismatch (expected: {expected:#x}, found: {found:#x})")]
+    StaleReference { expected: u32, found: u32 },
+
     #[error("Blob too large: {size} bytes (max: {max})")]
     TooLarge { size: u64, max: u64 },
 
