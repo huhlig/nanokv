@@ -208,13 +208,21 @@ pub trait Migratable {
     fn can_migrate_from(&self, from_version: u32) -> bool;
 
     /// Estimate the cost of migration in arbitrary units.
+    /// Returns 0 if no migration needed, u64::MAX if migration is impossible,
+    /// or a finite cost estimate if migration is possible.
     fn migration_cost(&self, from_version: u32) -> u64 {
         if from_version == self.format_version() {
+            // No migration needed
             0
         } else if self.can_migrate_from(from_version) {
-            u64::MAX
+            // Migration is possible - return cost based on version difference
+            // Larger version gaps typically require more work
+            let version_delta = self.format_version().abs_diff(from_version);
+            // Base cost of 100 per version step
+            100u64.saturating_mul(version_delta as u64)
         } else {
-            0
+            // Migration is not possible
+            u64::MAX
         }
     }
 
