@@ -49,7 +49,7 @@ impl TableId {
 
 impl std::fmt::Display for TableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IndexId({})", self.0)
+        write!(f, "TableId({})", self.0)
     }
 }
 
@@ -287,12 +287,14 @@ pub struct TableCapabilities {
 // =============================================================================
 
 /// Maintenance operations common to tables, indexes, and storage files.
+///
+/// Note: For flushing data to disk, use the `Flushable` trait instead.
+/// This trait focuses on higher-level maintenance operations like compaction,
+/// checkpointing, and vacuuming.
 pub trait Maintainable {
     fn compact(&mut self, options: CompactionOptions) -> TableResult<CompactionReport>;
 
     fn checkpoint(&mut self) -> TableResult<CheckpointInfo>;
-
-    fn flush(&mut self) -> TableResult<()>;
 
     fn vacuum(&mut self, options: VacuumOptions) -> TableResult<VacuumReport>;
 }
