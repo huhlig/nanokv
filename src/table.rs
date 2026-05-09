@@ -13,12 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-mod btree;
+pub mod btree;
 mod error;
 mod lsm;
 mod traits;
 
-pub use self::btree::MemoryBTree;
+pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
 pub use self::traits::{
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,

@@ -441,6 +441,452 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
         Ok(None)
     }
+
+    /// Split a full node into two nodes.
+    /// Returns the new right sibling page ID and the median key that should be promoted to parent.
+    fn split_node(&self, page_id: PageId, node: &BTreeNode) -> TableResult<(PageId, Vec<u8>)> {
+        let mid = node.key_count() / 2;
+
+        match node {
+            BTreeNode::Internal { entries, rightmost_child } => {
+                // Split internal node
+                let median_key = entries[mid].key.clone();
+                
+                // Left node keeps entries [0..mid]
+                let left_entries = entries[..mid].to_vec();
+                let left_rightmost = entries[mid].child_page_id;
+                
+                // Right node gets entries [mid+1..]
+                let right_entries = entries[mid + 1..].to_vec();
+                let right_rightmost = *rightmost_child;
+
+                // Create new right sibling
+                let right_page_id = self.pager.allocate_page(PageType::BTreeInternal)?;
+                let right_node = BTreeNode::Internal {
+                    entries: right_entries,
+                    rightmost_child: right_rightmost,
+                };
+
+                // Update left node (original page)
+                let left_node = BTreeNode::Internal {
+                    entries: left_entries,
+                    rightmost_child: left_rightmost,
+                };
+
+                // Write both nodes
+                self.write_node(page_id, &left_node)?;
+                self.write_node(right_page_id, &right_node)?;
+
+                Ok((right_page_id, median_key))
+            }
+            BTreeNode::Leaf { entries, next_leaf } => {
+                // Split leaf node
+                let median_key = entries[mid].key.clone();
+                
+                // Left node keeps entries [0..mid]
+                let left_entries = entries[..mid].to_vec();
+                
+                // Right node gets entries [mid..]
+                let right_entries = entries[mid..].to_vec();
+
+                // Create new right sibling
+                let right_page_id = self.pager.allocate_page(PageType::BTreeLeaf)?;
+                let right_node = BTreeNode::Leaf {
+                    entries: right_entries,
+                    next_leaf: *next_leaf,
+                };
+
+                // Update left node to point to new right sibling
+                let left_node = BTreeNode::Leaf {
+                    entries: left_entries,
+                    next_leaf: right_page_id,
+                };
+
+                // Write both nodes
+                self.write_node(page_id, &left_node)?;
+                self.write_node(right_page_id, &right_node)?;
+
+                Ok((right_page_id, median_key))
+            }
+        }
+    }
+
+    /// Merge two adjacent nodes (left and right).
+    /// The right node is merged into the left node, and the right node is freed.
+    /// Returns true if merge was successful.
+    fn merge_nodes(
+        &self,
+        left_page_id: PageId,
+        right_page_id: PageId,
+        separator_key: &[u8],
+    ) -> TableResult<bool> {
+        let left_node = self.read_node(left_page_id)?;
+        let right_node = self.read_node(right_page_id)?;
+
+        // Ensure nodes are of the same type
+        if left_node.node_type() != right_node.node_type() {
+            return Ok(false);
+        }
+
+        match (left_node, right_node) {
+            (
+                BTreeNode::Internal { entries: left_entries, rightmost_child: left_rightmost },
+                BTreeNode::Internal { entries: right_entries, rightmost_child: right_rightmost },
+            ) => {
+                // Check if merge is possible
+                if left_entries.len() + right_entries.len() + 1 > DEFAULT_ORDER {
+                    return Ok(false);
+                }
+
+                let mut merged_entries = left_entries;
+                
+                // Add separator key with left's rightmost child
+                merged_entries.push(InternalEntry {
+                    key: separator_key.to_vec(),
+                    child_page_id: left_rightmost,
+                });
+
+                // Add all right entries
+                merged_entries.extend(right_entries);
+
+                // Create merged node
+                let merged_node = BTreeNode::Internal {
+                    entries: merged_entries,
+                    rightmost_child: right_rightmost,
+                };
+
+                // Write merged node and free right node
+                self.write_node(left_page_id, &merged_node)?;
+                self.pager.free_page(right_page_id)?;
+
+                Ok(true)
+            }
+            (
+                BTreeNode::Leaf { entries: left_entries, .. },
+                BTreeNode::Leaf { entries: right_entries, next_leaf: right_next },
+            ) => {
+                // Check if merge is possible
+                if left_entries.len() + right_entries.len() > DEFAULT_ORDER {
+                    return Ok(false);
+                }
+
+                let mut merged_entries = left_entries;
+                
+                // Add all right entries
+                merged_entries.extend(right_entries);
+
+                // Create merged node (left now points to right's next)
+                let merged_node = BTreeNode::Leaf {
+                    entries: merged_entries,
+                    next_leaf: right_next,
+                };
+
+                // Write merged node and free right node
+                self.write_node(left_page_id, &merged_node)?;
+                self.pager.free_page(right_page_id)?;
+
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Redistribute keys between two adjacent nodes to balance them.
+    /// Returns true if redistribution was successful.
+    fn redistribute_keys(
+        &self,
+        left_page_id: PageId,
+        right_page_id: PageId,
+        separator_key: &[u8],
+    ) -> TableResult<Option<Vec<u8>>> {
+        let left_node = self.read_node(left_page_id)?;
+        let right_node = self.read_node(right_page_id)?;
+
+        // Ensure nodes are of the same type
+        if left_node.node_type() != right_node.node_type() {
+            return Ok(None);
+        }
+
+        let total_keys = left_node.key_count() + right_node.key_count();
+        let target_left = total_keys / 2;
+
+        match (left_node, right_node) {
+            (
+                BTreeNode::Internal { entries: left_entries, rightmost_child: left_rightmost },
+                BTreeNode::Internal { entries: right_entries, rightmost_child: right_rightmost },
+            ) => {
+                let mut left_entries = left_entries;
+                let mut right_entries = right_entries;
+                let left_count = left_entries.len();
+
+                if left_count < target_left {
+                    // Move keys from right to left
+                    let to_move = target_left - left_count;
+                    
+                    // Add separator with left's rightmost as child
+                    left_entries.push(InternalEntry {
+                        key: separator_key.to_vec(),
+                        child_page_id: left_rightmost,
+                    });
+
+                    // Move entries from right to left
+                    for _ in 0..to_move.saturating_sub(1) {
+                        if let Some(entry) = right_entries.first() {
+                            left_entries.push(entry.clone());
+                            right_entries.remove(0);
+                        }
+                    }
+
+                    // New separator is the first key in right
+                    let new_separator = if let Some(entry) = right_entries.first() {
+                        let sep = entry.key.clone();
+                        let new_left_rightmost = entry.child_page_id;
+                        right_entries.remove(0);
+                        
+                        // Update nodes
+                        let new_left = BTreeNode::Internal {
+                            entries: left_entries,
+                            rightmost_child: new_left_rightmost,
+                        };
+                        let new_right = BTreeNode::Internal {
+                            entries: right_entries,
+                            rightmost_child: right_rightmost,
+                        };
+
+                        self.write_node(left_page_id, &new_left)?;
+                        self.write_node(right_page_id, &new_right)?;
+
+                        Some(sep)
+                    } else {
+                        None
+                    };
+
+                    Ok(new_separator)
+                } else {
+                    // Move keys from left to right
+                    let to_move = left_count - target_left;
+                    
+                    // Take entries from end of left
+                    let mut moved_entries = Vec::new();
+                    for _ in 0..to_move {
+                        if let Some(entry) = left_entries.pop() {
+                            moved_entries.insert(0, entry);
+                        }
+                    }
+
+                    if moved_entries.is_empty() {
+                        return Ok(None);
+                    }
+
+                    // New separator is the last moved key
+                    let new_separator = moved_entries.last().unwrap().key.clone();
+                    let new_left_rightmost = moved_entries.last().unwrap().child_page_id;
+                    moved_entries.pop();
+
+                    // Add separator to right with old left_rightmost
+                    moved_entries.push(InternalEntry {
+                        key: separator_key.to_vec(),
+                        child_page_id: left_rightmost,
+                    });
+                    moved_entries.extend(right_entries);
+
+                    // Update nodes
+                    let new_left = BTreeNode::Internal {
+                        entries: left_entries,
+                        rightmost_child: new_left_rightmost,
+                    };
+                    let new_right = BTreeNode::Internal {
+                        entries: moved_entries,
+                        rightmost_child: right_rightmost,
+                    };
+
+                    self.write_node(left_page_id, &new_left)?;
+                    self.write_node(right_page_id, &new_right)?;
+
+                    Ok(Some(new_separator))
+                }
+            }
+            (
+                BTreeNode::Leaf { entries: left_entries, next_leaf: left_next },
+                BTreeNode::Leaf { entries: right_entries, next_leaf: right_next },
+            ) => {
+                let mut left_entries = left_entries;
+                let mut right_entries = right_entries;
+                let left_count = left_entries.len();
+
+                if left_count < target_left {
+                    // Move keys from right to left
+                    let to_move = target_left - left_count;
+                    
+                    for _ in 0..to_move {
+                        if let Some(entry) = right_entries.first() {
+                            left_entries.push(entry.clone());
+                            right_entries.remove(0);
+                        }
+                    }
+
+                    // New separator is the first key in right
+                    let new_separator = right_entries.first().map(|e| e.key.clone());
+
+                    // Update nodes
+                    let new_left = BTreeNode::Leaf {
+                        entries: left_entries,
+                        next_leaf: left_next,
+                    };
+                    let new_right = BTreeNode::Leaf {
+                        entries: right_entries,
+                        next_leaf: right_next,
+                    };
+
+                    self.write_node(left_page_id, &new_left)?;
+                    self.write_node(right_page_id, &new_right)?;
+
+                    Ok(new_separator)
+                } else {
+                    // Move keys from left to right
+                    let to_move = left_count - target_left;
+                    
+                    let mut moved_entries = Vec::new();
+                    for _ in 0..to_move {
+                        if let Some(entry) = left_entries.pop() {
+                            moved_entries.insert(0, entry);
+                        }
+                    }
+
+                    if moved_entries.is_empty() {
+                        return Ok(None);
+                    }
+
+                    // New separator is the first moved key
+                    let new_separator = moved_entries.first().map(|e| e.key.clone());
+                    
+                    moved_entries.extend(right_entries);
+
+                    // Update nodes
+                    let new_left = BTreeNode::Leaf {
+                        entries: left_entries,
+                        next_leaf: left_next,
+                    };
+                    let new_right = BTreeNode::Leaf {
+                        entries: moved_entries,
+                        next_leaf: right_next,
+                    };
+
+                    self.write_node(left_page_id, &new_left)?;
+                    self.write_node(right_page_id, &new_right)?;
+
+                    Ok(new_separator)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Insert a key-value pair into the tree, handling splits as needed.
+    fn insert_internal(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        tx_id: TransactionId,
+    ) -> TableResult<()> {
+        // Find the leaf page
+        let (leaf_page_id, pos) = self.search(&key)?;
+        let mut node = self.read_node(leaf_page_id)?;
+
+        if let BTreeNode::Leaf { ref mut entries, .. } = node {
+            // Check if key already exists
+            if pos < entries.len() && entries[pos].key == key {
+                // Update existing entry's version chain by prepending new version
+                let old_chain = entries[pos].chain.clone();
+                let mut new_chain = old_chain.prepend(value, tx_id);
+                // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
+                new_chain.commit(LogSequenceNumber::from(tx_id.as_u64()));
+                entries[pos].chain = new_chain;
+            } else {
+                // Insert new entry with new version chain
+                let mut chain = VersionChain::new(value, tx_id);
+                // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
+                chain.commit(LogSequenceNumber::from(tx_id.as_u64()));
+                entries.insert(pos, LeafEntry { key: key.clone(), chain });
+            }
+
+            // Check if node needs to be split
+            if node.is_full() {
+                self.split_and_propagate(leaf_page_id, &node)?;
+            } else {
+                // Just write the updated node
+                self.write_node(leaf_page_id, &node)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Split a node and propagate the split up the tree.
+    fn split_and_propagate(&self, page_id: PageId, node: &BTreeNode) -> TableResult<()> {
+        // If this is the root, create a new root
+        if page_id == self.root_page_id {
+            let (right_page_id, median_key) = self.split_node(page_id, node)?;
+            
+            // Create new root
+            let new_root_page_id = self.pager.allocate_page(PageType::BTreeInternal)?;
+            let new_root = BTreeNode::Internal {
+                entries: vec![InternalEntry {
+                    key: median_key,
+                    child_page_id: page_id,
+                }],
+                rightmost_child: right_page_id,
+            };
+            
+            self.write_node(new_root_page_id, &new_root)?;
+            
+            // Update root pointer (this would need to be persisted in metadata)
+            // For now, this is a limitation - root changes need to be handled at a higher level
+            
+            Ok(())
+        } else {
+            // Split the node
+            let (right_page_id, median_key) = self.split_node(page_id, node)?;
+            
+            // TODO: Find parent and insert median_key with right_page_id
+            // This requires maintaining parent pointers or a path stack during traversal
+            // For now, this is a placeholder
+            
+            Ok(())
+        }
+    }
+
+    /// Delete a key from the tree, handling merges and redistributions as needed.
+    fn delete_internal(&self, key: &[u8], tx_id: TransactionId) -> TableResult<bool> {
+        // Find the leaf page
+        let (leaf_page_id, pos) = self.search(key)?;
+        let mut node = self.read_node(leaf_page_id)?;
+
+        if let BTreeNode::Leaf { ref mut entries, .. } = node {
+            // Check if key exists
+            if pos < entries.len() && entries[pos].key == key {
+                // Mark as deleted in version chain by prepending empty value
+                let old_chain = entries[pos].chain.clone();
+                let mut new_chain = old_chain.prepend(Vec::new(), tx_id);
+                // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
+                new_chain.commit(LogSequenceNumber::from(tx_id.as_u64()));
+                entries[pos].chain = new_chain;
+
+                // Write updated node
+                self.write_node(leaf_page_id, &node)?;
+
+                // Check if node needs rebalancing
+                if !node.has_minimum_keys() && leaf_page_id != self.root_page_id {
+                    // TODO: Implement rebalancing with siblings
+                    // This requires finding siblings and parent
+                }
+
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 impl<FS: FileSystem> TableEngine for PagedBTree<FS> {
@@ -626,10 +1072,20 @@ impl<'a, FS: FileSystem> Flushable for PagedBTreeWriter<'a, FS> {
             return Ok(());
         }
 
-        // TODO: Implement actual B-Tree insertion with splits
-        // For now, this is a placeholder that will be implemented in the next iteration
+        // Apply all pending changes
+        for (key, value_opt) in self.pending_changes.drain(..) {
+            match value_opt {
+                Some(value) => {
+                    // Insert or update
+                    self.table.insert_internal(key, value, self.tx_id)?;
+                }
+                None => {
+                    // Delete
+                    self.table.delete_internal(&key, self.tx_id)?;
+                }
+            }
+        }
         
-        self.pending_changes.clear();
         Ok(())
     }
 }
