@@ -139,11 +139,16 @@ pub trait OrderedScan {
 }
 
 /// Prefix scan capability.
+///
+/// This trait should only be implemented by engines that efficiently support prefix scans.
+/// The default implementation is intentionally omitted to prevent engines from accidentally
+/// enabling prefix scans without proper support. Engines must explicitly implement this
+/// trait and should verify TableCapabilities::prefix_scan is true.
 pub trait PrefixScan: OrderedScan {
     /// Scan all keys with the given prefix at a specific snapshot.
-    fn scan_prefix(&self, prefix: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
-        self.scan(ScanBounds::Prefix(KeyBuf(prefix.to_vec())), snapshot_lsn)
-    }
+    ///
+    /// Implementations should check that the engine's capabilities include prefix_scan support.
+    fn scan_prefix(&self, prefix: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>>;
 }
 
 /// Mutation capability.
@@ -159,7 +164,7 @@ pub trait MutableTable {
 pub trait BatchOps {
     fn batch_get(&self, keys: &[&[u8]]) -> TableResult<Vec<Option<ValueBuf>>>;
 
-    fn apply_batch(&mut self, batch: WriteBatch<'_>) -> TableResult<BatchReport>;
+    fn apply_batch<'a>(&mut self, batch: WriteBatch<'a>) -> TableResult<BatchReport>;
 }
 
 /// Flush capability.
@@ -197,12 +202,14 @@ pub trait EvictableCache: MemoryAware {
         let current = self.memory_usage();
         let budget = self.memory_budget();
 
+        // Calculate target relative to current usage, not budget
+        // This prevents trying to "evict up" when current << budget
         let target = match pressure {
             MemoryPressure::None => return Ok(()),
-            MemoryPressure::Low => (budget as f64 * 0.90) as usize,
-            MemoryPressure::Medium => (budget as f64 * 0.75) as usize,
-            MemoryPressure::High => (budget as f64 * 0.50) as usize,
-            MemoryPressure::Critical => (budget as f64 * 0.25) as usize,
+            MemoryPressure::Low => current.min((budget as f64 * 0.90) as usize),
+            MemoryPressure::Medium => current.min((budget as f64 * 0.75) as usize),
+            MemoryPressure::High => current.min((budget as f64 * 0.50) as usize),
+            MemoryPressure::Critical => current.min((budget as f64 * 0.25) as usize),
         };
 
         if current > target {
@@ -270,7 +277,13 @@ pub trait TableEngine {
 
     fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>>;
 
-    fn writer(&self, tx_id: TransactionId) -> TableResult<Self::Writer<'_>>;
+    /// Create a writer for the given transaction.
+    ///
+    /// The snapshot_lsn parameter enables MVCC operations within the writer:
+    /// - Check-and-set operations need to read current values
+    /// - Read-before-delete operations need visibility checks
+    /// - Conditional updates need snapshot isolation
+    fn writer(&self, tx_id: TransactionId, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Writer<'_>>;
 
     fn stats(&self) -> TableResult<TableStatistics>;
 }
@@ -285,6 +298,13 @@ pub trait TableReader: PointLookup + OrderedScan {
 /// Write view over a table engine.
 pub trait TableWriter: MutableTable + BatchOps + Flushable {
     fn tx_id(&self) -> TransactionId;
+
+    /// Get the snapshot LSN for this writer.
+    ///
+    /// This is the canonical location for the snapshot LSN in write operations.
+    /// Writers need read snapshots for check-and-set, read-before-delete, and
+    /// other conditional operations.
+    fn snapshot_lsn(&self) -> LogSequenceNumber;
 }
 
 /// Declared table capabilities.
