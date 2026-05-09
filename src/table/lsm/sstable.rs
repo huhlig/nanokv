@@ -1019,39 +1019,221 @@ impl<FS: FileSystem> SStableWriter<FS> {
             ));
         }
 
-        // Build bloom filter
-        let _bloom_filter = self.bloom_builder.map(|b| b.build());
-
-        // Get min/max keys
+        // Get min/max keys and count before consuming entries
         let min_key = self.entries.first().unwrap().0.clone();
         let max_key = self.entries.last().unwrap().0.clone();
+        let num_entries = self.entries.len() as u64;
 
-        // Allocate pages and write data
-        // This is a simplified placeholder - full implementation would:
-        // 1. Write data blocks
-        // 2. Build and write index block
-        // 3. Write bloom filter
-        // 4. Write footer
+        // Build bloom filter from all keys
+        let mut bloom_filter = self.bloom_builder.map(|b| {
+            let mut filter = b.build();
+            for (key, _) in &self.entries {
+                filter.insert(key);
+            }
+            filter
+        });
+
+        // Track current write position
+        let mut current_offset = 0u64;
+        let page_size = self.pager.page_size().data_size();
         
+        // Allocate first page
         let first_page_id = self.pager.allocate_page(PageType::LsmData)?;
         self.first_page_id = Some(first_page_id);
         self.pages.push(first_page_id);
-
+        
+        let mut current_page = Page::new(first_page_id, PageType::LsmData, page_size);
+        let mut current_page_offset = 0usize;
+        
+        // Index entries to track data block locations
+        let mut index_entries = Vec::new();
+        
+        // Step 1: Write data blocks
+        // Group entries into blocks based on target block size
+        let target_block_size = self.config.block_size;
+        let mut block_entries = Vec::new();
+        let mut block_size_estimate = 0;
+        
+        for (key, chain) in self.entries {
+            // Estimate entry size: key_len (4) + key + chain_len (4) + serialized chain
+            // Use bincode to get accurate size of serialized chain
+            let chain_size = bincode::serialize(&chain)
+                .map(|bytes| bytes.len())
+                .unwrap_or(chain.value.len() + 64); // Fallback estimate
+            let entry_size = 4 + key.len() + 4 + chain_size;
+            
+            // Check if adding this entry would exceed block size
+            if !block_entries.is_empty() && block_size_estimate + entry_size > target_block_size {
+                // Write current block
+                let block = DataBlock::from_entries(block_entries.clone());
+                let first_key = block.first_key().unwrap().to_vec();
+                let block_bytes = block.to_bytes(self.config.compression.is_some())?;
+                
+                // Check if block fits in current page
+                if current_page_offset + block_bytes.len() > page_size {
+                    // Write current page and allocate new one
+                    self.pager.write_page(&current_page)?;
+                    current_offset += page_size as u64;
+                    
+                    let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
+                    self.pages.push(new_page_id);
+                    current_page = Page::new(new_page_id, PageType::LsmData, page_size);
+                    current_page_offset = 0;
+                }
+                
+                // Record index entry for this block
+                index_entries.push(IndexEntry {
+                    first_key,
+                    page_id: current_page.page_id(),
+                    offset: current_page_offset as u64,
+                });
+                
+                // Write block to current page
+                current_page.data_mut().extend_from_slice(&block_bytes);
+                current_page_offset += block_bytes.len();
+                
+                // Start new block
+                block_entries.clear();
+                block_size_estimate = 0;
+            }
+            
+            block_entries.push((key, chain));
+            block_size_estimate += entry_size;
+        }
+        
+        // Write final block if any entries remain
+        if !block_entries.is_empty() {
+            let block = DataBlock::from_entries(block_entries);
+            let first_key = block.first_key().unwrap().to_vec();
+            let block_bytes = block.to_bytes(self.config.compression.is_some())?;
+            
+            // Check if block fits in current page
+            if current_page_offset + block_bytes.len() > page_size {
+                // Write current page and allocate new one
+                self.pager.write_page(&current_page)?;
+                current_offset += page_size as u64;
+                
+                let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
+                self.pages.push(new_page_id);
+                current_page = Page::new(new_page_id, PageType::LsmData, page_size);
+                current_page_offset = 0;
+            }
+            
+            // Record index entry
+            index_entries.push(IndexEntry {
+                first_key,
+                page_id: current_page.page_id(),
+                offset: current_page_offset as u64,
+            });
+            
+            // Write block to current page
+            current_page.data_mut().extend_from_slice(&block_bytes);
+            current_page_offset += block_bytes.len();
+        }
+        
+        // Step 2: Write index block
+        let index_offset = current_offset + current_page_offset as u64;
+        let index_block = IndexBlock::from_entries(index_entries);
+        let index_bytes = index_block.to_bytes()?;
+        
+        // Check if index fits in current page
+        if current_page_offset + index_bytes.len() > page_size {
+            // Write current page and allocate new one
+            self.pager.write_page(&current_page)?;
+            current_offset += page_size as u64;
+            
+            let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
+            self.pages.push(new_page_id);
+            current_page = Page::new(new_page_id, PageType::LsmData, page_size);
+            current_page_offset = 0;
+        }
+        
+        // Write index to current page
+        current_page.data_mut().extend_from_slice(&index_bytes);
+        current_page_offset += index_bytes.len();
+        
+        // Step 3: Write bloom filter (if enabled)
+        let bloom_filter_offset = if bloom_filter.is_some() {
+            let offset = current_offset + current_page_offset as u64;
+            let bloom_bytes = bloom_filter.as_ref().unwrap().as_bytes();
+            
+            // Write bloom filter metadata (num_hash_functions as u32)
+            let num_hash = bloom_filter.as_ref().unwrap().num_hash_functions() as u32;
+            let bloom_header = num_hash.to_le_bytes();
+            
+            // Check if bloom filter fits in current page
+            if current_page_offset + 4 + bloom_bytes.len() > page_size {
+                // Write current page and allocate new one
+                self.pager.write_page(&current_page)?;
+                current_offset += page_size as u64;
+                
+                let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
+                self.pages.push(new_page_id);
+                current_page = Page::new(new_page_id, PageType::LsmData, page_size);
+                current_page_offset = 0;
+            }
+            
+            // Write bloom filter header and data
+            current_page.data_mut().extend_from_slice(&bloom_header);
+            current_page.data_mut().extend_from_slice(bloom_bytes);
+            current_page_offset += 4 + bloom_bytes.len();
+            
+            offset
+        } else {
+            0
+        };
+        
+        // Step 4: Write footer
+        let footer_offset = current_offset + current_page_offset as u64;
+        
+        // Calculate total size
+        let total_size = footer_offset + SStableFooter::SIZE as u64;
+        
         // Create metadata
         let metadata = SStableMetadata {
             id: self.id,
             level: self.level,
             min_key,
             max_key,
-            num_entries: self.entries.len() as u64,
-            total_size: 0, // Would calculate actual size
+            num_entries,
+            total_size,
             created_lsn,
-            first_page_id,
+            first_page_id: first_page_id,
             num_pages: self.pages.len() as u32,
-            index_offset: 0,
-            bloom_filter_offset: 0,
-            footer_offset: 0,
+            index_offset,
+            bloom_filter_offset,
+            footer_offset,
         };
+        
+        // Calculate checksum of all written data
+        let mut hasher = Sha256::new();
+        hasher.update(&metadata.id.as_u64().to_le_bytes());
+        hasher.update(&metadata.level.to_le_bytes());
+        hasher.update(&metadata.min_key);
+        hasher.update(&metadata.max_key);
+        hasher.update(&metadata.num_entries.to_le_bytes());
+        let checksum: [u8; 32] = hasher.finalize().into();
+        
+        // Create footer
+        let footer = SStableFooter::new(metadata.clone(), checksum);
+        let footer_bytes = footer.to_bytes();
+        
+        // Check if footer fits in current page
+        if current_page_offset + footer_bytes.len() > page_size {
+            // Write current page and allocate new one
+            self.pager.write_page(&current_page)?;
+            
+            let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
+            self.pages.push(new_page_id);
+            current_page = Page::new(new_page_id, PageType::LsmData, page_size);
+            current_page_offset = 0;
+        }
+        
+        // Write footer to current page
+        current_page.data_mut().extend_from_slice(&footer_bytes);
+        
+        // Write final page
+        self.pager.write_page(&current_page)?;
 
         Ok(metadata)
     }
@@ -1544,6 +1726,211 @@ mod tests {
         assert_eq!(entries[2].page_id, PageId::from(3));
         assert_eq!(entries[2].offset, 200);
     }
+    #[test]
+    fn test_sstable_writer_finish_small() {
+        use crate::vfs::MemoryFileSystem;
+        use crate::pager::{Pager, PagerConfig, PageSize};
+        use std::sync::Arc;
+        
+        // Create in-memory pager
+        let fs = MemoryFileSystem::new();
+        let config = PagerConfig {
+            page_size: PageSize::Size4KB,
+            compression: crate::pager::CompressionType::None,
+            encryption: crate::pager::EncryptionType::None,
+            encryption_key: None,
+            enable_checksums: true,
+            cache_capacity: 100,
+            cache_write_back: false,
+        };
+        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+        
+        // Create writer
+        let sstable_config = SStableConfig::default();
+        let mut writer = SStableWriter::new(
+            pager.clone(),
+            SStableId::new(1),
+            0,
+            sstable_config,
+            10,
+        );
+        
+        // Add some entries
+        let txn_id = crate::txn::TransactionId::from(1);
+        for i in 0..10 {
+            let key = format!("key{:03}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            let mut chain = VersionChain::new(value, txn_id);
+            chain.commit(LogSequenceNumber::from(1));
+            writer.add(key, chain).unwrap();
+        }
+        
+        // Finish writing
+        let lsn = LogSequenceNumber::from(1);
+        let metadata = writer.finish(lsn).unwrap();
+        
+        // Verify metadata
+        assert_eq!(metadata.id.as_u64(), 1);
+        assert_eq!(metadata.level, 0);
+        assert_eq!(metadata.min_key, b"key000");
+        assert_eq!(metadata.max_key, b"key009");
+        assert_eq!(metadata.num_entries, 10);
+        assert!(metadata.total_size > 0);
+        assert_eq!(metadata.created_lsn, lsn);
+        assert!(metadata.num_pages > 0);
+        assert!(metadata.index_offset > 0);
+        assert!(metadata.bloom_filter_offset > 0);
+        assert!(metadata.footer_offset > 0);
+    }
+    
+    #[test]
+    fn test_sstable_writer_finish_large() {
+        use crate::vfs::MemoryFileSystem;
+        use crate::pager::{Pager, PagerConfig, PageSize};
+        use std::sync::Arc;
+        
+        // Create in-memory pager
+        let fs = MemoryFileSystem::new();
+        let config = PagerConfig {
+            page_size: PageSize::Size4KB,
+            compression: crate::pager::CompressionType::None,
+            encryption: crate::pager::EncryptionType::None,
+            encryption_key: None,
+            enable_checksums: true,
+            cache_capacity: 100,
+            cache_write_back: false,
+        };
+        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+        
+        // Create writer with small block size to force multiple blocks
+        let mut sstable_config = SStableConfig::default();
+        sstable_config.block_size = 512; // Small block size
+        let mut writer = SStableWriter::new(
+            pager.clone(),
+            SStableId::new(2),
+            1,
+            sstable_config,
+            100,
+        );
+        
+        // Add many entries to span multiple blocks
+        let txn_id = crate::txn::TransactionId::from(1);
+        for i in 0..100 {
+            let key = format!("key{:05}", i).into_bytes();
+            let value = vec![b'x'; 50]; // 50 bytes per value
+            let mut chain = VersionChain::new(value, txn_id);
+            chain.commit(LogSequenceNumber::from(1));
+            writer.add(key, chain).unwrap();
+        }
+        
+        // Finish writing
+        let lsn = LogSequenceNumber::from(2);
+        let metadata = writer.finish(lsn).unwrap();
+        
+        // Verify metadata
+        assert_eq!(metadata.id.as_u64(), 2);
+        assert_eq!(metadata.level, 1);
+        assert_eq!(metadata.min_key, b"key00000");
+        assert_eq!(metadata.max_key, b"key00099");
+        assert_eq!(metadata.num_entries, 100);
+        assert!(metadata.total_size > 0);
+        assert_eq!(metadata.created_lsn, lsn);
+        assert!(metadata.num_pages > 1); // Should span multiple pages
+        assert!(metadata.index_offset > 0);
+        assert!(metadata.bloom_filter_offset > 0);
+        assert!(metadata.footer_offset > 0);
+    }
+    
+    #[test]
+    fn test_sstable_writer_finish_empty_fails() {
+        use crate::vfs::MemoryFileSystem;
+        use crate::pager::{Pager, PagerConfig, PageSize};
+        use std::sync::Arc;
+        
+        // Create in-memory pager
+        let fs = MemoryFileSystem::new();
+        let config = PagerConfig {
+            page_size: PageSize::Size4KB,
+            compression: crate::pager::CompressionType::None,
+            encryption: crate::pager::EncryptionType::None,
+            encryption_key: None,
+            enable_checksums: true,
+            cache_capacity: 100,
+            cache_write_back: false,
+        };
+        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+        
+        // Create writer without adding entries
+        let sstable_config = SStableConfig::default();
+        let writer = SStableWriter::new(
+            pager.clone(),
+            SStableId::new(3),
+            0,
+            sstable_config,
+            10,
+        );
+        
+        // Finish should fail
+        let lsn = LogSequenceNumber::from(1);
+        let result = writer.finish(lsn);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_sstable_writer_finish_with_version_chains() {
+        use crate::vfs::MemoryFileSystem;
+        use crate::pager::{Pager, PagerConfig, PageSize};
+        use std::sync::Arc;
+        
+        // Create in-memory pager
+        let fs = MemoryFileSystem::new();
+        let config = PagerConfig {
+            page_size: PageSize::Size4KB,
+            compression: crate::pager::CompressionType::None,
+            encryption: crate::pager::EncryptionType::None,
+            encryption_key: None,
+            enable_checksums: true,
+            cache_capacity: 100,
+            cache_write_back: false,
+        };
+        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+        
+        // Create writer
+        let sstable_config = SStableConfig::default();
+        let mut writer = SStableWriter::new(
+            pager.clone(),
+            SStableId::new(4),
+            0,
+            sstable_config,
+            5,
+        );
+        
+        // Add entries with version chains
+        let txn_id1 = crate::txn::TransactionId::from(1);
+        let txn_id2 = crate::txn::TransactionId::from(2);
+        
+        for i in 0..5 {
+            let key = format!("key{}", i).into_bytes();
+            
+            // Create version chain with multiple versions
+            let mut chain = VersionChain::new(format!("value{}_v1", i).into_bytes(), txn_id1);
+            chain.commit(LogSequenceNumber::from(1));
+            
+            chain = chain.prepend(format!("value{}_v2", i).into_bytes(), txn_id2);
+            chain.commit(LogSequenceNumber::from(2));
+            
+            writer.add(key, chain).unwrap();
+        }
+        
+        // Finish writing
+        let lsn = LogSequenceNumber::from(3);
+        let metadata = writer.finish(lsn).unwrap();
+        
+        // Verify metadata
+        assert_eq!(metadata.num_entries, 5);
+        assert!(metadata.total_size > 0);
+    }
+
 
     #[test]
     fn test_index_block_checksum_validation() {
