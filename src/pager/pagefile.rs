@@ -17,8 +17,8 @@
 //! Pager implementation - Main page management logic
 
 use crate::pager::{
-    CacheConfig, FileHeader, FreeList, FreeListPage, Page, PageCache, PageId, PageSize, PageType,
-    PagerConfig, PagerError, PagerResult, PinTable, Superblock,
+    CacheConfig, FileHeader, FreeList, FreeListPage, Page, PageCache, PageId, PageSize, PageTable,
+    PageType, PagerConfig, PagerError, PagerResult, PinTable, Superblock,
 };
 use crate::vfs::{File, FileSystem};
 use parking_lot::RwLock;
@@ -49,6 +49,8 @@ pub struct Pager<FS: FileSystem> {
     cache: Option<PageCache>,
     /// Pin table for reference counting
     pin_table: PinTable,
+    /// Page table for fine-grained locking
+    page_table: PageTable,
 }
 
 impl<FS: FileSystem> Pager<FS> {
@@ -111,6 +113,7 @@ impl<FS: FileSystem> Pager<FS> {
             free_list: Arc::new(RwLock::new(free_list)),
             cache,
             pin_table: PinTable::new(),
+            page_table: PageTable::new(),
         })
     }
 
@@ -188,6 +191,7 @@ impl<FS: FileSystem> Pager<FS> {
             free_list: Arc::new(RwLock::new(free_list)),
             cache,
             pin_table: PinTable::new(),
+            page_table: PageTable::new(),
         })
     }
 
@@ -225,6 +229,10 @@ impl<FS: FileSystem> Pager<FS> {
                 superblock.allocate_new_page()
             }
         };
+
+        // Acquire page-level write lock for the newly allocated page
+        // This prevents concurrent access during initialization
+        let _page_lock = self.page_table.write_lock(page_id);
 
         let mut page = Page::new(page_id, page_type, self.config.page_size.data_size());
         page.header.compression = self.config.compression;
@@ -290,6 +298,10 @@ impl<FS: FileSystem> Pager<FS> {
         if self.pin_table.is_pinned(page_id) {
             return Err(PagerError::PagePinned(page_id));
         }
+
+        // Acquire page-level write lock before freeing
+        // This prevents concurrent access during the free operation
+        let _page_lock = self.page_table.write_lock(page_id);
 
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page_id.as_u64() * page_size as u64;
@@ -386,14 +398,21 @@ impl<FS: FileSystem> Pager<FS> {
         // This ensures the page cannot be freed and reallocated while we're reading it
         self.pin_table.pin(page_id);
 
+        // Acquire page-level read lock for fine-grained concurrency
+        // Multiple threads can read different pages concurrently (different shards)
+        let _page_lock = self.page_table.read_lock(page_id);
+
         // Cache miss - read from disk
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page_id.as_u64() * page_size as u64;
 
         let result = (|| {
             let mut buffer = vec![0u8; page_size];
+            // Note: VFS File trait requires &mut self for read_at_offset
+            // We still benefit from page-level locking for pages in different shards
             let mut file = self.file.write();
             file.read_at_offset(offset, &mut buffer)?;
+            drop(file); // Release file lock early
 
             let page = Page::from_bytes(
                 &buffer,
@@ -444,6 +463,10 @@ impl<FS: FileSystem> Pager<FS> {
 
     /// Write a page directly to disk (bypassing cache)
     fn write_page_to_disk(&self, page: &Page) -> PagerResult<()> {
+        // Acquire page-level write lock for fine-grained concurrency
+        // Only one thread can write to a page at a time, but different pages can be written concurrently
+        let _page_lock = self.page_table.write_lock(page.page_id());
+
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page.page_id().as_u64() * page_size as u64;
 

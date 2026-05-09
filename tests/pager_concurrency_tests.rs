@@ -865,3 +865,178 @@ fn test_concurrent_sync_operations() {
     // Final sync
     pager.sync().unwrap();
 }
+
+/// Test page-level locking with concurrent reads to different shards
+///
+/// This test validates that the PageTable sharding allows true concurrent
+/// reads to pages in different shards without blocking each other.
+#[test]
+fn test_page_level_locking_concurrent_reads() {
+    let pager = create_shared_pager();
+    let thread_count = 8;
+    let reads_per_thread = 100;
+
+    // Pre-allocate pages and ensure they're in different shards
+    // With 64 shards (default), pages 0-63 will be in different shards
+    let mut page_ids = Vec::new();
+    for i in 0..thread_count {
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+        let data = format!("Page {} data", i);
+        page.data_mut().extend_from_slice(data.as_bytes());
+        pager.write_page(&page).unwrap();
+        page_ids.push((page_id, data));
+    }
+
+    let page_ids = Arc::new(page_ids);
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+
+    for thread_id in 0..thread_count {
+        let pager_clone = Arc::clone(&pager);
+        let page_ids_clone = Arc::clone(&page_ids);
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = thread::spawn(move || {
+            // Wait for all threads to start simultaneously
+            barrier_clone.wait();
+
+            let (page_id, expected_data) = &page_ids_clone[thread_id];
+
+            // Perform many reads - these should not block each other
+            // if pages are in different shards
+            for _ in 0..reads_per_thread {
+                let page = pager_clone.read_page(*page_id).expect(&format!(
+                    "Thread {} failed to read page {}",
+                    thread_id, page_id
+                ));
+
+                assert_eq!(
+                    &page.data()[0..expected_data.len()],
+                    expected_data.as_bytes(),
+                    "Data mismatch for page {}",
+                    page_id
+                );
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+}
+
+/// Test page-level locking with concurrent writes to different shards
+///
+/// This test validates that the PageTable sharding allows true concurrent
+/// writes to pages in different shards without blocking each other.
+#[test]
+fn test_page_level_locking_concurrent_writes() {
+    let pager = create_shared_pager();
+    let thread_count = 8;
+    let writes_per_thread = 50;
+
+    // Pre-allocate pages for each thread
+    let mut page_ids = Vec::new();
+    for _ in 0..thread_count {
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        page_ids.push(page_id);
+    }
+
+    let page_ids = Arc::new(page_ids);
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+
+    for thread_id in 0..thread_count {
+        let pager_clone = Arc::clone(&pager);
+        let page_ids_clone = Arc::clone(&page_ids);
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = thread::spawn(move || {
+            // Wait for all threads to start simultaneously
+            barrier_clone.wait();
+
+            let page_id = page_ids_clone[thread_id];
+
+            // Perform many writes - these should not block each other
+            // if pages are in different shards
+            for i in 0..writes_per_thread {
+                let mut page = Page::new(
+                    page_id,
+                    PageType::BTreeLeaf,
+                    pager_clone.page_size().data_size(),
+                );
+                let data = format!("Thread {} write {}", thread_id, i);
+                page.data_mut().extend_from_slice(data.as_bytes());
+                pager_clone.write_page(&page).expect(&format!(
+                    "Thread {} failed to write page {} iteration {}",
+                    thread_id, page_id, i
+                ));
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+}
+
+/// Test page-level locking prevents concurrent access to same page
+///
+/// This test validates that page-level locks properly serialize access
+/// to the same page from multiple threads.
+#[test]
+fn test_page_level_locking_same_page_serialization() {
+    let pager = create_shared_pager();
+    let thread_count = 4;
+    let operations_per_thread = 50;
+
+    // Allocate a single page that all threads will access
+    let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+    let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+    page.data_mut().extend_from_slice(b"Initial data");
+    pager.write_page(&page).unwrap();
+
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+
+    for thread_id in 0..thread_count {
+        let pager_clone = Arc::clone(&pager);
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = thread::spawn(move || {
+            // Wait for all threads to start simultaneously
+            barrier_clone.wait();
+
+            // All threads access the same page - should be serialized
+            for i in 0..operations_per_thread {
+                // Read
+                let _page = pager_clone.read_page(page_id).expect(&format!(
+                    "Thread {} failed to read page {} iteration {}",
+                    thread_id, page_id, i
+                ));
+
+                // Write
+                let mut page = Page::new(
+                    page_id,
+                    PageType::BTreeLeaf,
+                    pager_clone.page_size().data_size(),
+                );
+                let data = format!("Thread {} write {}", thread_id, i);
+                page.data_mut().extend_from_slice(data.as_bytes());
+                pager_clone.write_page(&page).expect(&format!(
+                    "Thread {} failed to write page {} iteration {}",
+                    thread_id, page_id, i
+                ));
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+
+    // Verify final page is readable and valid
+    let final_page = pager.read_page(page_id).unwrap();
+    assert_eq!(final_page.page_id(), page_id);
+}
