@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 
 /// Transaction ID type
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TransactionId(u64);
 
 impl TransactionId {

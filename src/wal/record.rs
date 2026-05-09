@@ -32,7 +32,7 @@ use std::io::Write;
 /// Implementations may encode term, segment, offset, shard, or epoch information
 /// in a richer internal representation. The public trait only requires stable
 /// ordering.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct LogSequenceNumber(u64);
 
 impl LogSequenceNumber {

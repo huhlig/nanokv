@@ -26,6 +26,8 @@ aes-gcm = "0.10"
 rand = "0.8"
 crossbeam-channel = "0.5"
 crossbeam = "0.8"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
