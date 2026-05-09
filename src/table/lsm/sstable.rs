@@ -572,6 +572,309 @@ impl Default for DataBlock {
     }
 }
 
+/// Index entry mapping a key to a data block location.
+///
+/// Each entry stores:
+/// - The first key of a data block
+/// - The page ID where the data block starts
+/// - The offset within that page where the data block starts
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexEntry {
+    /// First key in the data block
+    pub first_key: Vec<u8>,
+    /// Page ID where the data block starts
+    pub page_id: PageId,
+    /// Offset within the page (in bytes)
+    pub offset: u64,
+}
+
+/// Index block for efficient key lookups in an SSTable.
+///
+/// The index is a sparse index - it contains one entry per data block,
+/// not one entry per key. This keeps the index small while still enabling
+/// efficient binary search to find the correct data block.
+///
+/// Format:
+/// - Header: num_entries (4 bytes) + checksum (32 bytes)
+/// - Entries: For each entry:
+///   - key_len (4 bytes)
+///   - key (variable)
+///   - page_id (8 bytes)
+///   - offset (8 bytes)
+///
+/// Entries are stored in sorted order by key for efficient binary search.
+#[derive(Clone, Debug)]
+pub struct IndexBlock {
+    /// Sorted index entries (one per data block)
+    entries: Vec<IndexEntry>,
+}
+
+impl IndexBlock {
+    /// Header size: num_entries (4) + checksum (32)
+    const HEADER_SIZE: usize = 36;
+
+    /// Create a new empty index block.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Create an index block from sorted entries.
+    ///
+    /// # Panics
+    /// Panics if entries are not sorted by key.
+    pub fn from_entries(entries: Vec<IndexEntry>) -> Self {
+        // Verify entries are sorted
+        for i in 1..entries.len() {
+            assert!(
+                entries[i - 1].first_key < entries[i].first_key,
+                "Index entries must be sorted by key"
+            );
+        }
+        Self { entries }
+    }
+
+    /// Add an index entry.
+    ///
+    /// # Errors
+    /// Returns error if key is not greater than the last key (entries must be sorted).
+    pub fn add(&mut self, first_key: Vec<u8>, page_id: PageId, offset: u64) -> TableResult<()> {
+        if let Some(last_entry) = self.entries.last() {
+            if first_key <= last_entry.first_key {
+                return Err(crate::table::TableError::Other(
+                    "Index entries must be added in sorted order".to_string(),
+                ));
+            }
+        }
+        self.entries.push(IndexEntry {
+            first_key,
+            page_id,
+            offset,
+        });
+        Ok(())
+    }
+
+    /// Get the number of entries in this index.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Get all entries in the index.
+    pub fn entries(&self) -> &[IndexEntry] {
+        &self.entries
+    }
+
+    /// Binary search to find the data block that may contain the given key.
+    ///
+    /// Returns the index of the entry whose data block should be searched.
+    /// Returns None if the key is definitely not in any data block.
+    ///
+    /// The algorithm finds the rightmost entry whose first_key <= search_key.
+    pub fn search(&self, key: &[u8]) -> Option<usize> {
+        if self.entries.is_empty() {
+            return None;
+        }
+
+        // Binary search for the rightmost entry with first_key <= key
+        let mut left = 0;
+        let mut right = self.entries.len();
+        let mut result = None;
+
+        while left < right {
+            let mid = left + (right - left) / 2;
+            if self.entries[mid].first_key.as_slice() <= key {
+                result = Some(mid);
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+
+        result
+    }
+
+    /// Get the index entry at the given position.
+    pub fn get(&self, index: usize) -> Option<&IndexEntry> {
+        self.entries.get(index)
+    }
+
+    /// Serialize the index block to bytes.
+    ///
+    /// Format:
+    /// - num_entries (4 bytes)
+    /// - checksum (32 bytes) - SHA256 of the entries data
+    /// - For each entry:
+    ///   - key_len (4 bytes)
+    ///   - key (variable)
+    ///   - page_id (8 bytes)
+    ///   - offset (8 bytes)
+    pub fn to_bytes(&self) -> TableResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+
+        // Reserve space for header
+        buffer.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        buffer.extend_from_slice(&[0u8; 32]); // Placeholder for checksum
+
+        // Serialize entries
+        let entries_start = buffer.len();
+        for entry in &self.entries {
+            // key_len
+            buffer.extend_from_slice(&(entry.first_key.len() as u32).to_le_bytes());
+            // key
+            buffer.extend_from_slice(&entry.first_key);
+            // page_id
+            buffer.extend_from_slice(&entry.page_id.as_u64().to_le_bytes());
+            // offset
+            buffer.extend_from_slice(&entry.offset.to_le_bytes());
+        }
+
+        // Calculate checksum of entries data
+        let entries_data = &buffer[entries_start..];
+        let mut hasher = Sha256::new();
+        hasher.update(entries_data);
+        let checksum = hasher.finalize();
+
+        // Write checksum to header
+        buffer[4..36].copy_from_slice(&checksum);
+
+        Ok(buffer)
+    }
+
+    /// Deserialize an index block from bytes.
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Data is truncated or malformed
+    /// - Checksum validation fails
+    pub fn from_bytes(bytes: &[u8]) -> TableResult<Self> {
+        if bytes.len() < Self::HEADER_SIZE {
+            return Err(crate::table::TableError::Other(
+                "Index block data too short".to_string(),
+            ));
+        }
+
+        // Read header
+        let num_entries = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let stored_checksum = &bytes[4..36];
+
+        // Verify checksum of entries data
+        let entries_data = &bytes[Self::HEADER_SIZE..];
+        let mut hasher = Sha256::new();
+        hasher.update(entries_data);
+        let computed_checksum = hasher.finalize();
+
+        if stored_checksum != computed_checksum.as_slice() {
+            return Err(crate::table::TableError::Other(
+                "Index block checksum mismatch".to_string(),
+            ));
+        }
+
+        // Deserialize entries
+        let mut entries = Vec::with_capacity(num_entries);
+        let mut offset = Self::HEADER_SIZE;
+
+        for _ in 0..num_entries {
+            if offset + 4 > bytes.len() {
+                return Err(crate::table::TableError::Other(
+                    "Truncated index entry (key_len)".to_string(),
+                ));
+            }
+
+            // Read key_len
+            let key_len = u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ]) as usize;
+            offset += 4;
+
+            if offset + key_len > bytes.len() {
+                return Err(crate::table::TableError::Other(
+                    "Truncated index entry (key)".to_string(),
+                ));
+            }
+
+            // Read key
+            let first_key = bytes[offset..offset + key_len].to_vec();
+            offset += key_len;
+
+            if offset + 16 > bytes.len() {
+                return Err(crate::table::TableError::Other(
+                    "Truncated index entry (page_id/offset)".to_string(),
+                ));
+            }
+
+            // Read page_id
+            let page_id = PageId::from(u64::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7],
+            ]));
+            offset += 8;
+
+            // Read offset
+            let block_offset = u64::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7],
+            ]);
+            offset += 8;
+
+            entries.push(IndexEntry {
+                first_key,
+                page_id,
+                offset: block_offset,
+            });
+        }
+
+        // Verify entries are sorted
+        for i in 1..entries.len() {
+            if entries[i - 1].first_key >= entries[i].first_key {
+                return Err(crate::table::TableError::Other(
+                    "Index entries not sorted".to_string(),
+                ));
+            }
+        }
+
+        Ok(Self { entries })
+    }
+
+    /// Estimate the serialized size of this index block.
+    pub fn estimate_size(&self) -> usize {
+        let mut size = Self::HEADER_SIZE;
+        for entry in &self.entries {
+            size += 4; // key_len
+            size += entry.first_key.len(); // key
+            size += 8; // page_id
+            size += 8; // offset
+        }
+        size
+    }
+}
+
+impl Default for IndexBlock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// SSTable reader for reading data from an immutable SSTable.
 pub struct SStableReader<FS: FileSystem> {
     /// Pager for reading pages
@@ -1086,6 +1389,340 @@ mod tests {
         
         let restored = DataBlock::from_bytes(&bytes).unwrap();
         assert!(restored.is_empty());
+    }
+
+    // ===== IndexBlock Tests =====
+
+    #[test]
+    fn test_index_block_empty() {
+        let block = IndexBlock::new();
+        assert!(block.is_empty());
+        assert_eq!(block.len(), 0);
+        assert!(block.entries().is_empty());
+    }
+
+    #[test]
+    fn test_index_block_add_entries() {
+        let mut block = IndexBlock::new();
+        
+        block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
+        block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
+        block.add(b"cherry".to_vec(), PageId::from(3), 200).unwrap();
+        
+        assert_eq!(block.len(), 3);
+        assert!(!block.is_empty());
+        
+        let entries = block.entries();
+        assert_eq!(entries[0].first_key, b"apple");
+        assert_eq!(entries[0].page_id, PageId::from(1));
+        assert_eq!(entries[0].offset, 0);
+        
+        assert_eq!(entries[1].first_key, b"banana");
+        assert_eq!(entries[1].page_id, PageId::from(2));
+        assert_eq!(entries[1].offset, 100);
+        
+        assert_eq!(entries[2].first_key, b"cherry");
+        assert_eq!(entries[2].page_id, PageId::from(3));
+        assert_eq!(entries[2].offset, 200);
+    }
+
+    #[test]
+    fn test_index_block_add_unsorted_fails() {
+        let mut block = IndexBlock::new();
+        
+        block.add(b"banana".to_vec(), PageId::from(1), 0).unwrap();
+        
+        // Try to add a key that's not greater than the last key
+        let result = block.add(b"apple".to_vec(), PageId::from(2), 100);
+        assert!(result.is_err());
+        
+        // Try to add the same key again
+        let result = block.add(b"banana".to_vec(), PageId::from(3), 200);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_block_binary_search() {
+        let mut block = IndexBlock::new();
+        
+        // Add entries for data blocks starting with these keys
+        block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
+        block.add(b"dog".to_vec(), PageId::from(2), 100).unwrap();
+        block.add(b"monkey".to_vec(), PageId::from(3), 200).unwrap();
+        block.add(b"zebra".to_vec(), PageId::from(4), 300).unwrap();
+        
+        // Search for keys before first block
+        assert_eq!(block.search(b"aaa"), None);
+        assert_eq!(block.search(b"aardvark"), None);
+        
+        // Search for keys in first block (>= "apple", < "dog")
+        assert_eq!(block.search(b"apple"), Some(0));
+        assert_eq!(block.search(b"banana"), Some(0));
+        assert_eq!(block.search(b"cat"), Some(0));
+        
+        // Search for keys in second block (>= "dog", < "monkey")
+        assert_eq!(block.search(b"dog"), Some(1));
+        assert_eq!(block.search(b"elephant"), Some(1));
+        assert_eq!(block.search(b"lion"), Some(1));
+        
+        // Search for keys in third block (>= "monkey", < "zebra")
+        assert_eq!(block.search(b"monkey"), Some(2));
+        assert_eq!(block.search(b"panda"), Some(2));
+        
+        // Search for keys in fourth block (>= "zebra")
+        assert_eq!(block.search(b"zebra"), Some(3));
+        assert_eq!(block.search(b"zoo"), Some(3));
+    }
+
+    #[test]
+    fn test_index_block_search_empty() {
+        let block = IndexBlock::new();
+        assert_eq!(block.search(b"any_key"), None);
+    }
+
+    #[test]
+    fn test_index_block_search_single_entry() {
+        let mut block = IndexBlock::new();
+        block.add(b"middle".to_vec(), PageId::from(1), 0).unwrap();
+        
+        // Key before the entry
+        assert_eq!(block.search(b"aaa"), None);
+        
+        // Key equal to the entry
+        assert_eq!(block.search(b"middle"), Some(0));
+        
+        // Key after the entry
+        assert_eq!(block.search(b"zzz"), Some(0));
+    }
+
+    #[test]
+    fn test_index_block_get() {
+        let mut block = IndexBlock::new();
+        
+        block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
+        block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
+        
+        let entry = block.get(0).unwrap();
+        assert_eq!(entry.first_key, b"apple");
+        assert_eq!(entry.page_id, PageId::from(1));
+        assert_eq!(entry.offset, 0);
+        
+        let entry = block.get(1).unwrap();
+        assert_eq!(entry.first_key, b"banana");
+        
+        assert!(block.get(2).is_none());
+    }
+
+    #[test]
+    fn test_index_block_serialization() {
+        let mut block = IndexBlock::new();
+        
+        block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
+        block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
+        block.add(b"cherry".to_vec(), PageId::from(3), 200).unwrap();
+        
+        let bytes = block.to_bytes().unwrap();
+        
+        // Verify header
+        let num_entries = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(num_entries, 3);
+        
+        // Deserialize and verify
+        let restored = IndexBlock::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.len(), 3);
+        
+        let entries = restored.entries();
+        assert_eq!(entries[0].first_key, b"apple");
+        assert_eq!(entries[0].page_id, PageId::from(1));
+        assert_eq!(entries[0].offset, 0);
+        
+        assert_eq!(entries[1].first_key, b"banana");
+        assert_eq!(entries[1].page_id, PageId::from(2));
+        assert_eq!(entries[1].offset, 100);
+        
+        assert_eq!(entries[2].first_key, b"cherry");
+        assert_eq!(entries[2].page_id, PageId::from(3));
+        assert_eq!(entries[2].offset, 200);
+    }
+
+    #[test]
+    fn test_index_block_checksum_validation() {
+        let mut block = IndexBlock::new();
+        block.add(b"test".to_vec(), PageId::from(1), 0).unwrap();
+        
+        let mut bytes = block.to_bytes().unwrap();
+        
+        // Corrupt the checksum
+        bytes[4] ^= 0xFF;
+        
+        let result = IndexBlock::from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_block_from_entries() {
+        let entries = vec![
+            IndexEntry {
+                first_key: b"apple".to_vec(),
+                page_id: PageId::from(1),
+                offset: 0,
+            },
+            IndexEntry {
+                first_key: b"banana".to_vec(),
+                page_id: PageId::from(2),
+                offset: 100,
+            },
+        ];
+        
+        let block = IndexBlock::from_entries(entries);
+        assert_eq!(block.len(), 2);
+        assert_eq!(block.entries()[0].first_key, b"apple");
+        assert_eq!(block.entries()[1].first_key, b"banana");
+    }
+
+    #[test]
+    #[should_panic(expected = "Index entries must be sorted by key")]
+    fn test_index_block_from_entries_unsorted_panics() {
+        let entries = vec![
+            IndexEntry {
+                first_key: b"banana".to_vec(),
+                page_id: PageId::from(1),
+                offset: 0,
+            },
+            IndexEntry {
+                first_key: b"apple".to_vec(),
+                page_id: PageId::from(2),
+                offset: 100,
+            },
+        ];
+        
+        IndexBlock::from_entries(entries);
+    }
+
+    #[test]
+    fn test_index_block_estimate_size() {
+        let mut block = IndexBlock::new();
+        
+        // Empty block
+        let size = block.estimate_size();
+        assert_eq!(size, IndexBlock::HEADER_SIZE);
+        
+        // Add entries
+        block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
+        block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
+        
+        let size = block.estimate_size();
+        // Header + 2 entries * (4 + key_len + 8 + 8)
+        let expected = IndexBlock::HEADER_SIZE 
+            + (4 + 5 + 8 + 8)  // "apple"
+            + (4 + 6 + 8 + 8); // "banana"
+        assert_eq!(size, expected);
+    }
+
+    #[test]
+    fn test_index_block_truncated_data() {
+        let mut block = IndexBlock::new();
+        block.add(b"test".to_vec(), PageId::from(1), 0).unwrap();
+        
+        let bytes = block.to_bytes().unwrap();
+        
+        // Truncate at various points
+        let result = IndexBlock::from_bytes(&bytes[..10]);
+        assert!(result.is_err());
+        
+        let result = IndexBlock::from_bytes(&bytes[..IndexBlock::HEADER_SIZE]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_block_empty_serialization() {
+        let block = IndexBlock::new();
+        let bytes = block.to_bytes().unwrap();
+        
+        let restored = IndexBlock::from_bytes(&bytes).unwrap();
+        assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn test_index_block_large_keys() {
+        let mut block = IndexBlock::new();
+        
+        // Add entries with large keys
+        let large_key1 = vec![b'a'; 1000];
+        let large_key2 = vec![b'b'; 1000];
+        
+        block.add(large_key1.clone(), PageId::from(1), 0).unwrap();
+        block.add(large_key2.clone(), PageId::from(2), 100).unwrap();
+        
+        let bytes = block.to_bytes().unwrap();
+        let restored = IndexBlock::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.entries()[0].first_key, large_key1);
+        assert_eq!(restored.entries()[1].first_key, large_key2);
+    }
+
+    #[test]
+    fn test_index_block_many_entries() {
+        let mut block = IndexBlock::new();
+        
+        // Add many entries
+        for i in 0..100 {
+            let key = format!("key_{:04}", i).into_bytes();
+            block.add(key, PageId::from(i as u64), i as u64 * 100).unwrap();
+        }
+        
+        assert_eq!(block.len(), 100);
+        
+        // Test serialization
+        let bytes = block.to_bytes().unwrap();
+        let restored = IndexBlock::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(restored.len(), 100);
+        
+        // Verify a few entries
+        assert_eq!(restored.entries()[0].first_key, b"key_0000");
+        assert_eq!(restored.entries()[50].first_key, b"key_0050");
+        assert_eq!(restored.entries()[99].first_key, b"key_0099");
+        
+        // Test binary search
+        assert_eq!(restored.search(b"key_0025"), Some(25));
+        assert_eq!(restored.search(b"key_0075"), Some(75));
+    }
+
+    #[test]
+    fn test_index_block_unsorted_deserialization_fails() {
+        // Manually create bytes with unsorted entries
+        let mut bytes = Vec::new();
+        
+        // Header: num_entries = 2
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 32]); // Placeholder checksum
+        
+        let entries_start = bytes.len();
+        
+        // Entry 1: "banana"
+        bytes.extend_from_slice(&6u32.to_le_bytes());
+        bytes.extend_from_slice(b"banana");
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        
+        // Entry 2: "apple" (unsorted!)
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(b"apple");
+        bytes.extend_from_slice(&2u64.to_le_bytes());
+        bytes.extend_from_slice(&100u64.to_le_bytes());
+        
+        // Calculate and write checksum
+        let entries_data = &bytes[entries_start..];
+        let mut hasher = Sha256::new();
+        hasher.update(entries_data);
+        let checksum = hasher.finalize();
+        bytes[4..36].copy_from_slice(&checksum);
+        
+        // Should fail because entries are not sorted
+        let result = IndexBlock::from_bytes(&bytes);
+        assert!(result.is_err());
     }
 }
 
