@@ -53,7 +53,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// SSTable identifier (unique within a table).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SStableId(u64);
 
 impl SStableId {

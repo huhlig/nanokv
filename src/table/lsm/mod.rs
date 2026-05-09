@@ -46,6 +46,7 @@
 mod bloom;
 mod config;
 mod iterator;
+mod manifest;
 mod memtable;
 mod sstable;
 
@@ -57,6 +58,7 @@ pub use self::config::{
 pub use self::iterator::{
     Direction, LsmEntry, LsmIterator, MemtableIterator, MergeIterator, SStableIterator,
 };
+pub use self::manifest::{FileMetadata, Manifest, Version, VersionEdit};
 pub use self::memtable::Memtable;
 pub use self::sstable::{
     DataBlock, SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter,

@@ -25,6 +25,7 @@ use std::io::Cursor;
 
 /// Page identifier inside a single-file database. (0-based)
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PageId(u64);
 
 impl PageId {
