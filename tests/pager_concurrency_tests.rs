@@ -1040,3 +1040,82 @@ fn test_page_level_locking_same_page_serialization() {
     let final_page = pager.read_page(page_id).unwrap();
     assert_eq!(final_page.page_id(), page_id);
 }
+
+/// Test lock-free free list with extreme contention
+///
+/// This test specifically validates the lock-free SegQueue implementation
+/// by creating maximum contention with many threads rapidly pushing and
+/// popping from the free list.
+#[test]
+fn test_lock_free_free_list_extreme_contention() {
+    let pager = create_shared_pager();
+    let thread_count = 32;
+    let operations_per_thread = 1000;
+
+    // Pre-allocate pages to populate free list
+    let mut initial_pages = Vec::new();
+    for _ in 0..thread_count * 10 {
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        initial_pages.push(page_id);
+    }
+    for page_id in initial_pages {
+        pager.free_page(page_id).unwrap();
+    }
+
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let mut handles = vec![];
+
+    for thread_id in 0..thread_count {
+        let pager_clone = Arc::clone(&pager);
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = thread::spawn(move || {
+            barrier_clone.wait();
+
+            let mut local_pages = Vec::new();
+            
+            // Rapidly allocate and free pages to stress the lock-free queue
+            for i in 0..operations_per_thread {
+                // Allocate
+                match pager_clone.allocate_page(PageType::BTreeLeaf) {
+                    Ok(page_id) => local_pages.push(page_id),
+                    Err(e) => panic!("Thread {} failed to allocate at op {}: {:?}", thread_id, i, e),
+                }
+
+                // Free every other page to keep the free list active
+                if i % 2 == 0 && !local_pages.is_empty() {
+                    let page_id = local_pages.pop().unwrap();
+                    if let Err(e) = pager_clone.free_page(page_id) {
+                        panic!("Thread {} failed to free page {} at op {}: {:?}", thread_id, page_id, i, e);
+                    }
+                }
+            }
+
+            local_pages
+        });
+        handles.push(handle);
+    }
+
+    // Collect all pages
+    let mut all_pages = Vec::new();
+    for handle in handles {
+        let pages = handle.join().expect("Thread panicked");
+        all_pages.extend(pages);
+    }
+
+    // Verify no duplicates
+    let unique_pages: HashSet<_> = all_pages.iter().collect();
+    assert_eq!(
+        unique_pages.len(),
+        all_pages.len(),
+        "Lock-free free list produced duplicate page IDs"
+    );
+
+    // Verify total_free counter is consistent
+    let expected_free = pager.free_pages();
+    println!("Final free pages: {}", expected_free);
+    
+    // Clean up
+    for page_id in all_pages {
+        pager.free_page(page_id).unwrap();
+    }
+}

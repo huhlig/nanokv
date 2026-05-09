@@ -43,8 +43,8 @@ pub struct Pager<FS: FileSystem> {
     header: Arc<RwLock<FileHeader>>,
     /// Superblock
     superblock: Arc<RwLock<Superblock>>,
-    /// Free list manager
-    free_list: Arc<RwLock<FreeList>>,
+    /// Free list manager (lock-free)
+    free_list: Arc<FreeList>,
     /// Page cache (optional)
     cache: Option<PageCache>,
     /// Pin table for reference counting
@@ -110,7 +110,7 @@ impl<FS: FileSystem> Pager<FS> {
             config,
             header: Arc::new(RwLock::new(header)),
             superblock: Arc::new(RwLock::new(superblock)),
-            free_list: Arc::new(RwLock::new(free_list)),
+            free_list: Arc::new(free_list),
             cache,
             pin_table: PinTable::new(),
             page_table: PageTable::new(),
@@ -188,7 +188,7 @@ impl<FS: FileSystem> Pager<FS> {
             config,
             header: Arc::new(RwLock::new(header)),
             superblock: Arc::new(RwLock::new(superblock)),
-            free_list: Arc::new(RwLock::new(free_list)),
+            free_list: Arc::new(free_list),
             cache,
             pin_table: PinTable::new(),
             page_table: PageTable::new(),
@@ -207,7 +207,7 @@ impl<FS: FileSystem> Pager<FS> {
 
     /// Get the number of free pages
     pub fn free_pages(&self) -> u64 {
-        self.free_list.read().total_free()
+        self.free_list.total_free()
     }
 
     /// Allocate a new page
@@ -216,18 +216,17 @@ impl<FS: FileSystem> Pager<FS> {
     /// 1. Reuse a page from the free list, or
     /// 2. Grow the database by allocating a new page
     pub fn allocate_page(&self, page_type: PageType) -> PagerResult<PageId> {
-        // CRITICAL: Hold both locks atomically to prevent race conditions
-        // where multiple threads could get the same page ID
-        let page_id = {
-            let mut free_list = self.free_list.write();
+        // Lock-free allocation: Try to pop from free list first
+        // If that fails, allocate a new page from superblock
+        let page_id = if let Some(page_id) = self.free_list.pop_page() {
+            // Got a page from free list - mark it allocated in superblock
             let mut superblock = self.superblock.write();
-
-            if let Some(page_id) = free_list.pop_page() {
-                superblock.mark_page_allocated();
-                page_id
-            } else {
-                superblock.allocate_new_page()
-            }
+            superblock.mark_page_allocated();
+            page_id
+        } else {
+            // No free pages - allocate a new one
+            let mut superblock = self.superblock.write();
+            superblock.allocate_new_page()
         };
 
         // Acquire page-level write lock for the newly allocated page
@@ -242,7 +241,7 @@ impl<FS: FileSystem> Pager<FS> {
         let page_bytes = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
 
         let (header_data, superblock_data) = {
-            let free_pages = self.free_list.read().total_free();
+            let free_pages = self.free_list.total_free();
 
             let superblock_data = {
                 let superblock = self.superblock.read();
@@ -329,15 +328,17 @@ impl<FS: FileSystem> Pager<FS> {
         }
 
         // CRITICAL: Hold both locks atomically to prevent race conditions
+        // Lock-free push to free list
+        self.free_list.push_page(page_id);
+        
+        // Update superblock
         {
-            let mut free_list = self.free_list.write();
             let mut superblock = self.superblock.write();
-            free_list.push_page(page_id);
             superblock.mark_page_freed();
         }
 
         let (header_data, superblock_data) = {
-            let free_pages = self.free_list.read().total_free();
+            let free_pages = self.free_list.total_free();
 
             let superblock_data = {
                 let superblock = self.superblock.read();

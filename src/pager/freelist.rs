@@ -17,6 +17,8 @@
 //! Free list management for tracking available pages
 
 use crate::pager::{PageId, PagerError, PagerResult};
+use crossbeam::queue::SegQueue;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Free list page structure
 ///
@@ -145,115 +147,130 @@ impl Default for FreeListPage {
 ///
 /// Manages the chain of free list pages and provides
 /// efficient allocation and deallocation of pages.
+///
+/// Uses lock-free data structures for wait-free concurrent access:
+/// - SegQueue for the free page stack (lock-free MPMC queue)
+/// - AtomicU64 for the total free counter
 pub struct FreeList {
     /// First free list page ID persisted in metadata (0 if none)
-    first_page: PageId,
+    first_page: AtomicU64,
     /// Last free list page ID persisted in metadata (0 if none)
-    last_page: PageId,
-    /// Total number of free pages available for reuse
-    total_free: u64,
-    /// In-memory stack of reusable page IDs
-    free_pages: Vec<PageId>,
+    last_page: AtomicU64,
+    /// Total number of free pages available for reuse (atomic counter)
+    total_free: AtomicU64,
+    /// Lock-free queue of reusable page IDs
+    free_pages: SegQueue<PageId>,
 }
 
 impl FreeList {
     /// Create a new empty free list
     pub fn new() -> Self {
         Self {
-            first_page: PageId::from(0),
-            last_page: PageId::from(0),
-            total_free: 0,
-            free_pages: Vec::new(),
+            first_page: AtomicU64::new(0),
+            last_page: AtomicU64::new(0),
+            total_free: AtomicU64::new(0),
+            free_pages: SegQueue::new(),
         }
     }
 
     /// Create a free list from existing state
     pub fn from_state(first_page: PageId, last_page: PageId, total_free: u64) -> Self {
         Self {
-            first_page,
-            last_page,
-            total_free,
-            free_pages: Vec::new(),
+            first_page: AtomicU64::new(first_page.as_u64()),
+            last_page: AtomicU64::new(last_page.as_u64()),
+            total_free: AtomicU64::new(total_free),
+            free_pages: SegQueue::new(),
         }
     }
 
     /// Get the first free list page ID
     pub fn first_page(&self) -> PageId {
-        self.first_page
+        PageId::from(self.first_page.load(Ordering::Acquire))
     }
 
     /// Get the last free list page ID
     pub fn last_page(&self) -> PageId {
-        self.last_page
+        PageId::from(self.last_page.load(Ordering::Acquire))
     }
 
     /// Get the total number of free pages
     pub fn total_free(&self) -> u64 {
-        self.total_free
+        self.total_free.load(Ordering::Acquire)
     }
 
     /// Check if the free list is empty
     pub fn is_empty(&self) -> bool {
-        self.total_free == 0
+        self.total_free() == 0
     }
 
     /// Update the first page ID
-    pub fn set_first_page(&mut self, page_id: PageId) {
-        self.first_page = page_id;
-        if self.last_page == PageId::from(0) {
-            self.last_page = page_id;
+    pub fn set_first_page(&self, page_id: PageId) {
+        self.first_page.store(page_id.as_u64(), Ordering::Release);
+        if self.last_page.load(Ordering::Acquire) == 0 {
+            self.last_page.store(page_id.as_u64(), Ordering::Release);
         }
     }
 
     /// Update the last page ID
-    pub fn set_last_page(&mut self, page_id: PageId) {
-        self.last_page = page_id;
-        if self.first_page == PageId::from(0) {
-            self.first_page = page_id;
+    pub fn set_last_page(&self, page_id: PageId) {
+        self.last_page.store(page_id.as_u64(), Ordering::Release);
+        if self.first_page.load(Ordering::Acquire) == 0 {
+            self.first_page.store(page_id.as_u64(), Ordering::Release);
         }
     }
 
-    /// Push a page ID onto the reusable stack
-    pub fn push_page(&mut self, page_id: PageId) {
+    /// Push a page ID onto the reusable stack (lock-free)
+    pub fn push_page(&self, page_id: PageId) {
         self.free_pages.push(page_id);
-        self.total_free = self.free_pages.len() as u64;
+        self.total_free.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Pop a page ID from the reusable stack
-    pub fn pop_page(&mut self) -> Option<PageId> {
+    /// Pop a page ID from the reusable stack (lock-free)
+    pub fn pop_page(&self) -> Option<PageId> {
         let page_id = self.free_pages.pop();
-        self.total_free = self.free_pages.len() as u64;
-        if self.total_free == 0 {
-            self.first_page = PageId::from(0);
-            self.last_page = PageId::from(0);
+        if page_id.is_some() {
+            let prev = self.total_free.fetch_sub(1, Ordering::AcqRel);
+            if prev == 1 {
+                // Was the last page
+                self.first_page.store(0, Ordering::Release);
+                self.last_page.store(0, Ordering::Release);
+            }
         }
         page_id
     }
 
     /// Replace the in-memory free page stack from persistent state
-    pub fn set_free_pages(&mut self, mut free_pages: Vec<PageId>) {
+    pub fn set_free_pages(&self, mut free_pages: Vec<PageId>) {
         free_pages.sort_unstable();
-        self.total_free = free_pages.len() as u64;
-        self.free_pages = free_pages;
-        if self.total_free == 0 {
-            self.first_page = PageId::from(0);
-            self.last_page = PageId::from(0);
+        let count = free_pages.len() as u64;
+        
+        // Clear existing queue
+        while self.free_pages.pop().is_some() {}
+        
+        // Push all pages
+        for page_id in free_pages {
+            self.free_pages.push(page_id);
+        }
+        
+        self.total_free.store(count, Ordering::Release);
+        if count == 0 {
+            self.first_page.store(0, Ordering::Release);
+            self.last_page.store(0, Ordering::Release);
         }
     }
 
     /// Increment the free page count
-    pub fn increment_free(&mut self) {
-        self.total_free += 1;
+    pub fn increment_free(&self) {
+        self.total_free.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Decrement the free page count
-    pub fn decrement_free(&mut self) {
-        if self.total_free > 0 {
-            self.total_free -= 1;
-        }
-        if self.total_free == 0 {
-            self.first_page = PageId::from(0);
-            self.last_page = PageId::from(0);
+    pub fn decrement_free(&self) {
+        let prev = self.total_free.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            // Was the last page
+            self.first_page.store(0, Ordering::Release);
+            self.last_page.store(0, Ordering::Release);
         }
     }
 }
