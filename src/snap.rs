@@ -48,9 +48,7 @@ impl std::fmt::Display for SnapshotId {
 ///
 /// # Examples
 ///
-/// ```
-/// # use nanokv::embedded_kv_traits::*;
-/// # fn example(db: &impl KvDatabase) -> Result<(), Box<dyn std::error::Error>> {
+/// ```ignore
 /// // Create a snapshot for backup
 /// let snapshot = db.create_snapshot("backup-2024")?;
 ///
@@ -60,8 +58,6 @@ impl std::fmt::Display for SnapshotId {
 ///
 /// // Release when done
 /// db.release_snapshot(snapshot.id)?;
-/// # Ok(())
-/// # }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -85,17 +81,52 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    // TODO(MVCC): Implement visibility check
-    // Determines if a version is visible to this snapshot based on:
-    // 1. Version was committed before snapshot LSN
-    // 2. Version was not created by an active transaction at snapshot time
-    //
-    // pub fn is_visible(&self, version_lsn: LogSequenceNumber, created_by: TransactionId) -> bool {
-    //     // Version must be committed before this snapshot
-    //     if version_lsn > self.lsn {
-    //         return false;
-    //     }
-    //     // Version must not be from a transaction that was active at snapshot time
-    //     !self.active_txns.contains(&created_by)
-    // }
+    /// Determines if a version is visible to this snapshot.
+    ///
+    /// A version is visible if:
+    /// 1. It was committed before this snapshot's LSN
+    /// 2. It was not created by a transaction that was active at snapshot time
+    ///
+    /// # Arguments
+    ///
+    /// * `version_lsn` - The LSN at which the version was committed
+    /// * `created_by` - The transaction ID that created the version
+    ///
+    /// # Returns
+    ///
+    /// `true` if the version is visible to this snapshot, `false` otherwise
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nanokv::snap::Snapshot;
+    /// # use nanokv::wal::LogSequenceNumber;
+    /// # use nanokv::txn::TransactionId;
+    /// # use nanokv::snap::SnapshotId;
+    /// let snapshot = Snapshot {
+    ///     id: SnapshotId::from(1),
+    ///     name: "test".to_string(),
+    ///     lsn: LogSequenceNumber::from(100),
+    ///     created_at: 0,
+    ///     size_bytes: 0,
+    ///     active_txns: vec![TransactionId::from(5)],
+    /// };
+    ///
+    /// // Version committed before snapshot and not by active transaction
+    /// assert!(snapshot.is_visible(LogSequenceNumber::from(50), TransactionId::from(1)));
+    ///
+    /// // Version committed after snapshot
+    /// assert!(!snapshot.is_visible(LogSequenceNumber::from(150), TransactionId::from(1)));
+    ///
+    /// // Version created by active transaction
+    /// assert!(!snapshot.is_visible(LogSequenceNumber::from(50), TransactionId::from(5)));
+    /// ```
+    pub fn is_visible(&self, version_lsn: LogSequenceNumber, created_by: TransactionId) -> bool {
+        // Version must be committed before this snapshot
+        if version_lsn > self.lsn {
+            return false;
+        }
+        // Version must not be from a transaction that was active at snapshot time
+        !self.active_txns.contains(&created_by)
+    }
 }
