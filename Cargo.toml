@@ -20,7 +20,7 @@ sha2 = { version = "0.11" }
 fs2 = "0.4.3"
 tracing = "0.1.44"
 tracing-test = "0.2.6"
-lz4_flex = "0.11"
+lz4_flex = "0.13"
 zstd = "0.13"
 aes-gcm = "0.10"
 rand = "0.8"

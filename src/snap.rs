@@ -16,6 +16,7 @@
 
 use crate::txn::TransactionId;
 use crate::wal::LogSequenceNumber;
+use std::collections::HashSet;
 use std::fmt::Formatter;
 
 /// Snapshot identifier.
@@ -71,16 +72,88 @@ pub struct Snapshot {
     pub created_at: i64,
     /// Estimated size in bytes (pages/segments pinned).
     pub size_bytes: u64,
-    // TODO(MVCC): Add visibility information for MVCC
-    // Transactions that were active when this snapshot was created.
-    // Used to determine version visibility: a version is visible if it was
-    // committed before this snapshot's LSN AND was not created by a transaction
-    // in the active_txns list.
-    /// Transactions active at snapshot creation time
-    pub active_txns: Vec<TransactionId>,
+    /// Minimum active transaction ID at snapshot time (watermark).
+    ///
+    /// Any transaction with ID < min_active_txn is guaranteed to be committed
+    /// or aborted at snapshot time. This enables O(1) visibility checks for
+    /// most transactions.
+    pub min_active_txn: TransactionId,
+    /// Transactions >= min_active_txn that were active at snapshot time.
+    ///
+    /// Uses HashSet for O(1) lookup. Only stores exceptions above the watermark,
+    /// keeping the set small even with many concurrent transactions.
+    /// This is the PostgreSQL approach for efficient snapshot visibility.
+    pub active_txns: HashSet<TransactionId>,
 }
 
 impl Snapshot {
+    /// Create a new snapshot from a list of active transaction IDs.
+    ///
+    /// This constructor implements the PostgreSQL-style watermark optimization:
+    /// - Finds the minimum active transaction ID (watermark)
+    /// - Only stores transactions >= watermark in the HashSet
+    /// - Enables O(1) visibility checks for most transactions
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Unique snapshot identifier
+    /// * `name` - User-provided name for the snapshot
+    /// * `lsn` - LSN at which the snapshot was taken
+    /// * `created_at` - Timestamp when the snapshot was created
+    /// * `size_bytes` - Estimated size in bytes
+    /// * `active_txn_list` - List of active transaction IDs at snapshot time
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nanokv::snap::Snapshot;
+    /// # use nanokv::snap::SnapshotId;
+    /// # use nanokv::wal::LogSequenceNumber;
+    /// # use nanokv::txn::TransactionId;
+    /// let active_txns = vec![
+    ///     TransactionId::from(5),
+    ///     TransactionId::from(10),
+    ///     TransactionId::from(15),
+    /// ];
+    /// let snapshot = Snapshot::new(
+    ///     SnapshotId::from(1),
+    ///     "backup".to_string(),
+    ///     LogSequenceNumber::from(100),
+    ///     0,
+    ///     0,
+    ///     active_txns,
+    /// );
+    /// // min_active_txn will be 5, active_txns HashSet will contain {5, 10, 15}
+    /// ```
+    pub fn new(
+        id: SnapshotId,
+        name: String,
+        lsn: LogSequenceNumber,
+        created_at: i64,
+        size_bytes: u64,
+        active_txn_list: Vec<TransactionId>,
+    ) -> Self {
+        // Find minimum active transaction (watermark)
+        let min_active_txn = active_txn_list
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or(TransactionId::from(0));
+        
+        // Convert to HashSet for O(1) lookup
+        let active_txns: HashSet<TransactionId> = active_txn_list.into_iter().collect();
+        
+        Self {
+            id,
+            name,
+            lsn,
+            created_at,
+            size_bytes,
+            min_active_txn,
+            active_txns,
+        }
+    }
+
     /// Determines if a version is visible to this snapshot.
     ///
     /// A version is visible if:
@@ -109,7 +182,8 @@ impl Snapshot {
     ///     lsn: LogSequenceNumber::from(100),
     ///     created_at: 0,
     ///     size_bytes: 0,
-    ///     active_txns: vec![TransactionId::from(5)],
+    ///     min_active_txn: TransactionId::from(3),
+    ///     active_txns: [TransactionId::from(5)].into_iter().collect(),
     /// };
     ///
     /// // Version committed before snapshot and not by active transaction
@@ -126,7 +200,15 @@ impl Snapshot {
         if version_lsn > self.lsn {
             return false;
         }
-        // Version must not be from a transaction that was active at snapshot time
+        
+        // Fast path: transactions below watermark are guaranteed committed/aborted
+        // This is O(1) and handles the common case
+        if created_by < self.min_active_txn {
+            return true;
+        }
+        
+        // Slow path: check if transaction was in the active set
+        // This is O(1) with HashSet, but only for transactions >= watermark
         !self.active_txns.contains(&created_by)
     }
 }
