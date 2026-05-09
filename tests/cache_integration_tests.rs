@@ -95,8 +95,10 @@ fn test_cache_miss() {
 #[test]
 fn test_cache_lru_eviction() {
     let fs = MemoryFileSystem::new();
+    // Use larger capacity to account for sharding (32 shards)
+    // With 64 capacity, each shard gets 2 slots
     let config = PagerConfig::new()
-        .with_cache_capacity(3) // Small cache
+        .with_cache_capacity(64)
         .with_cache_write_back(true);
 
     let pager = Pager::create(&fs, "test.db", config).unwrap();
@@ -104,8 +106,8 @@ fn test_cache_lru_eviction() {
     // Clear cache to start fresh
     pager.clear_cache().unwrap();
 
-    // Allocate 4 pages
-    let page_ids: Vec<PageId> = (0..4)
+    // Allocate many pages to ensure we fill cache and trigger evictions
+    let page_ids: Vec<PageId> = (0..100)
         .map(|_| pager.allocate_page(PageType::BTreeLeaf).unwrap())
         .collect();
 
@@ -113,12 +115,11 @@ fn test_cache_lru_eviction() {
     pager.flush_cache().unwrap();
     pager.clear_cache().unwrap();
 
-    // Write pages directly to disk (bypass cache)
+    // Write pages directly to disk
     for (i, &page_id) in page_ids.iter().enumerate() {
         let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
         page.data_mut()
             .extend_from_slice(format!("page {}", i).as_bytes());
-        // Use write-through mode temporarily by flushing after each write
         pager.write_page(&page).unwrap();
     }
 
@@ -126,18 +127,15 @@ fn test_cache_lru_eviction() {
     pager.flush_cache().unwrap();
     pager.clear_cache().unwrap();
 
-    // Read first 3 pages (fill cache with misses)
-    for &page_id in &page_ids[0..3] {
+    // Read many pages to fill cache and trigger evictions
+    for &page_id in &page_ids {
         pager.read_page(page_id).unwrap();
     }
 
-    // Read 4th page (should trigger eviction)
-    pager.read_page(page_ids[3]).unwrap();
-
-    // Verify eviction occurred
+    // Verify eviction occurred (we read 100 pages but cache holds 64)
     let stats = pager.cache_stats().unwrap();
-    assert!(stats.evictions > 0);
-    assert!(stats.current_size <= 3);
+    assert!(stats.evictions > 0, "Expected evictions with 100 pages and 64 capacity");
+    assert!(stats.current_size <= 64);
 }
 
 /// Test cache with write-back mode
