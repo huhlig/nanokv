@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 
-// TODO(MVCC): Add imports for MVCC types
+use crate::snap::Snapshot;
 use crate::txn::TransactionId;
 use crate::wal::LogSequenceNumber;
 
@@ -90,11 +90,100 @@ impl VersionChain {
         }
     }
 
-    // TODO(MVCC): Implement visibility check
-    // pub fn find_visible_version(&self, snapshot_lsn: LogSequenceNumber, active_txns: &[TransactionId]) -> Option<&[u8]>
+    /// Find the newest version visible to the provided snapshot.
+    ///
+    /// Traverses the chain from newest to oldest and returns the first version
+    /// that is committed and visible at the snapshot's LSN and transaction set.
+    /// Uncommitted versions are never visible.
+    pub fn find_visible_version(&self, snapshot: &Snapshot) -> Option<&[u8]> {
+        let mut current = Some(self);
 
-    // TODO(MVCC): Implement garbage collection
-    // pub fn vacuum(&mut self, min_visible_lsn: LogSequenceNumber) -> usize
+        while let Some(version) = current {
+            if let Some(commit_lsn) = version.commit_lsn {
+                if snapshot.is_visible(commit_lsn, version.created_by) {
+                    return Some(version.value.as_slice());
+                }
+            }
+
+            current = version.prev_version.as_deref();
+        }
+
+        None
+    }
+
+    /// Remove obsolete committed versions older than the visibility watermark.
+    ///
+    /// Retains:
+    /// - all uncommitted versions
+    /// - committed versions with `commit_lsn >= min_visible_lsn`
+    /// - the newest committed version older than `min_visible_lsn` as a base
+    ///
+    /// Returns the number of removed versions.
+    pub fn vacuum(&mut self, min_visible_lsn: LogSequenceNumber) -> usize {
+        fn retain_obsolete_versions(
+            node: &VersionChain,
+            min_visible_lsn: LogSequenceNumber,
+            keep_obsolete_budget: &mut usize,
+        ) -> VersionChain {
+            let rebuilt_prev = node.prev_version.as_ref().map(|prev| {
+                Box::new(retain_obsolete_versions(
+                    prev,
+                    min_visible_lsn,
+                    keep_obsolete_budget,
+                ))
+            });
+
+            let keep_this_obsolete = matches!(node.commit_lsn, Some(lsn) if lsn < min_visible_lsn)
+                && *keep_obsolete_budget > 0;
+
+            if keep_this_obsolete {
+                *keep_obsolete_budget -= 1;
+            }
+
+            let prev_version = if matches!(node.commit_lsn, Some(lsn) if lsn < min_visible_lsn)
+                && !keep_this_obsolete
+            {
+                rebuilt_prev.and_then(|prev| prev.prev_version)
+            } else {
+                rebuilt_prev
+            };
+
+            VersionChain {
+                value: node.value.clone(),
+                created_by: node.created_by,
+                commit_lsn: node.commit_lsn,
+                prev_version,
+            }
+        }
+
+        fn count_removable_obsolete_versions(
+            node: &VersionChain,
+            min_visible_lsn: LogSequenceNumber,
+        ) -> usize {
+            let current = usize::from(matches!(
+                node.commit_lsn,
+                Some(lsn) if lsn < min_visible_lsn
+            ));
+
+            current
+                + node
+                    .prev_version
+                    .as_deref()
+                    .map(|prev| count_removable_obsolete_versions(prev, min_visible_lsn))
+                    .unwrap_or(0)
+        }
+
+        let obsolete_count = count_removable_obsolete_versions(self, min_visible_lsn);
+        let removed = obsolete_count.saturating_sub(1);
+
+        if removed == 0 {
+            return 0;
+        }
+
+        let mut keep_obsolete_budget = 1;
+        *self = retain_obsolete_versions(self, min_visible_lsn, &mut keep_obsolete_budget);
+        removed
+    }
 }
 impl From<u64> for Version {
     fn from(value: u64) -> Self {
