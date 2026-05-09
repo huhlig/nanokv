@@ -39,7 +39,7 @@ use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Default B-Tree order (maximum keys per node).
 const DEFAULT_ORDER: usize = 64;
@@ -330,7 +330,8 @@ pub struct PagedBTree<FS: FileSystem> {
     id: TableId,
     name: String,
     pager: Arc<Pager<FS>>,
-    root_page_id: PageId,
+    /// Root page ID wrapped in Arc<RwLock> to allow atomic updates during root splits
+    root_page_id: Arc<RwLock<PageId>>,
 }
 
 impl<FS: FileSystem> PagedBTree<FS> {
@@ -349,7 +350,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
             id,
             name,
             pager,
-            root_page_id,
+            root_page_id: Arc::new(RwLock::new(root_page_id)),
         })
     }
 
@@ -359,8 +360,18 @@ impl<FS: FileSystem> PagedBTree<FS> {
             id,
             name,
             pager,
-            root_page_id,
+            root_page_id: Arc::new(RwLock::new(root_page_id)),
         }
+    }
+
+    /// Get the current root page ID.
+    fn get_root_page_id(&self) -> PageId {
+        *self.root_page_id.read().unwrap()
+    }
+
+    /// Update the root page ID (used during root splits).
+    fn set_root_page_id(&self, new_root: PageId) {
+        *self.root_page_id.write().unwrap() = new_root;
     }
 
     /// Read a node from disk.
@@ -384,7 +395,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
     /// Search for a key in the tree, returning the leaf page ID and position.
     fn search(&self, key: &[u8]) -> TableResult<(PageId, usize)> {
-        let mut current_page_id = self.root_page_id;
+        let mut current_page_id = self.get_root_page_id();
 
         loop {
             let node = self.read_node(current_page_id)?;
@@ -392,10 +403,22 @@ impl<FS: FileSystem> PagedBTree<FS> {
             match node {
                 BTreeNode::Internal { entries, rightmost_child } => {
                     // Binary search for the appropriate child
+                    // In our representation: entries[i].child_page_id contains keys < entries[i].key
+                    // So for a key >= entries[i].key, we need to go to the next child
                     let pos = entries.binary_search_by(|e| e.key.as_slice().cmp(key));
                     let child_page_id = match pos {
-                        Ok(idx) => entries[idx].child_page_id,
+                        Ok(idx) => {
+                            // Found exact match at idx
+                            // Keys >= entries[idx].key go to the right of this entry
+                            if idx + 1 < entries.len() {
+                                entries[idx + 1].child_page_id
+                            } else {
+                                rightmost_child
+                            }
+                        }
                         Err(idx) => {
+                            // Key would be inserted at position idx
+                            // This means key < entries[idx].key (or idx == len)
                             if idx < entries.len() {
                                 entries[idx].child_page_id
                             } else {
@@ -810,12 +833,12 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 entries.insert(pos, LeafEntry { key: key.clone(), chain });
             }
 
-            // Check if node needs to be split
+            // Write the updated node first
+            self.write_node(leaf_page_id, &node)?;
+            
+            // Check if node needs to be split after writing
             if node.is_full() {
                 self.split_and_propagate(leaf_page_id, &node)?;
-            } else {
-                // Just write the updated node
-                self.write_node(leaf_page_id, &node)?;
             }
         }
 
@@ -824,8 +847,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
     /// Split a node and propagate the split up the tree.
     fn split_and_propagate(&self, page_id: PageId, node: &BTreeNode) -> TableResult<()> {
+        let current_root = self.get_root_page_id();
+        
         // If this is the root, create a new root
-        if page_id == self.root_page_id {
+        if page_id == current_root {
             let (right_page_id, median_key) = self.split_node(page_id, node)?;
             
             // Create new root
@@ -840,8 +865,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
             
             self.write_node(new_root_page_id, &new_root)?;
             
-            // Update root pointer (this would need to be persisted in metadata)
-            // For now, this is a limitation - root changes need to be handled at a higher level
+            // Update root pointer atomically
+            self.set_root_page_id(new_root_page_id);
+            
+            // TODO: Persist root pointer to superblock for durability
             
             Ok(())
         } else {
@@ -876,7 +903,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 self.write_node(leaf_page_id, &node)?;
 
                 // Check if node needs rebalancing
-                if !node.has_minimum_keys() && leaf_page_id != self.root_page_id {
+                if !node.has_minimum_keys() && leaf_page_id != self.get_root_page_id() {
                     // TODO: Implement rebalancing with siblings
                     // This requires finding siblings and parent
                 }
@@ -1155,7 +1182,7 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
 
     /// Navigate to the leftmost leaf page.
     fn find_leftmost_leaf(&self) -> TableResult<PageId> {
-        let mut current_page_id = self.table.root_page_id;
+        let mut current_page_id = self.table.get_root_page_id();
 
         loop {
             let node = self.table.read_node(current_page_id)?;
@@ -1178,7 +1205,7 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
 
     /// Navigate to the rightmost leaf page.
     fn find_rightmost_leaf(&self) -> TableResult<PageId> {
-        let mut current_page_id = self.table.root_page_id;
+        let mut current_page_id = self.table.get_root_page_id();
 
         loop {
             let node = self.table.read_node(current_page_id)?;
