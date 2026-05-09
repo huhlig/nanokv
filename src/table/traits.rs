@@ -98,37 +98,51 @@ pub enum TableEngineKind {
 // Table capability traits
 // =============================================================================
 
-/// Point lookup capability.
-// TODO(MVCC): Add snapshot parameter for MVCC visibility
-// Current signature doesn't support reading at a specific snapshot.
-// Should be:
-// fn get(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>>;
-//
-// This allows tables to:
-// 1. Traverse version chains to find the visible version
-// 2. Support snapshot isolation
-// 3. Enable time-travel queries
+/// Point lookup capability with MVCC snapshot support.
+///
+/// The `snapshot_lsn` parameter enables tables to:
+/// 1. Traverse version chains to find the visible version
+/// 2. Support snapshot isolation
+/// 3. Enable time-travel queries
 pub trait PointLookup {
-    fn get(&self, key: &[u8]) -> TableResult<Option<ValueBuf>>;
+    /// Get the value for a key at a specific snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to look up
+    /// * `snapshot_lsn` - The LSN at which to read (for MVCC visibility)
+    ///
+    /// # Returns
+    ///
+    /// The value if found and visible at the snapshot, or None otherwise
+    fn get(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>>;
 
-    fn contains(&self, key: &[u8]) -> TableResult<bool> {
-        Ok(self.get(key)?.is_some())
+    /// Check if a key exists at a specific snapshot.
+    fn contains(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<bool> {
+        Ok(self.get(key, snapshot_lsn)?.is_some())
     }
 }
 
-/// Ordered scan capability.
+/// Ordered scan capability with MVCC snapshot support.
 pub trait OrderedScan {
     type Cursor<'a>: TableCursor
     where
         Self: 'a;
 
-    fn scan(&self, bounds: ScanBounds) -> TableResult<Self::Cursor<'_>>;
+    /// Create a cursor over the specified bounds at a specific snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `bounds` - The range of keys to scan
+    /// * `snapshot_lsn` - The LSN at which to read (for MVCC visibility)
+    fn scan(&self, bounds: ScanBounds, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>>;
 }
 
 /// Prefix scan capability.
 pub trait PrefixScan: OrderedScan {
-    fn scan_prefix(&self, prefix: &[u8]) -> TableResult<Self::Cursor<'_>> {
-        self.scan(ScanBounds::Prefix(KeyBuf(prefix.to_vec())))
+    /// Scan all keys with the given prefix at a specific snapshot.
+    fn scan_prefix(&self, prefix: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
+        self.scan(ScanBounds::Prefix(KeyBuf(prefix.to_vec())), snapshot_lsn)
     }
 }
 
