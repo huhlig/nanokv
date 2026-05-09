@@ -119,6 +119,18 @@ pub enum TableError {
     #[error("Memory limit exceeded: current={current}, limit={limit}")]
     MemoryLimitExceeded { current: usize, limit: usize },
 
+    /// Memtable is full
+    #[error("Memtable is full")]
+    MemtableFull,
+
+    /// Memtable is immutable
+    #[error("Memtable is immutable")]
+    MemtableImmutable,
+
+    /// Memtable is not immutable
+    #[error("Memtable is not immutable")]
+    MemtableNotImmutable,
+
     /// I/O error from pager
     #[error("Pager error: {0}")]
     Pager(#[from] PagerError),

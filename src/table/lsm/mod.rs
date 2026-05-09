@@ -45,6 +45,7 @@
 
 mod bloom;
 mod config;
+mod memtable;
 mod sstable;
 
 pub use self::bloom::{BloomFilter, BloomFilterBuilder};
@@ -52,6 +53,7 @@ pub use self::config::{
     BloomFilterConfig, BlockCacheConfig, CacheEvictionPolicy, CompactionConfig,
     CompactionStrategy, LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
 };
+pub use self::memtable::Memtable;
 pub use self::sstable::{
     DataBlock, SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter,
 };
