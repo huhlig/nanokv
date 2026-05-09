@@ -20,7 +20,7 @@
 //! ensuring the system can handle production workloads without
 //! performance degradation or resource issues.
 
-use nanokv::pager::{Page, PageType, Pager, PagerConfig};
+use nanokv::pager::{Page, PageSize, PageType, Pager, PagerConfig};
 use nanokv::vfs::MemoryFileSystem;
 use std::collections::HashSet;
 
@@ -1241,4 +1241,414 @@ fn test_persistence_recovery_50k_pages() {
     }
 
     println!("\nTest completed successfully!");
+}
+
+
+/// Test cache thrashing with more pages than cache capacity
+///
+/// This test validates that the pager can handle scenarios where the working
+/// set exceeds cache capacity, forcing frequent evictions and reloads.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_cache_thrashing() {
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig::default()
+        .with_cache_capacity(100); // Small cache to force thrashing
+    let pager = Pager::create(&fs, "cache_thrash.db", config).expect("Failed to create pager");
+    
+    let page_count = 10_000; // 100x cache capacity
+    
+    println!("Testing cache thrashing with {} pages and cache capacity of 100...", page_count);
+    
+    // Phase 1: Allocate pages
+    println!("Phase 1: Allocating {} pages...", page_count);
+    let mut pages = Vec::with_capacity(page_count);
+    for i in 0..page_count {
+        if i % 1_000 == 0 {
+            println!("  Allocated {} pages...", i);
+        }
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        pages.push(page_id);
+    }
+    
+    // Phase 2: Write data to all pages (forces cache thrashing)
+    println!("Phase 2: Writing data to all pages (cache thrashing)...");
+    let write_start = std::time::Instant::now();
+    
+    for (i, &page_id) in pages.iter().enumerate() {
+        if i % 1_000 == 0 {
+            println!("  Written {} pages...", i);
+        }
+        
+        let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+        let data = format!("Page {} data - iteration 1", page_id);
+        page.data_mut().extend_from_slice(data.as_bytes());
+        pager.write_page(&page).unwrap();
+    }
+    
+    let write_duration = write_start.elapsed();
+    println!("Write phase completed in {:?}", write_duration);
+    println!("Average write time: {:?}", write_duration / page_count as u32);
+    
+    // Phase 3: Read all pages multiple times (forces cache thrashing)
+    println!("Phase 3: Reading all pages 3 times (cache thrashing)...");
+    let read_start = std::time::Instant::now();
+    
+    for iteration in 0..3 {
+        println!("  Read iteration {}...", iteration + 1);
+        for (i, &page_id) in pages.iter().enumerate() {
+            if i % 1_000 == 0 && iteration == 0 {
+                println!("    Read {} pages...", i);
+            }
+            
+            let page = pager.read_page(page_id).unwrap();
+            let expected_data = format!("Page {} data - iteration 1", page_id);
+            assert_eq!(
+                &page.data()[0..expected_data.len()],
+                expected_data.as_bytes(),
+                "Page data should be correct for page {}",
+                page_id
+            );
+        }
+    }
+    
+    let read_duration = read_start.elapsed();
+    println!("Read phase completed in {:?}", read_duration);
+    println!("Average read time: {:?}", read_duration / (page_count * 3) as u32);
+    
+    // Phase 4: Random access pattern (worst case for cache)
+    println!("Phase 4: Random access pattern...");
+    let random_start = std::time::Instant::now();
+    
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    for i in 0..5_000 {
+        if i % 1_000 == 0 {
+            println!("  Random access {} operations...", i);
+        }
+        
+        // Use deterministic "random" access
+        let mut hasher = DefaultHasher::new();
+        i.hash(&mut hasher);
+        let index = (hasher.finish() as usize) % pages.len();
+        let page_id = pages[index];
+        
+        let _page = pager.read_page(page_id).unwrap();
+    }
+    
+    let random_duration = random_start.elapsed();
+    println!("Random access completed in {:?}", random_duration);
+    println!("Average random access time: {:?}", random_duration / 5_000);
+    
+    println!("Cache thrashing test completed successfully!");
+}
+
+/// Test memory pressure with limited cache and many pages
+///
+/// This test validates that the pager can handle memory-constrained
+/// environments with a very small cache relative to the working set.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_memory_pressure() {
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig::default()
+        .with_cache_capacity(50); // Very small cache
+    let pager = Pager::create(&fs, "memory_pressure.db", config).expect("Failed to create pager");
+    
+    let page_count = 50_000;
+    
+    println!("Testing memory pressure with {} pages and cache capacity of 50...", page_count);
+    println!("This simulates a memory-constrained environment");
+    
+    // Phase 1: Allocate and write pages
+    println!("Phase 1: Allocating and writing {} pages...", page_count);
+    let alloc_start = std::time::Instant::now();
+    
+    let mut pages = Vec::with_capacity(page_count);
+    for i in 0..page_count {
+        if i % 5_000 == 0 {
+            println!("  Processed {} pages...", i);
+        }
+        
+        let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+        
+        // Write data immediately
+        let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+        let data = format!("Page {} - memory pressure test", page_id);
+        page.data_mut().extend_from_slice(data.as_bytes());
+        pager.write_page(&page).unwrap();
+        
+        pages.push(page_id);
+    }
+    
+    let alloc_duration = alloc_start.elapsed();
+    println!("Allocation and write completed in {:?}", alloc_duration);
+    
+    // Phase 2: Sequential read (should be relatively efficient)
+    println!("Phase 2: Sequential read of all pages...");
+    let seq_start = std::time::Instant::now();
+    
+    for (i, &page_id) in pages.iter().enumerate() {
+        if i % 5_000 == 0 {
+            println!("  Read {} pages...", i);
+        }
+        let _page = pager.read_page(page_id).unwrap();
+    }
+    
+    let seq_duration = seq_start.elapsed();
+    println!("Sequential read completed in {:?}", seq_duration);
+    
+    // Phase 3: Strided access (every 100th page)
+    println!("Phase 3: Strided access pattern (every 100th page)...");
+    let stride_start = std::time::Instant::now();
+    
+    for i in (0..pages.len()).step_by(100) {
+        let page_id = pages[i];
+        let page = pager.read_page(page_id).unwrap();
+        let expected_data = format!("Page {} - memory pressure test", page_id);
+        assert_eq!(
+            &page.data()[0..expected_data.len()],
+            expected_data.as_bytes()
+        );
+    }
+    
+    let stride_duration = stride_start.elapsed();
+    println!("Strided access completed in {:?}", stride_duration);
+    
+    // Phase 4: Sync to ensure all data is persisted
+    println!("Phase 4: Syncing database...");
+    let sync_start = std::time::Instant::now();
+    pager.sync().unwrap();
+    let sync_duration = sync_start.elapsed();
+    println!("Sync completed in {:?}", sync_duration);
+    
+    println!("Memory pressure test completed successfully!");
+}
+
+/// Test with 1M pages (if feasible)
+///
+/// This is an extreme scale test to validate behavior with very large databases.
+/// May take several minutes to complete.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_1m_pages() {
+    let pager = create_test_pager();
+    let page_count = 1_000_000;
+    
+    println!("Testing with 1 MILLION pages...");
+    println!("WARNING: This test may take several minutes and use significant memory");
+    println!("Estimated memory usage: ~4GB for page IDs alone");
+    
+    let start = std::time::Instant::now();
+    
+    // Allocate pages in batches
+    println!("Allocating {} pages in batches...", page_count);
+    let batch_size = 50_000;
+    let mut all_pages = Vec::with_capacity(page_count);
+    
+    for batch in 0..(page_count / batch_size) {
+        let batch_start = std::time::Instant::now();
+        
+        for _ in 0..batch_size {
+            let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+            all_pages.push(page_id);
+        }
+        
+        let batch_duration = batch_start.elapsed();
+        let total_so_far = (batch + 1) * batch_size;
+        
+        println!(
+            "Batch {}/{}: Allocated {} pages in {:?} (avg: {:?}/page)",
+            batch + 1,
+            page_count / batch_size,
+            total_so_far,
+            batch_duration,
+            batch_duration / batch_size as u32
+        );
+        
+        // Check for performance degradation
+        let avg_micros = batch_duration.as_micros() / batch_size as u128;
+        if avg_micros > 500 {
+            println!("  WARNING: Allocation slowing down: {} μs/page", avg_micros);
+        }
+    }
+    
+    let total_duration = start.elapsed();
+    println!("\nTotal allocation time: {:?}", total_duration);
+    println!("Average time per page: {:?}", total_duration / page_count as u32);
+    
+    // Verify uniqueness (sample check to avoid excessive memory)
+    println!("Verifying page uniqueness (sampling)...");
+    let sample_size = 100_000;
+    let mut seen = HashSet::with_capacity(sample_size);
+    for i in (0..all_pages.len()).step_by(all_pages.len() / sample_size) {
+        assert!(seen.insert(all_pages[i]), "Duplicate page ID detected");
+    }
+    println!("Sampled {} pages, all unique", seen.len());
+    
+    // Verify total pages
+    let total_pages = pager.total_pages();
+    println!("Total pages in database: {}", total_pages);
+    assert!(
+        total_pages >= (page_count + 2) as u64,
+        "Total pages should be at least {}",
+        page_count + 2
+    );
+    
+    println!("1M page test completed successfully!");
+}
+
+/// Test large page file (multi-GB)
+///
+/// This test creates a database with enough pages to exceed 1GB in size,
+/// validating that the pager can handle large files.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_large_page_file() {
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig::default()
+        .with_page_size(PageSize::Size4KB);
+    let pager = Pager::create(&fs, "large_file.db", config).expect("Failed to create pager");
+    
+    // Calculate pages needed for ~2GB file
+    // 4KB pages = 524,288 pages for 2GB
+    let target_size_gb = 2;
+    let page_size = 4096;
+    let pages_per_gb = (1024 * 1024 * 1024) / page_size;
+    let page_count = pages_per_gb * target_size_gb;
+    
+    println!("Testing large page file: target size ~{}GB", target_size_gb);
+    println!("Allocating {} pages of {} bytes each...", page_count, page_size);
+    
+    let start = std::time::Instant::now();
+    let batch_size = 50_000;
+    
+    for batch in 0..(page_count / batch_size) {
+        for _ in 0..batch_size {
+            let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+            
+            // Write some data to ensure pages are actually allocated on disk
+            if batch % 10 == 0 { // Write to 10% of pages
+                let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+                page.data_mut().extend_from_slice(b"Large file test data");
+                pager.write_page(&page).unwrap();
+            }
+        }
+        let total_so_far = (batch + 1) * batch_size;
+        let size_mb = (total_so_far * page_size) / (1024 * 1024);
+        
+        if batch % 10 == 0 {
+            println!(
+                "Progress: {} pages (~{}MB) in {:?}",
+                total_so_far,
+                size_mb,
+                start.elapsed()
+            );
+        }
+    }
+    
+    let total_duration = start.elapsed();
+    let final_size_mb = (page_count * page_size) / (1024 * 1024);
+    
+    println!("\nLarge file test completed!");
+    println!("Total time: {:?}", total_duration);
+    println!("Final size: ~{}MB", final_size_mb);
+    println!("Total pages: {}", pager.total_pages());
+    
+    // Sync to ensure everything is written
+    println!("Syncing database...");
+    pager.sync().unwrap();
+    
+    println!("Large page file test completed successfully!");
+}
+
+/// Test long-running stability (hours)
+///
+/// This test runs continuous operations for an extended period to detect
+/// memory leaks, performance degradation, or other stability issues.
+#[test]
+#[ignore] // Run with: cargo test --test pager_stress_tests -- --ignored --nocapture
+fn test_long_running_stability() {
+    let pager = create_test_pager();
+    
+    // Run for 1 hour (configurable via environment variable)
+    let duration_minutes = std::env::var("STABILITY_TEST_MINUTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60); // Default 1 hour
+    
+    let test_duration = std::time::Duration::from_secs(duration_minutes * 60);
+    
+    println!("Starting long-running stability test for {} minutes...", duration_minutes);
+    println!("This test will continuously allocate, write, read, and free pages");
+    
+    let start = std::time::Instant::now();
+    let mut iteration = 0;
+    let mut total_allocated = 0;
+    let mut total_freed = 0;
+    let mut active_pages = Vec::new();
+    
+    while start.elapsed() < test_duration {
+        iteration += 1;
+        
+        // Allocate a batch of pages
+        for _ in 0..100 {
+            let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
+            
+            // Write data
+            let mut page = Page::new(page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+            let data = format!("Iteration {} - Page {}", iteration, page_id);
+            page.data_mut().extend_from_slice(data.as_bytes());
+            pager.write_page(&page).unwrap();
+            
+            active_pages.push(page_id);
+            total_allocated += 1;
+        }
+        
+        // Read some random pages
+        if !active_pages.is_empty() {
+            for i in 0..50 {
+                let index = (iteration * 7 + i) % active_pages.len();
+                let page_id = active_pages[index];
+                let _page = pager.read_page(page_id).unwrap();
+            }
+        }
+        
+        // Free some pages if we have too many
+        if active_pages.len() > 10_000 {
+            for _ in 0..100 {
+                if let Some(page_id) = active_pages.pop() {
+                    pager.free_page(page_id).unwrap();
+                    total_freed += 1;
+                }
+            }
+        }
+        
+        // Periodic sync
+        if iteration % 100 == 0 {
+            pager.sync().unwrap();
+            
+            let elapsed = start.elapsed();
+            let remaining = test_duration.saturating_sub(elapsed);
+            
+            println!(
+                "Iteration {}: Elapsed {:?}, Remaining {:?}, Active pages: {}, Total alloc: {}, Total freed: {}",
+                iteration,
+                elapsed,
+                remaining,
+                active_pages.len(),
+                total_allocated,
+                total_freed
+            );
+        }
+    }
+    
+    println!("\nLong-running stability test completed!");
+    println!("Total iterations: {}", iteration);
+    println!("Total pages allocated: {}", total_allocated);
+    println!("Total pages freed: {}", total_freed);
+    println!("Final active pages: {}", active_pages.len());
+    println!("Database total pages: {}", pager.total_pages());
+    println!("Database free pages: {}", pager.free_pages());
 }
