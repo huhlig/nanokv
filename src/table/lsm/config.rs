@@ -343,10 +343,14 @@ mod tests {
         let config = CompactionConfig::default();
         assert_eq!(config.levels.len(), 7);
         
-        // Verify exponential growth
-        for i in 1..config.levels.len() {
+        // Verify exponential growth (starting from L2, since L0 and L1 are special)
+        for i in 2..config.levels.len() {
             assert!(config.levels[i].max_size > config.levels[i - 1].max_size);
         }
+        
+        // Verify L0 and L1 have same size (both 10MB)
+        assert_eq!(config.levels[0].max_size, 10 * 1024 * 1024);
+        assert_eq!(config.levels[1].max_size, 10 * 1024 * 1024);
     }
 }
 

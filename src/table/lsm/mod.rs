@@ -45,11 +45,13 @@
 
 mod bloom;
 mod config;
+mod sstable;
 
 pub use self::bloom::{BloomFilter, BloomFilterBuilder};
 pub use self::config::{
     BloomFilterConfig, BlockCacheConfig, CacheEvictionPolicy, CompactionConfig,
     CompactionStrategy, LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
 };
+pub use self::sstable::{SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter};
 
 // Made with Bob
