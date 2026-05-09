@@ -45,6 +45,7 @@
 
 mod bloom;
 mod config;
+mod iterator;
 mod memtable;
 mod sstable;
 
@@ -52,6 +53,9 @@ pub use self::bloom::{BloomFilter, BloomFilterBuilder};
 pub use self::config::{
     BloomFilterConfig, BlockCacheConfig, CacheEvictionPolicy, CompactionConfig,
     CompactionStrategy, LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
+};
+pub use self::iterator::{
+    Direction, LsmEntry, LsmIterator, MemtableIterator, MergeIterator, SStableIterator,
 };
 pub use self::memtable::Memtable;
 pub use self::sstable::{
