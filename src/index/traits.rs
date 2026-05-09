@@ -266,10 +266,10 @@ pub trait VectorIndex: Index {
 
     fn delete_vector(&mut self, id: &[u8]) -> Result<(), Self::Error>;
 
-    fn search_vector(
+    fn search_vector<'a>(
         &self,
         query: &[f32],
-        options: VectorSearchOptions,
+        options: VectorSearchOptions<'a>,
     ) -> Result<Vec<VectorHit>, Self::Error>;
 }
 
@@ -510,11 +510,11 @@ pub enum VectorMetric {
 }
 
 #[derive(Clone, Debug)]
-pub struct VectorSearchOptions {
+pub struct VectorSearchOptions<'a> {
     pub limit: usize,
     pub ef_search: Option<usize>,
     pub probes: Option<usize>,
-    pub filter: Option<Predicate<'static>>,
+    pub filter: Option<Predicate<'a>>,
 }
 
 #[derive(Clone, Debug)]

@@ -15,8 +15,6 @@
 //
 
 //! WAL reader - Handles reading records from the WAL file
-
-use crate::table::TableId;
 use crate::vfs::{File, FileSystem};
 use crate::wal::{LogSequenceNumber, WalError, WalRecord, WalResult};
 
@@ -178,6 +176,7 @@ impl<FS: FileSystem> Iterator for WalRecordIterator<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::table::TableId;
     use crate::txn::TransactionId;
     use crate::vfs::MemoryFileSystem;
     use crate::wal::{RecordData, WalWriter, WalWriterConfig, WriteOpType};
