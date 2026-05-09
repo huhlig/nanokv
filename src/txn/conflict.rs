@@ -24,7 +24,6 @@ use crate::table::TableId;
 use crate::txn::{TransactionError, TransactionId, TransactionResult};
 use std::collections::{HashMap, HashSet};
 
-/// TODO(MVCC): Implement conflict detection types
 /// Types of conflicts that can occur between transactions:
 /// - WriteWrite: Two transactions write to the same key
 /// - ReadWrite: A transaction reads a key that another transaction writes
@@ -36,14 +35,13 @@ pub enum ConflictType {
     Serialization,
 }
 
-// TODO(MVCC): Implement conflict detector
-// Tracks which transactions have locked which keys for writing.
-// Used to detect write-write conflicts before they occur.
-//
-// Usage:
-// 1. Before writing a key, call check_write_conflict()
-// 2. If no conflict, call acquire_write_lock()
-// 3. On commit/abort, call release_locks()
+/// Tracks which transactions have locked which keys for writing.
+/// Used to detect write-write conflicts before they occur.
+///
+/// # Usage
+/// 1. Before writing a key, call check_write_conflict()
+/// 2. If no conflict, call acquire_write_lock()
+/// 3. On commit/abort, call release_locks()
 pub struct ConflictDetector {
     // Maps (table_id, key) -> transaction ID that has write lock
     write_locks: HashMap<(TableId, Vec<u8>), TransactionId>,
@@ -56,7 +54,9 @@ impl ConflictDetector {
         }
     }
 
-    /// TODO(MVCC): Implement write conflict detection
+    /// Check if a write would conflict with an existing write lock.
+    ///
+    /// Returns an error if another transaction holds a write lock on the key.
     pub fn check_write_conflict(
         &self,
         table_id: TableId,
@@ -76,19 +76,24 @@ impl ConflictDetector {
         Ok(())
     }
 
-    /// TODO(MVCC): Implement lock acquisition
+    /// Acquire a write lock on a key for the given transaction.
+    ///
+    /// Should be called after check_write_conflict() succeeds.
     pub fn acquire_write_lock(&mut self, table_id: TableId, key: Vec<u8>, txn_id: TransactionId) {
         self.write_locks.insert((table_id, key), txn_id);
     }
 
-    /// TODO(MVCC): Implement lock release
+    /// Release all write locks held by the given transaction.
+    ///
+    /// Called on commit or abort to free locks.
     pub fn release_locks(&mut self, txn_id: TransactionId) {
         self.write_locks.retain(|_, &mut holder| holder != txn_id);
     }
 
-    /// TODO(MVCC): Implement read-write conflict detection
+    /// Check for read-write conflicts in serializable isolation.
+    ///
     /// For serializable isolation, check if any key in the read set
-    /// has been written by another transaction
+    /// has been written by another transaction.
     pub fn check_read_write_conflicts(
         &self,
         read_set: &HashSet<(TableId, Vec<u8>)>,
@@ -111,12 +116,13 @@ impl Default for ConflictDetector {
     }
 }
 
-// TODO(MVCC): Implement deadlock detection
-// Tracks wait-for relationships between transactions to detect cycles.
-// When a transaction waits for a lock held by another transaction,
-// we add an edge to the wait-for graph. If a cycle is detected,
-// we abort one of the transactions to break the deadlock.
-//
+/// Tracks wait-for relationships between transactions to detect cycles.
+///
+/// When a transaction waits for a lock held by another transaction,
+/// we add an edge to the wait-for graph. If a cycle is detected,
+/// we abort one of the transactions to break the deadlock.
+///
+/// Note: This is a placeholder for future deadlock detection implementation.
 pub struct DeadlockDetector {
     // wait_for_graph: HashMap<TransactionId, Vec<TransactionId>>,
 }

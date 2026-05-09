@@ -106,7 +106,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// TODO(MVCC): Implement transaction constructor
+    /// Create a new transaction with the given ID, snapshot LSN, and isolation level.
     pub fn new(
         txn_id: TransactionId,
         snapshot_lsn: LogSequenceNumber,
@@ -122,27 +122,33 @@ impl Transaction {
         }
     }
 
-    /// TODO(MVCC): Implement read tracking for conflict detection
-    /// Called by get() to track reads for Serializable isolation
+    /// Record a read operation for conflict detection.
+    ///
+    /// Called by get() to track reads for Serializable isolation.
+    /// Only tracks reads when isolation level is Serializable.
     pub fn record_read(&mut self, table_id: TableId, key: Vec<u8>) {
         if self.isolation == IsolationLevel::Serializable {
             self.read_set.insert((table_id, key));
         }
     }
 
-    /// TODO(MVCC): Implement write tracking for put operations
-    /// Called by put() to track writes for commit/rollback
+    /// Record a write operation for commit/rollback.
+    ///
+    /// Called by put() to track writes for commit/rollback.
     pub fn record_write(&mut self, table_id: TableId, key: Vec<u8>, value: Vec<u8>) {
         self.write_set.insert((table_id, key), Some(value));
     }
 
-    /// TODO(MVCC): Implement delete tracking
-    /// Called by delete() to track deletes for commit/rollback
+    /// Record a delete operation for commit/rollback.
+    ///
+    /// Called by delete() to track deletes for commit/rollback.
     pub fn record_delete(&mut self, table_id: TableId, key: Vec<u8>) {
         self.write_set.insert((table_id, key), None);
     }
 
-    /// TODO(MVCC): Implement state machine transitions
+    /// Prepare the transaction for commit (two-phase commit).
+    ///
+    /// Transitions from Active to Preparing state.
     pub fn prepare(&mut self) -> TransactionResult<()> {
         if self.state != TransactionState::Active {
             return Err(TransactionError::InvalidState(self.txn_id));
@@ -151,7 +157,9 @@ impl Transaction {
         Ok(())
     }
 
-    /// TODO(MVCC): Check if transaction is still active
+    /// Check if the transaction is still active.
+    ///
+    /// Returns true if the transaction is in Active state.
     pub fn is_active(&self) -> bool {
         self.state == TransactionState::Active
     }
