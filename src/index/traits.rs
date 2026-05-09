@@ -26,6 +26,7 @@
 //! - Geospatial
 
 use crate::index::IndexResult;
+use crate::index::error::IndexSourceError;
 use crate::pager::{PageId, PhysicalLocation};
 use crate::table::{TableId, VerificationReport};
 use crate::types::{Bound, KeyBuf, KeyEncoding, ScanBounds};
@@ -480,6 +481,22 @@ pub struct QueryBudget {
 ///
 /// Returns an iterator over (primary_key, value) pairs, enabling pausable
 /// iteration for incremental rebuilds with budget constraints.
+///
+/// # Error Handling
+///
+/// The `IndexSourceError` enum preserves the original error type information,
+/// allowing rebuild logic to distinguish between different error categories:
+///
+/// - `TableScan`: Errors from the underlying table scan operation
+/// - `Io`: I/O errors (transient failures, disk full, etc.)
+/// - `InvalidData`: Corrupt or malformed data encountered during scan
+/// - `Cancelled`: Scan was interrupted or cancelled
+/// - `Other`: Other source-specific errors
+///
+/// This enables proper error handling strategies such as:
+/// - Retrying transient I/O failures
+/// - Marking indexes as stale on corruption
+/// - Distinguishing recoverable from fatal errors
 pub trait IndexSource {
     fn scan_rows(
         &self,
@@ -490,10 +507,6 @@ pub trait IndexSource {
     >;
 }
 
-#[derive(Debug)]
-pub struct IndexSourceError {
-    pub message: String,
-}
 
 #[derive(Clone, Debug)]
 pub struct SparseQuery<'a> {

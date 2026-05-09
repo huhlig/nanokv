@@ -14,6 +14,8 @@
 // limitations under the License.
 //
 
+use crate::table::TableError;
+
 /// Index Result Type
 pub type IndexResult<T> = Result<T, IndexError>;
 
@@ -22,5 +24,33 @@ pub type IndexResult<T> = Result<T, IndexError>;
 pub enum IndexError {
     /// Other Index Error
     #[error("Index error: {0}")]
+    Other(String),
+}
+
+/// Errors that can occur when scanning table data for index rebuilds.
+///
+/// This enum preserves the original error type information, enabling rebuild
+/// logic to distinguish between transient I/O failures, corruption, and other
+/// error categories for proper error handling and retry strategies.
+#[derive(Debug, thiserror::Error)]
+pub enum IndexSourceError {
+    /// Table scan operation failed
+    #[error("Table scan failed: {0}")]
+    TableScan(#[from] TableError),
+
+    /// I/O error during scan
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Invalid data encountered during scan
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+
+    /// Scan was cancelled or interrupted
+    #[error("Scan cancelled: {0}")]
+    Cancelled(String),
+
+    /// Other source error
+    #[error("Source error: {0}")]
     Other(String),
 }
