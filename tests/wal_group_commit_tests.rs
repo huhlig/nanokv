@@ -16,6 +16,7 @@
 
 //! Tests for WAL group commit functionality
 
+use nanokv::table::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{GroupCommitConfig, WalWriter, WalWriterConfig, WriteOpType};
@@ -37,7 +38,7 @@ fn test_group_commit_disabled() {
     writer
         .write_operation(
             TransactionId::from(1),
-            "test".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             b"value".to_vec(),
@@ -62,7 +63,7 @@ fn test_group_commit_enabled() {
     writer
         .write_operation(
             TransactionId::from(1),
-            "test".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             b"value".to_vec(),
@@ -93,7 +94,7 @@ fn test_group_commit_single_transaction() {
     writer
         .write_operation(
             TransactionId::from(1),
-            "users".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -125,7 +126,7 @@ fn test_group_commit_multiple_transactions_sequential() {
         writer
             .write_operation(
                 txn_id,
-                "test".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
@@ -166,7 +167,7 @@ fn test_group_commit_concurrent_transactions() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "test".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key{}", txn_id).into_bytes(),
                         format!("value{}", txn_id).into_bytes(),
@@ -231,7 +232,7 @@ fn test_group_commit_batching() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "test".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
@@ -305,7 +306,7 @@ fn test_group_commit_metrics() {
         writer
             .write_operation(
                 txn_id,
-                "test".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
@@ -347,7 +348,7 @@ fn test_group_commit_with_rollback() {
     writer
         .write_operation(
             TransactionId::from(1),
-            "test".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -360,7 +361,7 @@ fn test_group_commit_with_rollback() {
     writer
         .write_operation(
             TransactionId::from(2),
-            "test".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key2".to_vec(),
             b"value2".to_vec(),
@@ -373,7 +374,7 @@ fn test_group_commit_with_rollback() {
     writer
         .write_operation(
             TransactionId::from(3),
-            "test".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key3".to_vec(),
             b"value3".to_vec(),
@@ -416,7 +417,7 @@ fn test_group_commit_stress() {
                     writer_clone
                         .write_operation(
                             txn_id,
-                            "test".to_string(),
+                            TableId::from(1),
                             WriteOpType::Put,
                             format!("key{}_{}", txn_id, j).into_bytes(),
                             format!("value{}_{}", txn_id, j).into_bytes(),
@@ -462,5 +463,8 @@ fn test_group_commit_stress() {
         );
     }
 }
+
+
+
 
 

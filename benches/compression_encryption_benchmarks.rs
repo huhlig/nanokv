@@ -446,7 +446,7 @@ fn bench_wal_compression(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            "test".to_string(),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -476,7 +476,7 @@ fn bench_wal_compression(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            "test".to_string(),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -505,7 +505,7 @@ fn bench_wal_compression(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            "test".to_string(),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -552,7 +552,7 @@ fn bench_wal_encryption(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            "test".to_string(),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -581,7 +581,7 @@ fn bench_wal_encryption(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            "test".to_string(),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -626,7 +626,7 @@ fn bench_wal_combined(c: &mut Criterion) {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    "test".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     key,
                     value.clone(),
@@ -654,7 +654,7 @@ fn bench_wal_combined(c: &mut Criterion) {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    "test".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     key,
                     value.clone(),
@@ -793,5 +793,7 @@ criterion_group!(
 );
 
 criterion_main!(benches);
+
+
 
 

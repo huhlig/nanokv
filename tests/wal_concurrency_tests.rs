@@ -20,6 +20,7 @@
 //! concurrent operations without data races, panics, or corruption.
 
 use nanokv::pager::CompressionType;
+use nanokv::table::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
@@ -54,7 +55,7 @@ fn test_concurrent_wal_writers() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        format!("table_{}", thread_id),
+                        TableId::from(thread_id as u64),
                         WriteOpType::Put,
                         format!("key_{}_{}", thread_id, i).into_bytes(),
                         format!("value_{}_{}", thread_id, i).into_bytes(),
@@ -101,7 +102,7 @@ fn test_concurrent_reader_writer() {
         writer
             .write_operation(
                 txn_id,
-                "data".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
@@ -120,7 +121,7 @@ fn test_concurrent_reader_writer() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
@@ -175,7 +176,7 @@ fn test_concurrent_checkpoints() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "data".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key_{}_{}", thread_id, i).into_bytes(),
                         format!("value_{}_{}", thread_id, i).into_bytes(),
@@ -231,7 +232,7 @@ fn test_concurrent_transaction_operations() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "data".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key_{}_{}", thread_id, i).into_bytes(),
                         format!("value_{}_{}", thread_id, i).into_bytes(),
@@ -279,7 +280,7 @@ fn test_concurrent_rollbacks() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key_{}", thread_id).into_bytes(),
                     format!("value_{}", thread_id).into_bytes(),
@@ -331,7 +332,7 @@ fn test_concurrent_flushes() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "data".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key_{}_{}", thread_id, i).into_bytes(),
                         format!("value_{}_{}", thread_id, i).into_bytes(),
@@ -430,7 +431,7 @@ fn test_concurrent_active_transaction_tracking() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key_{}", thread_id).into_bytes(),
                     format!("value_{}", thread_id).into_bytes(),
@@ -477,7 +478,7 @@ fn test_concurrent_writes_with_compression() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "data".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key_{}_{}", thread_id, i).into_bytes(),
                         compressible_data.into_bytes(),
@@ -524,7 +525,7 @@ fn test_high_contention_wal_writes() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "data".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("k_{}_{}", thread_id, i).into_bytes(),
                         format!("v_{}_{}", thread_id, i).into_bytes(),
@@ -566,7 +567,7 @@ fn test_concurrent_truncate() {
         writer
             .write_operation(
                 txn_id,
-                "data".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
@@ -592,7 +593,7 @@ fn test_concurrent_truncate() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
@@ -633,7 +634,7 @@ fn test_concurrent_recovery() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        format!("table_{}", thread_id),
+                        TableId::from(thread_id as u64),
                         WriteOpType::Put,
                         format!("key_{}_{}", thread_id, i).into_bytes(),
                         format!("value_{}_{}", thread_id, i).into_bytes(),
@@ -681,7 +682,7 @@ fn test_concurrent_recovery() {
         for i in 0..(writes_per_thread / 2) {
             let txn_id = (thread_id * writes_per_thread + i) as u64;
             let found = result.committed_writes.iter().any(|w| {
-                w.table == format!("table_{}", thread_id)
+                w.table_id == TableId::from(thread_id as u64)
                     && w.key == format!("key_{}_{}", thread_id, i).into_bytes()
                     && w.value == format!("value_{}_{}", thread_id, i).into_bytes()
             });
@@ -729,7 +730,7 @@ fn test_concurrent_recovery_with_checkpoint() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key_{}", thread_id).into_bytes(),
                     format!("value_{}", thread_id).into_bytes(),
@@ -757,7 +758,7 @@ fn test_concurrent_recovery_with_checkpoint() {
             writer_clone
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key_{}", thread_id).into_bytes(),
                     format!("value_{}", thread_id).into_bytes(),
@@ -810,7 +811,7 @@ fn test_concurrent_recovery_with_readers() {
             writer
                 .write_operation(
                     txn_id,
-                    "data".to_string(),
+                    TableId::from(1),
                     WriteOpType::Put,
                     format!("key{}", i).into_bytes(),
                     format!("value{}", i).into_bytes(),
@@ -886,7 +887,7 @@ fn test_lsn_monotonicity_stress() {
                 writer_clone
                     .write_operation(
                         txn_id,
-                        "data".to_string(),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("k{}", txn_id).into_bytes(),
                         format!("v{}", txn_id).into_bytes(),
@@ -933,5 +934,8 @@ fn test_lsn_monotonicity_stress() {
         (num_threads * writes_per_thread) as usize
     );
 }
+
+
+
 
 

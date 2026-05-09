@@ -17,6 +17,7 @@
 //! WAL writer - Handles writing records to the WAL file
 
 use crate::pager::{CompressionType, EncryptionType};
+use crate::table::TableId;
 use crate::txn::TransactionId;
 use crate::vfs::{File, FileSystem};
 use crate::wal::commit::{GroupCommitConfig, GroupCommitCoordinator};
@@ -226,7 +227,7 @@ impl<FS: FileSystem> WalWriter<FS> {
     pub fn write_operation(
         &self,
         txn_id: TransactionId,
-        table: String,
+        table_id: TableId,
         op_type: crate::wal::WriteOpType,
         key: Vec<u8>,
         value: Vec<u8>,
@@ -244,7 +245,7 @@ impl<FS: FileSystem> WalWriter<FS> {
             lsn,
             RecordData::Write {
                 txn_id,
-                table,
+                table_id,
                 op_type,
                 key,
                 value,
@@ -486,7 +487,7 @@ mod tests {
         let lsn = writer
             .write_operation(
                 TransactionId::from(1),
-                "test_table".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),

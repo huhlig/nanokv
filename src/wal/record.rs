@@ -17,6 +17,7 @@
 //! WAL record types and serialization
 
 use crate::pager::{CompressionType, EncryptionType};
+use crate::table::TableId;
 use crate::txn::TransactionId;
 use crate::wal::{WalError, WalResult};
 use aes_gcm::aead::{Aead, KeyInit};
@@ -134,8 +135,8 @@ pub enum RecordData {
     Write {
         /// Transaction ID
         txn_id: TransactionId,
-        /// Table name
-        table: String,
+        /// Table ID
+        table_id: TableId,
         /// Operation type
         op_type: WriteOpType,
         /// Key
@@ -467,7 +468,7 @@ impl WalRecord {
             }
             RecordData::Write {
                 txn_id,
-                table,
+                table_id,
                 op_type,
                 key,
                 value,
@@ -477,12 +478,9 @@ impl WalRecord {
                     .write_all(&txn_id.to_bytes())
                     .map_err(WalError::IoError)?;
 
-                // Table name length and data
+                // Table ID (8 bytes)
                 buffer
-                    .write_all(&(table.len() as u32).to_le_bytes())
-                    .map_err(WalError::IoError)?;
-                buffer
-                    .write_all(table.as_bytes())
+                    .write_all(&table_id.to_bytes())
                     .map_err(WalError::IoError)?;
 
                 // Operation type
@@ -563,26 +561,16 @@ impl WalRecord {
                 ));
                 cursor += 8;
 
-                // Table name
-                if bytes.len() < cursor + 4 {
+                // Table ID (8 bytes)
+                if bytes.len() < cursor + 8 {
                     return Err(WalError::DeserializationError(
                         "Invalid Write record".to_string(),
                     ));
                 }
-                let table_len =
-                    u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-                cursor += 4;
-
-                if bytes.len() < cursor + table_len {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
-                }
-                let table =
-                    String::from_utf8(bytes[cursor..cursor + table_len].to_vec()).map_err(|e| {
-                        WalError::DeserializationError(format!("Invalid table name: {}", e))
-                    })?;
-                cursor += table_len;
+                let table_id = TableId::from(u64::from_le_bytes(
+                    bytes[cursor..cursor + 8].try_into().unwrap(),
+                ));
+                cursor += 8;
 
                 // Operation type
                 if bytes.len() < cursor + 1 {
@@ -630,7 +618,7 @@ impl WalRecord {
 
                 Ok(RecordData::Write {
                     txn_id,
-                    table,
+                    table_id,
                     op_type,
                     key,
                     value,
@@ -740,7 +728,7 @@ mod tests {
             LogSequenceNumber::from(2),
             RecordData::Write {
                 txn_id: TransactionId::from(42),
-                table: "test_table".to_string(),
+                table_id: TableId::from(1),
                 op_type: WriteOpType::Put,
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),

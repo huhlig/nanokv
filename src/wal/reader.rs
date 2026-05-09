@@ -16,6 +16,7 @@
 
 //! WAL reader - Handles reading records from the WAL file
 
+use crate::table::TableId;
 use crate::vfs::{File, FileSystem};
 use crate::wal::{LogSequenceNumber, WalError, WalRecord, WalResult};
 
@@ -192,7 +193,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -204,7 +205,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Delete,
                 b"key2".to_vec(),
                 vec![],
@@ -235,14 +236,14 @@ mod tests {
         assert_eq!(records[1].lsn, LogSequenceNumber::from(2));
         if let RecordData::Write {
             txn_id,
-            table,
+            table_id,
             op_type,
             key,
             value,
         } = &records[1].data
         {
             assert_eq!(*txn_id, TransactionId::from(1));
-            assert_eq!(table, "table1");
+            assert_eq!(*table_id, TableId::from(1));
             assert_eq!(*op_type, WriteOpType::Put);
             assert_eq!(key, b"key1");
             assert_eq!(value, b"value1");

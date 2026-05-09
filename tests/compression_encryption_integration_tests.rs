@@ -20,6 +20,7 @@
 //! with various compression and encryption configurations.
 
 use nanokv::pager::{CompressionType, EncryptionType, PageSize, Pager, PagerConfig};
+use nanokv::table::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
@@ -52,7 +53,7 @@ fn test_pager_and_wal_both_lz4_compression() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "users".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"user:1".to_vec(),
         b"Alice".repeat(100), // Compressible data
@@ -93,7 +94,7 @@ fn test_pager_and_wal_both_encrypted() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "secrets".to_string(),
+        TableId::from(2),
         WriteOpType::Put,
         b"password".to_vec(),
         b"super-secret-value".to_vec(),
@@ -137,7 +138,7 @@ fn test_pager_and_wal_both_compressed_and_encrypted() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"blob:1".to_vec(),
         compressible_data.clone(),
@@ -175,7 +176,7 @@ fn test_pager_and_wal_different_compression_algorithms() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key1".to_vec(),
         b"value1".repeat(50),
@@ -220,7 +221,7 @@ fn test_recovery_of_encrypted_compressed_database() {
             wal.write_begin(txn_id).unwrap();
             wal.write_operation(
                 txn_id,
-                "data".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).as_bytes().to_vec(),
                 format!("value{}", i).repeat(100).as_bytes().to_vec(),
@@ -234,7 +235,7 @@ fn test_recovery_of_encrypted_compressed_database() {
         wal.write_begin(txn_id).unwrap();
         wal.write_operation(
             txn_id,
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key6".to_vec(),
             b"incomplete".to_vec(),
@@ -290,7 +291,7 @@ fn test_write_close_reopen_encrypted_compressed() {
         wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
             TransactionId::from(1),
-            "users".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -328,7 +329,7 @@ fn test_checkpoint_with_compression_and_encryption() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key1".to_vec(),
         b"value1".repeat(100),
@@ -340,7 +341,7 @@ fn test_checkpoint_with_compression_and_encryption() {
     wal.write_begin(TransactionId::from(2)).unwrap();
     wal.write_operation(
         TransactionId::from(2),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key2".to_vec(),
         b"value2".repeat(100),
@@ -357,7 +358,7 @@ fn test_checkpoint_with_compression_and_encryption() {
     wal.write_begin(TransactionId::from(3)).unwrap();
     wal.write_operation(
         TransactionId::from(3),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key3".to_vec(),
         b"value3".repeat(100),
@@ -405,7 +406,7 @@ fn test_data_integrity_through_full_cycle() {
         wal.write_begin(txn_id).unwrap();
         wal.write_operation(
             txn_id,
-            "test".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             key_data.clone(),
             value_data.clone(),
@@ -454,7 +455,7 @@ fn test_encrypted_database_wrong_key_fails() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
@@ -483,7 +484,7 @@ fn test_encrypted_database_no_key_fails() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
@@ -517,7 +518,7 @@ fn test_mixed_encryption_settings_pager_encrypted_wal_unencrypted() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
@@ -552,7 +553,7 @@ fn test_mixed_encryption_settings_pager_unencrypted_wal_encrypted() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "data".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
@@ -620,7 +621,7 @@ fn test_compressed_data_is_smaller() {
         wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
             TransactionId::from(1),
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             compressible_data.clone(),
@@ -638,7 +639,7 @@ fn test_compressed_data_is_smaller() {
         wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
             TransactionId::from(1),
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             compressible_data,
@@ -687,7 +688,7 @@ fn test_encryption_preserves_data_integrity() {
     wal.write_begin(TransactionId::from(1)).unwrap();
     wal.write_operation(
         TransactionId::from(1),
-        "random".to_string(),
+        TableId::from(1),
         WriteOpType::Put,
         b"random_key".to_vec(),
         random_data.clone(),
@@ -725,7 +726,7 @@ fn test_compression_with_various_data_patterns() {
         wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
             TransactionId::from(1),
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             data.clone(),
@@ -761,7 +762,7 @@ fn test_encryption_overhead_is_reasonable() {
         wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
             TransactionId::from(1),
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             test_data.clone(),
@@ -780,7 +781,7 @@ fn test_encryption_overhead_is_reasonable() {
         wal.write_begin(TransactionId::from(1)).unwrap();
         wal.write_operation(
             TransactionId::from(1),
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             test_data,
@@ -827,7 +828,7 @@ fn test_combined_compression_and_encryption_performance() {
         wal.write_begin(txn_id).unwrap();
         wal.write_operation(
             txn_id,
-            "data".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             format!("key{}", i).as_bytes().to_vec(),
             data.clone(),
@@ -852,5 +853,8 @@ fn test_combined_compression_and_encryption_performance() {
         assert_eq!(write.value, expected_data);
     }
 }
+
+
+
 
 

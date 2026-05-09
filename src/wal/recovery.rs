@@ -46,6 +46,7 @@
 //! - Start recovery from the last checkpoint instead of the beginning of the WAL
 //! - Implement parallel recovery for independent transactions
 
+use crate::table::TableId;
 use crate::txn::TransactionId;
 use crate::vfs::FileSystem;
 use crate::wal::{
@@ -67,8 +68,8 @@ enum TransactionState {
 /// Write operation recorded during recovery
 #[derive(Debug, Clone)]
 pub struct RecoveredWrite {
-    /// Table name
-    pub table: String,
+    /// Table ID
+    pub table_id: TableId,
     /// Operation type
     pub op_type: WriteOpType,
     /// Key
@@ -149,12 +150,12 @@ impl WalRecovery {
             }
             RecordData::Write {
                 txn_id,
-                table,
+                table_id,
                 op_type,
                 key,
                 value,
             } => {
-                self.process_write(txn_id, table, op_type, key, value)?;
+                self.process_write(txn_id, table_id, op_type, key, value)?;
             }
             RecordData::Commit { txn_id } => {
                 self.process_commit(txn_id)?;
@@ -182,7 +183,7 @@ impl WalRecovery {
     fn process_write(
         &mut self,
         txn_id: TransactionId,
-        table: String,
+        table_id: TableId,
         op_type: WriteOpType,
         key: Vec<u8>,
         value: Vec<u8>,
@@ -198,7 +199,7 @@ impl WalRecovery {
         // Add write to transaction
         let writes = self.transaction_writes.get_mut(&txn_id).unwrap();
         writes.push(RecoveredWrite {
-            table,
+            table_id,
             op_type,
             key,
             value,
@@ -362,7 +363,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -375,7 +376,7 @@ mod tests {
         let result = WalRecovery::recover(&fs, path).unwrap();
 
         assert_eq!(result.committed_writes.len(), 1);
-        assert_eq!(result.committed_writes[0].table, "table1");
+        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
         assert_eq!(result.committed_writes[0].key, b"key1");
         assert_eq!(result.committed_writes[0].value, b"value1");
         assert!(result.active_transactions.is_empty());
@@ -394,7 +395,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -423,7 +424,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -452,7 +453,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -465,7 +466,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -478,7 +479,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(3),
-                "table3".to_string(),
+                TableId::from(3),
                 WriteOpType::Put,
                 b"key3".to_vec(),
                 b"value3".to_vec(),
@@ -491,7 +492,7 @@ mod tests {
         let result = WalRecovery::recover(&fs, path).unwrap();
 
         assert_eq!(result.committed_writes.len(), 1);
-        assert_eq!(result.committed_writes[0].table, "table1");
+        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
         assert_eq!(result.active_transactions.len(), 1);
         assert!(result.active_transactions.contains(&TransactionId::from(3)));
         assert_eq!(result.records_processed, 8);
@@ -509,7 +510,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -522,7 +523,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -556,7 +557,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Delete,
                 b"key1".to_vec(),
                 vec![],
@@ -585,7 +586,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -597,7 +598,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -634,7 +635,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -646,7 +647,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -681,7 +682,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -693,7 +694,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -705,7 +706,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(3),
-                "table3".to_string(),
+                TableId::from(3),
                 WriteOpType::Put,
                 b"key3".to_vec(),
                 b"value3".to_vec(),
@@ -729,7 +730,7 @@ mod tests {
 
         assert!(result.last_checkpoint_lsn.is_some());
         assert_eq!(result.committed_writes.len(), 1);
-        assert_eq!(result.committed_writes[0].table, "table1");
+        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
         assert_eq!(result.active_transactions.len(), 1);
         assert!(result.active_transactions.contains(&TransactionId::from(3)));
     }
@@ -746,7 +747,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -762,7 +763,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -797,7 +798,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                "table1".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -813,7 +814,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                "table2".to_string(),
+                TableId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),

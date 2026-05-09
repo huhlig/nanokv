@@ -497,7 +497,7 @@ fn test_corrupted_wal_record_checksum() {
     writer
         .write_operation(
             TransactionId::from(1),
-            "users".to_string(),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -534,7 +534,7 @@ fn test_truncated_wal_file() {
         writer
             .write_operation(
                 txn_id,
-                "users".to_string(),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", txn_id).into_bytes(),
                 format!("value{}", txn_id).into_bytes(),
@@ -805,5 +805,8 @@ fn test_random_garbage_file() {
     // Should fail with some error (likely invalid magic or checksum)
     assert!(result.is_err());
 }
+
+
+
 
 
