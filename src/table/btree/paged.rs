@@ -1289,46 +1289,23 @@ pub struct PagedBTreeCursor<'a, FS: FileSystem> {
     current_key: Option<Vec<u8>>,
     current_value: Option<Vec<u8>>,
     exhausted: bool,
+    /// Track if initial positioning has been performed
+    initialized: bool,
 }
 
 impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
     fn new(table: &'a PagedBTree<FS>, bounds: ScanBounds, snapshot_lsn: LogSequenceNumber) -> Self {
-        let mut cursor = Self {
+        Self {
             table,
             snapshot_lsn,
-            bounds: bounds.clone(),
+            bounds,
             current_page_id: PageId::from(0),
             current_position: 0,
             current_key: None,
             current_value: None,
             exhausted: false,
-        };
-        
-        // Position cursor based on bounds
-        let _ = match &bounds {
-            ScanBounds::All => cursor.first(),
-            ScanBounds::Prefix(prefix) => {
-                // Seek to the prefix start
-                cursor.seek(&prefix.0)
-            }
-            ScanBounds::Range { start, .. } => {
-                match start {
-                    Bound::Included(k) => cursor.seek(&k.0),
-                    Bound::Excluded(k) => {
-                        // Seek to key and advance past it
-                        let _ = cursor.seek(&k.0);
-                        if cursor.valid() && cursor.key() == Some(&k.0[..]) {
-                            cursor.next()
-                        } else {
-                            Ok(())
-                        }
-                    }
-                    Bound::Unbounded => cursor.first(),
-                }
-            }
-        };
-        
-        cursor
+            initialized: false,
+        }
     }
 
     fn is_in_bounds(&self, key: &[u8]) -> bool {
@@ -1449,9 +1426,17 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
                 // Try to advance within current leaf
                 while self.current_position < entries.len() {
                     self.load_current_entry()?;
+                    
+                    // Check if we found a valid entry or hit bounds
                     if self.current_key.is_some() {
                         return Ok(());
                     }
+                    
+                    // If exhausted (out of bounds), stop searching
+                    if self.exhausted {
+                        return Ok(());
+                    }
+                    
                     self.current_position += 1;
                 }
 
@@ -1508,6 +1493,11 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn next(&mut self) -> TableResult<()> {
+        // Ensure cursor is initialized before advancing
+        if !self.initialized {
+            return self.first();
+        }
+        
         if self.exhausted {
             return Ok(());
         }
@@ -1518,6 +1508,11 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn prev(&mut self) -> TableResult<()> {
+        // Ensure cursor is initialized before retreating
+        if !self.initialized {
+            return self.last();
+        }
+        
         if self.exhausted {
             return Ok(());
         }
@@ -1526,21 +1521,49 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn seek(&mut self, key: &[u8]) -> TableResult<()> {
+        self.initialized = true;  // Mark as initialized since we're explicitly positioning
+        
         // Reset exhausted state
         self.exhausted = false;
 
         // Check if key is within bounds
         if !self.is_in_bounds(key) {
-            // Position at first entry if key is before start bound
-            match &self.bounds {
+            // Position at first entry if key is before or at start bound
+            match &self.bounds.clone() {
                 ScanBounds::Range { start, .. } => {
-                    let before_start = match start {
+                    let before_or_at_start = match start {
                         Bound::Included(k) => key < k.0.as_slice(),
-                        Bound::Excluded(k) => key <= k.0.as_slice(),
+                        Bound::Excluded(k) => key <= k.0.as_slice(),  // Include equal for excluded bounds
                         Bound::Unbounded => false,
                     };
-                    if before_start {
-                        return self.first();
+                    if before_or_at_start {
+                        // Seek to the start bound instead of calling first() to avoid recursion
+                        match start {
+                            Bound::Included(k) => {
+                                let start_key = k.0.clone();
+                                return self.seek(&start_key);
+                            }
+                            Bound::Excluded(k) => {
+                                let start_key = k.0.clone();
+                                // Use tree search directly to avoid recursion when seeking to excluded bound
+                                let (leaf_page_id, pos) = self.table.search(&start_key)?;
+                                self.current_page_id = leaf_page_id;
+                                self.current_position = pos;
+                                
+                                // Advance past the excluded key
+                                // Note: We don't call advance_to_next_visible first because it will
+                                // mark us as exhausted when it sees the excluded key is out of bounds.
+                                // Instead, we increment position and then advance.
+                                self.current_position += 1;
+                                return self.advance_to_next_visible();
+                            }
+                            Bound::Unbounded => {
+                                // Navigate to leftmost leaf
+                                self.current_page_id = self.find_leftmost_leaf()?;
+                                self.current_position = 0;
+                                return self.advance_to_next_visible();
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1563,6 +1586,8 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn seek_for_prev(&mut self, key: &[u8]) -> TableResult<()> {
+        self.initialized = true;  // Mark as initialized since we're explicitly positioning
+        
         // Reset exhausted state
         self.exhausted = false;
 
@@ -1593,31 +1618,17 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
         // Use tree search to find the leaf and position
         let (leaf_page_id, pos) = self.table.search(key)?;
         self.current_page_id = leaf_page_id;
+        self.current_position = pos;
         
-        // If we found exact match or position after, move back one
+        // Check if we found exact match or need to go to previous
         let node = self.table.read_node(leaf_page_id)?;
         if let BTreeNode::Leaf { entries, .. } = node {
-            if pos < entries.len() && entries[pos].key.as_slice() >= key {
-                // Found exact match or next key, position at previous
-                if pos > 0 {
-                    self.current_position = pos - 1;
-                    self.load_current_entry()?;
-                } else {
-                    // At start of leaf, need previous leaf (not implemented without parent pointers)
-                    self.exhausted = true;
-                    self.current_key = None;
-                    self.current_value = None;
-                }
+            if pos < entries.len() && entries[pos].key.as_slice() == key {
+                // Found exact match, position here
+                self.load_current_entry()?;
             } else {
-                // Position is at insertion point, which is the previous entry
-                if pos > 0 {
-                    self.current_position = pos - 1;
-                    self.load_current_entry()?;
-                } else {
-                    self.exhausted = true;
-                    self.current_key = None;
-                    self.current_value = None;
-                }
+                // Key not found or positioned after target, retreat to previous visible entry
+                self.retreat_to_prev_visible()?;
             }
         }
 
@@ -1625,18 +1636,49 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn first(&mut self) -> TableResult<()> {
+        self.initialized = true;  // Mark as initialized since we're explicitly positioning
+        
         // Reset exhausted state
         self.exhausted = false;
 
-        // Navigate to leftmost leaf
-        self.current_page_id = self.find_leftmost_leaf()?;
-        self.current_position = 0;
-
-        // Find first visible entry within bounds
-        self.advance_to_next_visible()
+        // For bounded scans, seek to the start bound instead of going to leftmost leaf
+        match &self.bounds.clone() {
+            ScanBounds::All => {
+                // Navigate to leftmost leaf
+                self.current_page_id = self.find_leftmost_leaf()?;
+                self.current_position = 0;
+                self.advance_to_next_visible()
+            }
+            ScanBounds::Prefix(prefix) => {
+                // Seek to the prefix start
+                self.seek(&prefix.0)
+            }
+            ScanBounds::Range { start, .. } => {
+                match start {
+                    Bound::Included(k) => self.seek(&k.0),
+                    Bound::Excluded(k) => {
+                        // Seek to key and advance past it
+                        self.seek(&k.0)?;
+                        if self.valid() && self.key() == Some(&k.0[..]) {
+                            self.next()
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Bound::Unbounded => {
+                        // Navigate to leftmost leaf
+                        self.current_page_id = self.find_leftmost_leaf()?;
+                        self.current_position = 0;
+                        self.advance_to_next_visible()
+                    }
+                }
+            }
+        }
     }
 
     fn last(&mut self) -> TableResult<()> {
+        self.initialized = true;  // Mark as initialized since we're explicitly positioning
+        
         // Reset exhausted state
         self.exhausted = false;
 
