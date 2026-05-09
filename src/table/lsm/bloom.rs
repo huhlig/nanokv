@@ -79,6 +79,16 @@ impl BloomFilter {
         }
     }
     
+    /// Create a bloom filter from existing bit data with explicit num_bits.
+    pub fn from_bytes_with_size(bits: Vec<u8>, num_bits: usize, num_hash_functions: usize) -> Self {
+        Self {
+            bits,
+            num_bits,
+            num_hash_functions,
+            num_items: 0, // Unknown
+        }
+    }
+    
     /// Insert a key into the bloom filter.
     pub fn insert(&mut self, key: &[u8]) {
         let (h1, h2) = self.hash_key(key);
