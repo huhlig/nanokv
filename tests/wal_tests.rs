@@ -1198,8 +1198,3 @@ fn test_wal_encryption_key_rotation_failure_is_detected() {
     let err = WalRecovery::recover_with_key(&fs, path, Some(new_key)).unwrap_err();
     assert!(matches!(err, WalError::DecryptionError(_)));
 }
-
-
-
-
-

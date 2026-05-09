@@ -636,5 +636,3 @@ mod tests {
         assert_eq!(cache.size(), 1); // Should not increase size
     }
 }
-
-

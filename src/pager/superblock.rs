@@ -300,5 +300,3 @@ mod tests {
         assert_eq!(sb.free_pages, 0);
     }
 }
-
-

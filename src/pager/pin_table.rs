@@ -264,5 +264,3 @@ mod tests {
         assert_eq!(table.ref_count(PageId::from(1)), 0);
     }
 }
-
-

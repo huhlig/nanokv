@@ -92,9 +92,7 @@ mod writer;
 pub use self::commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitMetrics};
 pub use self::error::{WalError, WalResult};
 pub use self::reader::{WalReader, WalRecordIterator};
-pub use self::record::{
-    LogSequenceNumber, RecordData, RecordType,  WalRecord, WriteOpType,
-};
+pub use self::record::{LogSequenceNumber, RecordData, RecordType, WalRecord, WriteOpType};
 pub use self::recovery::{RecoveredWrite, RecoveryResult, WalRecovery};
 pub use self::writer::{WalWriter, WalWriterConfig};
 

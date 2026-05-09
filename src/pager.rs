@@ -28,8 +28,8 @@
 mod cache;
 mod config;
 mod error;
-mod header;
 mod freelist;
+mod header;
 mod page;
 mod pagefile;
 mod pin_table;
@@ -38,8 +38,8 @@ mod superblock;
 pub use self::cache::{CacheConfig, CacheStats, PageCache};
 pub use self::config::{CompressionType, EncryptionType, PageSize, PagerConfig};
 pub use self::error::{PagerError, PagerResult};
-pub use self::header::FileHeader;
 pub use self::freelist::{FreeList, FreeListPage};
+pub use self::header::FileHeader;
 pub use self::page::{Page, PageHeader, PageId, PageType};
 pub use self::pagefile::Pager;
 pub use self::pin_table::{PinGuard, PinTable};
@@ -52,4 +52,3 @@ pub struct PhysicalLocation {
     pub offset: u32,
     pub length: u32,
 }
-

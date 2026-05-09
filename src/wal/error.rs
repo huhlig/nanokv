@@ -95,5 +95,3 @@ pub enum WalError {
     #[error("Internal error: {0}")]
     InternalError(String),
 }
-
-

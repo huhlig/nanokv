@@ -807,5 +807,3 @@ mod tests {
         assert!(WalRecord::from_bytes(&bytes, None).is_err());
     }
 }
-
-

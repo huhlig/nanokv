@@ -495,5 +495,3 @@ mod tests {
         assert!(queue.should_flush(last_flush));
     }
 }
-
-

@@ -38,7 +38,6 @@ impl std::fmt::Display for Version {
     }
 }
 
-
 // TODO(MVCC): Version chain structure for storing multiple versions of a value
 // This enables MVCC by maintaining a linked list of value versions.
 // Each version tracks:
@@ -251,4 +250,3 @@ pub enum EncryptionKind {
     ChaCha20Poly1305,
     Custom(u32),
 }
-

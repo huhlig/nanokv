@@ -106,5 +106,3 @@ pub enum PagerError {
     #[error("Internal error: {0}")]
     InternalError(String),
 }
-
-

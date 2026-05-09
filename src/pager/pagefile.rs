@@ -625,5 +625,3 @@ mod tests {
         assert_eq!(pager.free_pages(), 0);
     }
 }
-
-

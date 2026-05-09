@@ -95,5 +95,3 @@ impl Cursor {
         todo!("Move to previous entry")
     }
 }
-
-

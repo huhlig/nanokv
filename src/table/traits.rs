@@ -524,5 +524,3 @@ pub struct RepairReport {
     pub actions_succeeded: u64,
     pub unrepaired_errors: Vec<ConsistencyError>,
 }
-
-

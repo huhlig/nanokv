@@ -551,7 +551,9 @@ mod tests {
         let writer = WalWriter::create(&fs, "test.wal", config).unwrap();
 
         let result = writer.write_commit(TransactionId::from(999));
-        assert!(matches!(result, Err(WalError::TransactionNotFound(txn)) if txn == TransactionId::from(999)));
+        assert!(
+            matches!(result, Err(WalError::TransactionNotFound(txn)) if txn == TransactionId::from(999))
+        );
     }
 
     #[test]
@@ -562,8 +564,8 @@ mod tests {
 
         writer.write_begin(TransactionId::from(1)).unwrap();
         let result = writer.write_begin(TransactionId::from(1));
-        assert!(matches!(result, Err(WalError::TransactionAlreadyExists(txn)) if txn == TransactionId::from(1)));
+        assert!(
+            matches!(result, Err(WalError::TransactionAlreadyExists(txn)) if txn == TransactionId::from(1))
+        );
     }
 }
-
-

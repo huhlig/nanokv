@@ -65,8 +65,8 @@ pub use self::traits::{
     ApproximateMembershipIndex, CandidateSet, CostEstimate, DenseOrderedIndex, EdgeRef,
     FullTextIndex, GeoHit, GeoPoint, GeoSpatialIndex, GeometryRef, GraphAdjacencyIndex, HnswIndex,
     Index, IndexCapabilities, IndexConsistency, IndexCursor, IndexField, IndexId, IndexInfo,
-    IndexKind, IndexOptions, IndexSource, IndexSourceError, IndexStats, IvfIndex,
-    PhysicalRange, Predicate, QueryBudget, QueryableIndex, RebuildBudget, RebuildProgress,
-    RebuildableIndex, ScoredDocument, SparseIndex, SparseQuery, TextField, TextQuery, TimePointRef,
-    TimeSeriesIndex, VectorHit, VectorIndex, VectorMetric, VectorSearchOptions,
+    IndexKind, IndexOptions, IndexSource, IndexSourceError, IndexStats, IvfIndex, PhysicalRange,
+    Predicate, QueryBudget, QueryableIndex, RebuildBudget, RebuildProgress, RebuildableIndex,
+    ScoredDocument, SparseIndex, SparseQuery, TextField, TextQuery, TimePointRef, TimeSeriesIndex,
+    VectorHit, VectorIndex, VectorMetric, VectorSearchOptions,
 };

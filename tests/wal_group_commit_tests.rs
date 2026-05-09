@@ -463,8 +463,3 @@ fn test_group_commit_stress() {
         );
     }
 }
-
-
-
-
-

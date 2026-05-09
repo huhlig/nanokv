@@ -853,8 +853,3 @@ fn test_combined_compression_and_encryption_performance() {
         assert_eq!(write.value, expected_data);
     }
 }
-
-
-
-
-

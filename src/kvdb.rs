@@ -20,11 +20,11 @@
 //! transaction manager, WAL, and registered table/index engines. ACID semantics are coordinated
 //! at this layer.
 
-use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::index::{IndexId, IndexInfo, IndexOptions};
 use crate::snap::{Snapshot, SnapshotId};
 use crate::table::{TableId, TableInfo, TableOptions};
 use crate::txn::Transaction;
+use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::wal::LogSequenceNumber;
 
 /// Top-level embedded database.

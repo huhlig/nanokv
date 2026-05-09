@@ -336,5 +336,3 @@ mod tests {
         assert_eq!(free_list.first_page(), PageId::from(0));
     }
 }
-
-

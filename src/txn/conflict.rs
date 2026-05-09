@@ -57,7 +57,12 @@ impl ConflictDetector {
     }
 
     /// TODO(MVCC): Implement write conflict detection
-    pub fn check_write_conflict(&self, table_id: TableId, key: &[u8], txn_id: TransactionId) -> TransactionResult<()> {
+    pub fn check_write_conflict(
+        &self,
+        table_id: TableId,
+        key: &[u8],
+        txn_id: TransactionId,
+    ) -> TransactionResult<()> {
         let lock_key = (table_id, key.to_vec());
         if let Some(&other_txn) = self.write_locks.get(&lock_key) {
             if other_txn != txn_id {
@@ -92,10 +97,7 @@ impl ConflictDetector {
         for (table_id, key) in read_set {
             if let Some(&other_txn) = self.write_locks.get(&(*table_id, key.clone())) {
                 if other_txn != txn_id {
-                    return Err(TransactionError::ReadWriteConflict(
-                        *table_id,
-                        key.clone(),
-                    ));
+                    return Err(TransactionError::ReadWriteConflict(*table_id, key.clone()));
                 }
             }
         }
@@ -133,5 +135,3 @@ impl DeadlockDetector {
         todo!("Implement DeadlockDetector::detect_cycle")
     }
 }
-
-

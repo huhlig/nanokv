@@ -315,5 +315,3 @@ mod tests {
         assert_ne!(header.modified_at, original_timestamp);
     }
 }
-
-

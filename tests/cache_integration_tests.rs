@@ -31,24 +31,24 @@ fn test_cache_hit() {
     let config = PagerConfig::new()
         .with_cache_capacity(10)
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate and write a page
     let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
     let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
     page.data_mut().extend_from_slice(b"test data");
     pager.write_page(&page).unwrap();
-    
+
     // In write-back mode, the page is now in cache
     // First read (cache hit because write put it in cache)
     let read1 = pager.read_page(page_id).unwrap();
     assert_eq!(read1.data()[0..9], b"test data"[..]);
-    
+
     // Second read (also cache hit)
     let read2 = pager.read_page(page_id).unwrap();
     assert_eq!(read2.data()[0..9], b"test data"[..]);
-    
+
     // Verify cache statistics - both reads should be hits
     let stats = pager.cache_stats().unwrap();
     assert!(stats.hits >= 2); // Both reads were hits
@@ -62,30 +62,30 @@ fn test_cache_miss() {
     let config = PagerConfig::new()
         .with_cache_capacity(10)
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate multiple pages
     let page_id1 = pager.allocate_page(PageType::BTreeLeaf).unwrap();
     let page_id2 = pager.allocate_page(PageType::BTreeLeaf).unwrap();
-    
+
     let mut page1 = Page::new(page_id1, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
     page1.data_mut().extend_from_slice(b"page 1");
     pager.write_page(&page1).unwrap();
-    
+
     let mut page2 = Page::new(page_id2, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
     page2.data_mut().extend_from_slice(b"page 2");
     pager.write_page(&page2).unwrap();
-    
+
     // In write-back mode, pages are already in cache after write
     // Read page 1 (cache hit)
     let read1 = pager.read_page(page_id1).unwrap();
     assert_eq!(read1.data()[0..6], b"page 1"[..]);
-    
+
     // Read page 2 (cache hit)
     let read2 = pager.read_page(page_id2).unwrap();
     assert_eq!(read2.data()[0..6], b"page 2"[..]);
-    
+
     // Verify cache has pages
     let stats = pager.cache_stats().unwrap();
     assert!(stats.current_size >= 2);
@@ -98,41 +98,42 @@ fn test_cache_lru_eviction() {
     let config = PagerConfig::new()
         .with_cache_capacity(3) // Small cache
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Clear cache to start fresh
     pager.clear_cache().unwrap();
-    
+
     // Allocate 4 pages
     let page_ids: Vec<PageId> = (0..4)
         .map(|_| pager.allocate_page(PageType::BTreeLeaf).unwrap())
         .collect();
-    
+
     // Flush and clear cache after allocation
     pager.flush_cache().unwrap();
     pager.clear_cache().unwrap();
-    
+
     // Write pages directly to disk (bypass cache)
     for (i, &page_id) in page_ids.iter().enumerate() {
         let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
-        page.data_mut().extend_from_slice(format!("page {}", i).as_bytes());
+        page.data_mut()
+            .extend_from_slice(format!("page {}", i).as_bytes());
         // Use write-through mode temporarily by flushing after each write
         pager.write_page(&page).unwrap();
     }
-    
+
     // Now clear cache and read pages to test eviction
     pager.flush_cache().unwrap();
     pager.clear_cache().unwrap();
-    
+
     // Read first 3 pages (fill cache with misses)
     for &page_id in &page_ids[0..3] {
         pager.read_page(page_id).unwrap();
     }
-    
+
     // Read 4th page (should trigger eviction)
     pager.read_page(page_ids[3]).unwrap();
-    
+
     // Verify eviction occurred
     let stats = pager.cache_stats().unwrap();
     assert!(stats.evictions > 0);
@@ -146,18 +147,18 @@ fn test_cache_write_back() {
     let config = PagerConfig::new()
         .with_cache_capacity(10)
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate and write a page
     let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
     let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
     page.data_mut().extend_from_slice(b"dirty data");
     pager.write_page(&page).unwrap();
-    
+
     // Flush cache to ensure dirty pages are written
     pager.flush_cache().unwrap();
-    
+
     // Verify flush statistics
     let stats = pager.cache_stats().unwrap();
     assert!(stats.flushes > 0);
@@ -170,15 +171,15 @@ fn test_cache_write_through() {
     let config = PagerConfig::new()
         .with_cache_capacity(10)
         .with_cache_write_back(false); // Write-through
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate and write a page
     let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
     let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
     page.data_mut().extend_from_slice(b"immediate write");
     pager.write_page(&page).unwrap();
-    
+
     // In write-through mode, data should be on disk immediately
     // Read it back to verify
     let read_page = pager.read_page(page_id).unwrap();
@@ -192,27 +193,28 @@ fn test_cache_statistics() {
     let config = PagerConfig::new()
         .with_cache_capacity(5)
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate pages
     let page_ids: Vec<PageId> = (0..3)
         .map(|_| pager.allocate_page(PageType::BTreeLeaf).unwrap())
         .collect();
-    
+
     // Write pages (they go into cache in write-back mode)
     for (i, &page_id) in page_ids.iter().enumerate() {
         let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
-        page.data_mut().extend_from_slice(format!("page {}", i).as_bytes());
+        page.data_mut()
+            .extend_from_slice(format!("page {}", i).as_bytes());
         pager.write_page(&page).unwrap();
     }
-    
+
     // Read pages multiple times (all should be hits since they're in cache)
     for &page_id in &page_ids {
         pager.read_page(page_id).unwrap(); // Hit
         pager.read_page(page_id).unwrap(); // Hit
     }
-    
+
     // Verify statistics
     let stats = pager.cache_stats().unwrap();
     assert!(stats.hits >= 6); // All reads should be hits
@@ -226,28 +228,29 @@ fn test_cache_clear() {
     let config = PagerConfig::new()
         .with_cache_capacity(10)
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate and write pages
     let page_ids: Vec<PageId> = (0..3)
         .map(|_| pager.allocate_page(PageType::BTreeLeaf).unwrap())
         .collect();
-    
+
     for (i, &page_id) in page_ids.iter().enumerate() {
         let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
-        page.data_mut().extend_from_slice(format!("page {}", i).as_bytes());
+        page.data_mut()
+            .extend_from_slice(format!("page {}", i).as_bytes());
         pager.write_page(&page).unwrap();
     }
-    
+
     // Read pages to populate cache
     for &page_id in &page_ids {
         pager.read_page(page_id).unwrap();
     }
-    
+
     // Clear cache
     pager.clear_cache().unwrap();
-    
+
     // Verify cache is empty
     let stats = pager.cache_stats().unwrap();
     assert_eq!(stats.current_size, 0);
@@ -257,21 +260,20 @@ fn test_cache_clear() {
 #[test]
 fn test_cache_disabled() {
     let fs = MemoryFileSystem::new();
-    let config = PagerConfig::new()
-        .with_cache_capacity(0); // Disable cache
-    
+    let config = PagerConfig::new().with_cache_capacity(0); // Disable cache
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate and write a page
     let page_id = pager.allocate_page(PageType::BTreeLeaf).unwrap();
     let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
     page.data_mut().extend_from_slice(b"no cache");
     pager.write_page(&page).unwrap();
-    
+
     // Read page
     let read_page = pager.read_page(page_id).unwrap();
     assert_eq!(read_page.data()[0..8], b"no cache"[..]);
-    
+
     // Verify no cache stats available
     assert!(pager.cache_stats().is_none());
 }
@@ -283,29 +285,25 @@ fn test_cache_sync() {
     let config = PagerConfig::new()
         .with_cache_capacity(10)
         .with_cache_write_back(true);
-    
+
     let pager = Pager::create(&fs, "test.db", config).unwrap();
-    
+
     // Allocate and write pages
     let page_ids: Vec<PageId> = (0..3)
         .map(|_| pager.allocate_page(PageType::BTreeLeaf).unwrap())
         .collect();
-    
+
     for (i, &page_id) in page_ids.iter().enumerate() {
         let mut page = Page::new(page_id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
-        page.data_mut().extend_from_slice(format!("page {}", i).as_bytes());
+        page.data_mut()
+            .extend_from_slice(format!("page {}", i).as_bytes());
         pager.write_page(&page).unwrap();
     }
-    
+
     // Sync should flush cache
     pager.sync().unwrap();
-    
+
     // Verify all dirty pages were flushed
     let stats = pager.cache_stats().unwrap();
     assert_eq!(stats.dirty_pages, 0);
 }
-
-
-
-
-

@@ -14,9 +14,9 @@
 // limitations under the License.
 //
 
-use std::fmt::Formatter;
-use crate::wal::LogSequenceNumber;
 use crate::txn::TransactionId;
+use crate::wal::LogSequenceNumber;
+use std::fmt::Formatter;
 
 /// Snapshot identifier.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -33,8 +33,6 @@ impl std::fmt::Display for SnapshotId {
         write!(f, "SnapshotId({})", self.0)
     }
 }
-
-
 
 /// A named, persistent snapshot of the database at a specific LSN.
 ///

@@ -320,5 +320,3 @@ mod tests {
         assert_eq!(records.len(), 6);
     }
 }
-
-

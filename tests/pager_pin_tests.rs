@@ -276,8 +276,3 @@ fn test_high_contention_pin_unpin() {
     // After all reads complete, page should be unpinned and can be freed
     pager.free_page(page_id).unwrap();
 }
-
-
-
-
-

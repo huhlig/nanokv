@@ -148,7 +148,7 @@ impl Default for PagerConfig {
             encryption: EncryptionType::None,
             encryption_key: None,
             enable_checksums: true,
-            cache_capacity: 1000, // Default to 1000 pages
+            cache_capacity: 1000,   // Default to 1000 pages
             cache_write_back: true, // Default to write-back for better performance
         }
     }
@@ -207,5 +207,3 @@ impl PagerConfig {
         Ok(())
     }
 }
-
-

@@ -35,32 +35,32 @@ use std::thread;
 fn test_concurrent_read_at_offset_overflow() {
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_overflow.dat";
-    
+
     // Create file with 100 bytes
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
         file.write_all(&vec![0x42; 100]).expect("Failed to write");
     }
-    
+
     let thread_count = 4;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut file = fs_clone.open_file(&path).expect("Failed to open file");
-            
+
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             // Try to read at various offsets, including beyond file size
             let offsets = [0, 50, 99, 100, 150, 200, 1000];
             let mut results = vec![];
-            
+
             for &offset in &offsets {
                 let mut buf = vec![0u8; 50];
                 match file.read_at_offset(offset, &mut buf) {
@@ -72,12 +72,12 @@ fn test_concurrent_read_at_offset_overflow() {
                     }
                 }
             }
-            
+
             (thread_id, results)
         });
         handles.push(handle);
     }
-    
+
     // Collect results
     for handle in handles {
         let (thread_id, results) = handle.join().expect("Thread panicked");
@@ -100,36 +100,36 @@ fn test_concurrent_read_at_offset_overflow() {
 fn test_concurrent_read_buffer_mismatch() {
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_mismatch.dat";
-    
+
     // Create file with 100 bytes
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
         file.write_all(&vec![0x55; 100]).expect("Failed to write");
     }
-    
+
     let thread_count = 8;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut file = fs_clone.open_file(&path).expect("Failed to open file");
-            
+
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             // Try to read with various buffer sizes at edge positions
             let test_cases = [
-                (95, 10),  // Read 10 bytes at offset 95 (only 5 available)
-                (98, 5),   // Read 5 bytes at offset 98 (only 2 available)
-                (99, 10),  // Read 10 bytes at offset 99 (only 1 available)
-                (100, 5),  // Read 5 bytes at offset 100 (0 available)
+                (95, 10), // Read 10 bytes at offset 95 (only 5 available)
+                (98, 5),  // Read 5 bytes at offset 98 (only 2 available)
+                (99, 10), // Read 10 bytes at offset 99 (only 1 available)
+                (100, 5), // Read 5 bytes at offset 100 (0 available)
             ];
-            
+
             for &(offset, buf_size) in &test_cases {
                 let mut buf = vec![0u8; buf_size];
                 match file.read_at_offset(offset, &mut buf) {
@@ -139,18 +139,24 @@ fn test_concurrent_read_buffer_mismatch() {
                         assert!(
                             bytes_read <= available,
                             "Thread {}: Read {} bytes but only {} available at offset {}",
-                            thread_id, bytes_read, available, offset
+                            thread_id,
+                            bytes_read,
+                            available,
+                            offset
                         );
                     }
                     Err(e) => {
-                        panic!("Thread {}: Unexpected error at offset {}: {:?}", thread_id, offset, e);
+                        panic!(
+                            "Thread {}: Unexpected error at offset {}: {:?}",
+                            thread_id, offset, e
+                        );
                     }
                 }
             }
         });
         handles.push(handle);
     }
-    
+
     // Wait for all threads
     for handle in handles {
         handle.join().expect("Thread panicked");
@@ -165,61 +171,74 @@ fn test_concurrent_read_buffer_mismatch() {
 fn test_concurrent_write_read_corruption() {
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_corruption.dat";
-    
+
     // Create file with initial data
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
         file.write_all(&vec![0x00; 1000]).expect("Failed to write");
     }
-    
+
     let thread_count = 4;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut file = fs_clone.open_file(&path).expect("Failed to open file");
-            
+
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             // Each thread writes its ID to different sections
             let section_size = 250;
             let offset = (thread_id * section_size) as u64;
             let data = vec![thread_id as u8; section_size];
-            
+
             // Write data
-            file.write_to_offset(offset, &data).expect("Failed to write");
-            
+            file.write_to_offset(offset, &data)
+                .expect("Failed to write");
+
             // Immediately read back
             let mut read_buf = vec![0u8; section_size];
-            let bytes_read = file.read_at_offset(offset, &mut read_buf).expect("Failed to read");
-            
+            let bytes_read = file
+                .read_at_offset(offset, &mut read_buf)
+                .expect("Failed to read");
+
             // Verify data integrity
-            assert_eq!(bytes_read, section_size, "Thread {}: Read wrong number of bytes", thread_id);
-            
+            assert_eq!(
+                bytes_read, section_size,
+                "Thread {}: Read wrong number of bytes",
+                thread_id
+            );
+
             // Check if data matches what we wrote
             let matches = read_buf.iter().all(|&b| b == thread_id as u8);
             (thread_id, matches, read_buf[0..10].to_vec())
         });
         handles.push(handle);
     }
-    
+
     // Collect results
     let mut all_matched = true;
     for handle in handles {
         let (thread_id, matches, sample) = handle.join().expect("Thread panicked");
         if !matches {
-            println!("Thread {} data corruption detected! Sample: {:?}", thread_id, sample);
+            println!(
+                "Thread {} data corruption detected! Sample: {:?}",
+                thread_id, sample
+            );
             all_matched = false;
         }
     }
-    
-    assert!(all_matched, "Data corruption detected in concurrent write/read operations");
+
+    assert!(
+        all_matched,
+        "Data corruption detected in concurrent write/read operations"
+    );
 }
 
 /// Test concurrent resize operations
@@ -230,33 +249,33 @@ fn test_concurrent_write_read_corruption() {
 fn test_concurrent_resize_operations() {
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_resize.dat";
-    
+
     // Create file with initial data
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
         file.write_all(&vec![0xAA; 500]).expect("Failed to write");
     }
-    
+
     let thread_count = 4;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut file = fs_clone.open_file(&path).expect("Failed to open file");
-            
+
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             // Perform multiple resize operations
             for i in 0..10 {
                 let new_size = 100 + (thread_id * 100) + (i * 10);
                 file.set_size(new_size as u64).expect("Failed to resize");
-                
+
                 // Try to read at various offsets
                 let mut buf = vec![0u8; 50];
                 let _ = file.read_at_offset(0, &mut buf);
@@ -265,7 +284,7 @@ fn test_concurrent_resize_operations() {
         });
         handles.push(handle);
     }
-    
+
     // Wait for all threads
     for handle in handles {
         handle.join().expect("Thread panicked");
@@ -280,7 +299,7 @@ fn test_concurrent_resize_operations() {
 fn test_high_contention_access() {
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_contention.dat";
-    
+
     // Create file with pattern data
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
@@ -290,29 +309,29 @@ fn test_high_contention_access() {
         }
         file.write_all(&data).expect("Failed to write");
     }
-    
+
     let thread_count = 16;
     let operations_per_thread = 100;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut file = fs_clone.open_file(&path).expect("Failed to open file");
-            
+
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             let mut errors = 0;
-            
+
             for op in 0..operations_per_thread {
                 let offset = ((thread_id + op) % 200) as u64;
                 let mut buf = vec![0u8; 32];
-                
+
                 // Alternate between reads and writes
                 if op % 2 == 0 {
                     if let Err(_) = file.read_at_offset(offset, &mut buf) {
@@ -325,12 +344,12 @@ fn test_high_contention_access() {
                     }
                 }
             }
-            
+
             (thread_id, errors)
         });
         handles.push(handle);
     }
-    
+
     // Collect results
     let mut total_errors = 0;
     for handle in handles {
@@ -340,8 +359,12 @@ fn test_high_contention_access() {
             total_errors += errors;
         }
     }
-    
-    assert_eq!(total_errors, 0, "Encountered {} errors during high-contention access", total_errors);
+
+    assert_eq!(
+        total_errors, 0,
+        "Encountered {} errors during high-contention access",
+        total_errors
+    );
 }
 
 /// Test concurrent directory operations
@@ -353,21 +376,21 @@ fn test_high_contention_access() {
 #[test]
 fn test_concurrent_directory_operations() {
     let fs = Arc::new(MemoryFileSystem::new());
-    
+
     let thread_count = 8;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
-        
+
         let handle = thread::spawn(move || {
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             let mut errors = vec![];
-            
+
             // Each thread creates multiple sibling directories
             let mut created_dirs = vec![];
             for i in 0..5 {
@@ -379,20 +402,23 @@ fn test_concurrent_directory_operations() {
                     }
                 }
             }
-            
+
             // Verify directories exist
             for dir_path in &created_dirs {
                 match fs_clone.is_directory(dir_path) {
-                    Ok(true) => {},
+                    Ok(true) => {}
                     Ok(false) => {
-                        errors.push(format!("Directory {} not recognized as directory", dir_path));
+                        errors.push(format!(
+                            "Directory {} not recognized as directory",
+                            dir_path
+                        ));
                     }
                     Err(e) => {
                         errors.push(format!("is_directory {} failed: {:?}", dir_path, e));
                     }
                 }
             }
-            
+
             // Try to access other threads' directories concurrently
             for other_id in 0..thread_count {
                 if other_id != thread_id {
@@ -403,18 +429,18 @@ fn test_concurrent_directory_operations() {
                     }
                 }
             }
-            
+
             // Remove directories
             for dir_path in &created_dirs {
                 if let Err(e) = fs_clone.remove_directory(dir_path) {
                     errors.push(format!("remove_directory {} failed: {:?}", dir_path, e));
                 }
             }
-            
+
             // Verify directories are removed
             for dir_path in &created_dirs {
                 match fs_clone.exists(dir_path) {
-                    Ok(false) => {},
+                    Ok(false) => {}
                     Ok(true) => {
                         errors.push(format!("Directory {} still exists after removal", dir_path));
                     }
@@ -423,12 +449,12 @@ fn test_concurrent_directory_operations() {
                     }
                 }
             }
-            
+
             (thread_id, errors)
         });
         handles.push(handle);
     }
-    
+
     // Collect results
     let mut total_errors = 0;
     for handle in handles {
@@ -441,8 +467,12 @@ fn test_concurrent_directory_operations() {
             total_errors += errors.len();
         }
     }
-    
-    assert_eq!(total_errors, 0, "Encountered {} errors during concurrent directory operations", total_errors);
+
+    assert_eq!(
+        total_errors, 0,
+        "Encountered {} errors during concurrent directory operations",
+        total_errors
+    );
 }
 
 /// Test concurrent file lock contention
@@ -452,67 +482,72 @@ fn test_concurrent_directory_operations() {
 #[test]
 fn test_concurrent_lock_contention() {
     use nanokv::vfs::FileLockMode;
-    
+
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_lock.dat";
-    
+
     // Create file
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
         file.write_all(&vec![0x77; 100]).expect("Failed to write");
     }
-    
+
     let thread_count = 8;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut file = fs_clone.open_file(&path).expect("Failed to open file");
-            
+
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             let mut lock_attempts = 0;
             let mut lock_successes = 0;
             let mut lock_failures = 0;
-            
+
             // Try to acquire locks multiple times
             for i in 0..20 {
                 lock_attempts += 1;
-                
+
                 // Alternate between shared and exclusive locks
                 let lock_mode = if i % 2 == 0 {
                     FileLockMode::Shared
                 } else {
                     FileLockMode::Exclusive
                 };
-                
+
                 // Try to acquire lock
                 match file.set_lock_status(lock_mode) {
                     Ok(_) => {
                         lock_successes += 1;
-                        
+
                         // Verify lock status
                         match file.get_lock_status() {
                             Ok(status) => {
                                 if status != lock_mode {
-                                    println!("Thread {}: Lock status mismatch! Expected {:?}, got {:?}",
-                                             thread_id, lock_mode, status);
+                                    println!(
+                                        "Thread {}: Lock status mismatch! Expected {:?}, got {:?}",
+                                        thread_id, lock_mode, status
+                                    );
                                 }
                             }
                             Err(e) => {
-                                println!("Thread {}: Failed to get lock status: {:?}", thread_id, e);
+                                println!(
+                                    "Thread {}: Failed to get lock status: {:?}",
+                                    thread_id, e
+                                );
                             }
                         }
-                        
+
                         // Hold lock briefly
                         thread::sleep(std::time::Duration::from_micros(100));
-                        
+
                         // Release lock
                         if let Err(e) = file.set_lock_status(FileLockMode::Unlocked) {
                             println!("Thread {}: Failed to release lock: {:?}", thread_id, e);
@@ -522,35 +557,42 @@ fn test_concurrent_lock_contention() {
                         lock_failures += 1;
                     }
                 }
-                
+
                 // Small delay between attempts
                 thread::sleep(std::time::Duration::from_micros(50));
             }
-            
+
             (thread_id, lock_attempts, lock_successes, lock_failures)
         });
         handles.push(handle);
     }
-    
+
     // Collect results
     let mut total_attempts = 0;
     let mut total_successes = 0;
     let mut total_failures = 0;
-    
+
     for handle in handles {
         let (thread_id, attempts, successes, failures) = handle.join().expect("Thread panicked");
-        println!("Thread {}: {} attempts, {} successes, {} failures",
-                 thread_id, attempts, successes, failures);
+        println!(
+            "Thread {}: {} attempts, {} successes, {} failures",
+            thread_id, attempts, successes, failures
+        );
         total_attempts += attempts;
         total_successes += successes;
         total_failures += failures;
     }
-    
-    println!("Total: {} attempts, {} successes, {} failures",
-             total_attempts, total_successes, total_failures);
-    
+
+    println!(
+        "Total: {} attempts, {} successes, {} failures",
+        total_attempts, total_successes, total_failures
+    );
+
     // We should have some successes (not all threads should fail)
-    assert!(total_successes > 0, "No threads successfully acquired locks");
+    assert!(
+        total_successes > 0,
+        "No threads successfully acquired locks"
+    );
 }
 
 /// Test concurrent file deletion while reading
@@ -561,7 +603,7 @@ fn test_concurrent_lock_contention() {
 fn test_concurrent_deletion_while_reading() {
     let fs = Arc::new(MemoryFileSystem::new());
     let path = "/test_delete.dat";
-    
+
     // Create file with data
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
@@ -571,24 +613,24 @@ fn test_concurrent_deletion_while_reading() {
         }
         file.write_all(&data).expect("Failed to write");
     }
-    
+
     let thread_count = 8;
     let barrier = Arc::new(Barrier::new(thread_count));
     let mut handles = vec![];
-    
+
     for thread_id in 0..thread_count {
         let fs_clone = Arc::clone(&fs);
         let barrier_clone = Arc::clone(&barrier);
         let path = path.to_string();
-        
+
         let handle = thread::spawn(move || {
             // Wait for all threads to be ready
             barrier_clone.wait();
-            
+
             if thread_id == 0 {
                 // Thread 0 will try to delete the file after a brief delay
                 thread::sleep(std::time::Duration::from_millis(10));
-                
+
                 match fs_clone.remove_file(&path) {
                     Ok(_) => {
                         println!("Thread {}: Successfully deleted file", thread_id);
@@ -603,13 +645,13 @@ fn test_concurrent_deletion_while_reading() {
                 // Other threads continuously read from the file
                 let mut successful_reads = 0;
                 let mut failed_reads = 0;
-                
+
                 for _ in 0..50 {
                     match fs_clone.open_file(&path) {
                         Ok(mut file) => {
                             let mut buf = vec![0u8; 100];
                             let offset = ((thread_id * 100) % 900) as u64;
-                            
+
                             match file.read_at_offset(offset, &mut buf) {
                                 Ok(_) => successful_reads += 1,
                                 Err(_) => failed_reads += 1,
@@ -620,27 +662,24 @@ fn test_concurrent_deletion_while_reading() {
                             failed_reads += 1;
                         }
                     }
-                    
+
                     thread::sleep(std::time::Duration::from_micros(100));
                 }
-                
+
                 (thread_id, "reader", successful_reads, failed_reads)
             }
         });
         handles.push(handle);
     }
-    
+
     // Collect results
     for handle in handles {
         let (thread_id, role, successful, failed) = handle.join().expect("Thread panicked");
-        println!("Thread {} ({}): {} successful, {} failed",
-                 thread_id, role, successful, failed);
+        println!(
+            "Thread {} ({}): {} successful, {} failed",
+            thread_id, role, successful, failed
+        );
     }
-    
+
     // Test passes if no threads panicked
 }
-
-
-
-
-

@@ -831,5 +831,3 @@ mod tests {
         assert!(result.active_transactions.is_empty());
     }
 }
-
-

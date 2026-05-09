@@ -106,15 +106,22 @@ impl FileSystem for LocalFileSystem {
             // Check each path component for invalid characters, skipping drive letters (e.g., "C:")
             for (i, component) in path.split(&['/', '\\'][..]).enumerate() {
                 // Skip first component if it's a drive letter (e.g., "C:")
-                if i == 0 && component.len() == 2 && component.ends_with(':') && component.chars().next().unwrap().is_ascii_alphabetic() {
+                if i == 0
+                    && component.len() == 2
+                    && component.ends_with(':')
+                    && component.chars().next().unwrap().is_ascii_alphabetic()
+                {
                     continue;
                 }
-                if component.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+                if component
+                    .chars()
+                    .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+                {
                     return Err(FileSystemError::InvalidPath(path.to_string()));
                 }
             }
         }
-        
+
         std::fs::File::options()
             .read(true)
             .write(true)
@@ -136,15 +143,22 @@ impl FileSystem for LocalFileSystem {
             // Check each path component for invalid characters, skipping drive letters (e.g., "C:")
             for (i, component) in path.split(&['/', '\\'][..]).enumerate() {
                 // Skip first component if it's a drive letter (e.g., "C:")
-                if i == 0 && component.len() == 2 && component.ends_with(':') && component.chars().next().unwrap().is_ascii_alphabetic() {
+                if i == 0
+                    && component.len() == 2
+                    && component.ends_with(':')
+                    && component.chars().next().unwrap().is_ascii_alphabetic()
+                {
                     continue;
                 }
-                if component.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+                if component
+                    .chars()
+                    .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+                {
                     return Err(FileSystemError::InvalidPath(path.to_string()));
                 }
             }
         }
-        
+
         std::fs::File::open(self.absolute_path(path))
             .map(|file| LocalFileHandle {
                 path: self.root.join(path),
@@ -247,11 +261,11 @@ impl File for LocalFileHandle {
             FileLockMode::Exclusive => self.file.lock_exclusive(),
         }
         .map_err(io_error_to_file_system_error);
-        
+
         if result.is_ok() {
             self.lock = mode;
         }
-        
+
         result
     }
 }

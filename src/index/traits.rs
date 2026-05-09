@@ -309,9 +309,17 @@ pub trait GraphAdjacencyIndex: Index {
         edge_id: &[u8],
     ) -> Result<(), Self::Error>;
 
-    fn outgoing(&self, source: &[u8], label: Option<&[u8]>) -> Result<Self::EdgeCursor<'_>, Self::Error>;
+    fn outgoing(
+        &self,
+        source: &[u8],
+        label: Option<&[u8]>,
+    ) -> Result<Self::EdgeCursor<'_>, Self::Error>;
 
-    fn incoming(&self, target: &[u8], label: Option<&[u8]>) -> Result<Self::EdgeCursor<'_>, Self::Error>;
+    fn incoming(
+        &self,
+        target: &[u8],
+        label: Option<&[u8]>,
+    ) -> Result<Self::EdgeCursor<'_>, Self::Error>;
 }
 
 /// Time-series index optimized for append, range, retention, and latest-before queries.
@@ -456,7 +464,10 @@ pub trait IndexSource {
     fn scan_rows(
         &self,
         bounds: ScanBounds,
-    ) -> Result<Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>), IndexSourceError>> + '_>, IndexSourceError>;
+    ) -> Result<
+        Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>), IndexSourceError>> + '_>,
+        IndexSourceError,
+    >;
 }
 
 #[derive(Debug)]

@@ -15,7 +15,6 @@
 //
 
 pub mod blob;
-pub mod types;
 pub mod index;
 pub mod kvdb;
 pub mod pager;
@@ -23,6 +22,7 @@ mod rest;
 pub mod snap;
 pub mod table;
 pub mod txn;
+pub mod types;
 pub mod vfs;
 pub mod wal;
 

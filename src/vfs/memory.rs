@@ -269,12 +269,12 @@ impl Read for MemoryFileHandle {
     #[tracing::instrument]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let data = self.data.read().unwrap();
-        
+
         // Handle case where cursor is beyond file size
         if self.cursor >= data.buffer.len() {
             return Ok(0);
         }
-        
+
         let len = std::cmp::min(buf.len(), data.buffer.len() - self.cursor);
         buf[..len].copy_from_slice(&data.buffer[self.cursor..self.cursor + len]);
         self.cursor += len;
@@ -371,12 +371,12 @@ impl File for MemoryFileHandle {
         let off = usize::try_from(pos).map_err(|_| {
             FileSystemError::InternalError("Position exceeds addressable memory".to_string())
         })?;
-        
+
         // Handle case where offset is beyond file size
         if off >= data.buffer.len() {
             return Ok(0);
         }
-        
+
         // Use saturating_add to prevent overflow, then clamp to buffer length
         let end = off.saturating_add(buf.len()).min(data.buffer.len());
         let len = end - off;
@@ -394,10 +394,12 @@ impl File for MemoryFileHandle {
         let off = usize::try_from(pos).map_err(|_| {
             FileSystemError::InternalError("Position exceeds addressable memory".to_string())
         })?;
-        
+
         // Use checked_add to detect overflow
         let end = off.checked_add(buf.len()).ok_or_else(|| {
-            FileSystemError::InternalError("Write operation would overflow address space".to_string())
+            FileSystemError::InternalError(
+                "Write operation would overflow address space".to_string(),
+            )
         })?;
 
         // Resize if array capacity too small

@@ -18,6 +18,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nanokv::pager::{CompressionType, EncryptionType, Page, PageType, Pager, PagerConfig};
+use nanokv::table::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalWriter, WalWriterConfig, WriteOpType};
@@ -793,7 +794,3 @@ criterion_group!(
 );
 
 criterion_main!(benches);
-
-
-
-

@@ -23,6 +23,7 @@
 use nanokv::pager::{
     CompressionType, EncryptionType, Page, PageId, PageType, Pager, PagerConfig, PagerError,
 };
+use nanokv::table::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
@@ -805,8 +806,3 @@ fn test_random_garbage_file() {
     // Should fail with some error (likely invalid magic or checksum)
     assert!(result.is_err());
 }
-
-
-
-
-

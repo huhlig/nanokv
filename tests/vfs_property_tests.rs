@@ -23,8 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // Strategy for generating valid file paths
 fn valid_file_path() -> impl Strategy<Value = String> {
-    prop::string::string_regex("/[a-zA-Z0-9_-]{1,20}\\.(txt|dat|bin)")
-        .expect("Invalid regex")
+    prop::string::string_regex("/[a-zA-Z0-9_-]{1,20}\\.(txt|dat|bin)").expect("Invalid regex")
 }
 
 // Strategy for generating file content
@@ -52,15 +51,15 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         // Write data
         file.write_all(&data).unwrap();
-        
+
         // Read back
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut read_data = Vec::new();
         file.read_to_end(&mut read_data).unwrap();
-        
+
         // Verify
         prop_assert_eq!(data, read_data);
     }
@@ -73,10 +72,10 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         let size = file.get_size().unwrap();
-        
+
         prop_assert_eq!(size, data.len() as u64);
     }
 
@@ -89,15 +88,15 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
-        
+
         let offset = offset.min(data.len());
         file.seek(SeekFrom::Start(offset as u64)).unwrap();
-        
+
         let mut read_data = Vec::new();
         file.read_to_end(&mut read_data).unwrap();
-        
+
         prop_assert_eq!(read_data, &data[offset..]);
     }
 
@@ -109,17 +108,17 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         let mut expected = Vec::new();
         for chunk in &chunks {
             file.write_all(chunk).unwrap();
             expected.extend_from_slice(chunk);
         }
-        
+
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut actual = Vec::new();
         file.read_to_end(&mut actual).unwrap();
-        
+
         prop_assert_eq!(expected, actual);
     }
 
@@ -132,13 +131,13 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&initial_data).unwrap();
         file.set_size(new_size).unwrap();
-        
+
         let actual_size = file.get_size().unwrap();
         prop_assert_eq!(actual_size, new_size);
-        
+
         // Verify content up to min(initial_size, new_size)
         let min_size = initial_data.len().min(new_size as usize);
         file.seek(SeekFrom::Start(0)).unwrap();
@@ -157,15 +156,15 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         file.seek(SeekFrom::Start(cursor_pos as u64)).unwrap();
-        
+
         let pos_before = file.stream_position().unwrap();
         let mut buf = vec![0u8; 3];
         file.read_at_offset(read_offset as u64, &mut buf).unwrap();
         let pos_after = file.stream_position().unwrap();
-        
+
         prop_assert_eq!(pos_before, pos_after);
     }
 
@@ -180,14 +179,14 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&initial_data).unwrap();
         file.seek(SeekFrom::Start(cursor_pos as u64)).unwrap();
-        
+
         let pos_before = file.stream_position().unwrap();
         file.write_to_offset(write_offset as u64, &write_data).unwrap();
         let pos_after = file.stream_position().unwrap();
-        
+
         prop_assert_eq!(pos_before, pos_after);
     }
 
@@ -195,14 +194,14 @@ proptest! {
     #[test]
     fn prop_exists_lifecycle(path in valid_file_path()) {
         let fs = MemoryFileSystem::new();
-        
+
         // Initially doesn't exist
         prop_assert!(!fs.exists(&path).unwrap());
-        
+
         // Create file
         let file = fs.create_file(&path).unwrap();
         prop_assert!(fs.exists(&path).unwrap());
-        
+
         // Remove file
         drop(file);
         fs.remove_file(&path).unwrap();
@@ -213,14 +212,14 @@ proptest! {
     #[test]
     fn prop_file_directory_exclusive(path in valid_file_path()) {
         let fs = MemoryFileSystem::new();
-        
+
         // Create as file
         let file = fs.create_file(&path).unwrap();
         prop_assert!(fs.is_file(&path).unwrap());
         prop_assert!(!fs.is_directory(&path).unwrap());
         drop(file);
         fs.remove_file(&path).unwrap();
-        
+
         // Create as directory
         let dir_path = format!("{}_dir", path);
         fs.create_directory(&dir_path).unwrap();
@@ -236,10 +235,10 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         let size = fs.filesize(&path).unwrap();
         prop_assert_eq!(size, data.len() as u64);
     }
@@ -252,10 +251,10 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         prop_assert!(file.get_size().unwrap() > 0);
-        
+
         file.truncate().unwrap();
         prop_assert_eq!(file.get_size().unwrap(), 0);
     }
@@ -267,17 +266,17 @@ proptest! {
         data in file_content()
     ) {
         let fs = MemoryFileSystem::new();
-        
+
         // Create and write
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         // Open and read
         let mut file = fs.open_file(&path).unwrap();
         let mut read_data = Vec::new();
         file.read_to_end(&mut read_data).unwrap();
-        
+
         prop_assert_eq!(data, read_data);
     }
 
@@ -291,19 +290,19 @@ proptest! {
     ) {
         let fs = MemoryFileSystem::new();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&initial_data).unwrap();
         file.write_to_offset(offset as u64, &patch_data).unwrap();
-        
+
         // Build expected result
         let mut expected = initial_data.clone();
         expected[offset..offset + patch_data.len()].copy_from_slice(&patch_data);
-        
+
         // Read and verify
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut actual = Vec::new();
         file.read_to_end(&mut actual).unwrap();
-        
+
         prop_assert_eq!(expected, actual);
     }
 
@@ -314,16 +313,16 @@ proptest! {
         data in file_content()
     ) {
         let fs = MemoryFileSystem::new();
-        
+
         // Create and write with first handle
         let mut file1 = fs.create_file(&path).unwrap();
         file1.write_all(&data).unwrap();
-        
+
         // Open second handle and read
         let mut file2 = fs.open_file(&path).unwrap();
         let mut read_data = Vec::new();
         file2.read_to_end(&mut read_data).unwrap();
-        
+
         prop_assert_eq!(data, read_data);
     }
 }
@@ -333,16 +332,16 @@ proptest! {
 fn test_empty_file_operations() {
     let fs = MemoryFileSystem::new();
     let path = "/empty.txt";
-    
+
     let mut file = fs.create_file(path).unwrap();
     assert_eq!(file.get_size().unwrap(), 0);
-    
+
     // Reading empty file should return 0 bytes
     let mut buf = Vec::new();
     let n = file.read_to_end(&mut buf).unwrap();
     assert_eq!(n, 0);
     assert!(buf.is_empty());
-    
+
     // Seeking in empty file
     file.seek(SeekFrom::Start(0)).unwrap();
     file.seek(SeekFrom::End(0)).unwrap();
@@ -352,17 +351,17 @@ fn test_empty_file_operations() {
 fn test_large_file_operations() {
     let fs = MemoryFileSystem::new();
     let path = "/large.bin";
-    
+
     let mut file = fs.create_file(path).unwrap();
-    
+
     // Write 1MB of data
     let chunk = vec![0xAB; 1024];
     for _ in 0..1024 {
         file.write_all(&chunk).unwrap();
     }
-    
+
     assert_eq!(file.get_size().unwrap(), 1024 * 1024);
-    
+
     // Verify content
     file.seek(SeekFrom::Start(0)).unwrap();
     let mut buf = vec![0u8; 1024];
@@ -374,25 +373,22 @@ fn test_large_file_operations() {
 fn test_boundary_seek_positions() {
     let fs = MemoryFileSystem::new();
     let path = "/boundary.txt";
-    
+
     let mut file = fs.create_file(path).unwrap();
     file.write_all(b"0123456789").unwrap();
-    
+
     // Seek to exact end
     let pos = file.seek(SeekFrom::End(0)).unwrap();
     assert_eq!(pos, 10);
-    
+
     // Seek to exact start
     let pos = file.seek(SeekFrom::Start(0)).unwrap();
     assert_eq!(pos, 0);
-    
+
     // Seek to middle
     let pos = file.seek(SeekFrom::Start(5)).unwrap();
     assert_eq!(pos, 5);
 }
-
-
-
 
 // ============================================================================
 // LocalFileSystem Property Tests
@@ -426,18 +422,18 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         // Write data
         file.write_all(&data).unwrap();
-        
+
         // Read back
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut read_data = Vec::new();
         file.read_to_end(&mut read_data).unwrap();
-        
+
         // Verify
         prop_assert_eq!(data, read_data);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -450,12 +446,12 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         let size = file.get_size().unwrap();
-        
+
         prop_assert_eq!(size, data.len() as u64);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -469,17 +465,17 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
-        
+
         let offset = offset.min(data.len());
         file.seek(SeekFrom::Start(offset as u64)).unwrap();
-        
+
         let mut read_data = Vec::new();
         file.read_to_end(&mut read_data).unwrap();
-        
+
         prop_assert_eq!(read_data, &data[offset..]);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -492,19 +488,19 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         let mut expected = Vec::new();
         for chunk in &chunks {
             file.write_all(chunk).unwrap();
             expected.extend_from_slice(chunk);
         }
-        
+
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut actual = Vec::new();
         file.read_to_end(&mut actual).unwrap();
-        
+
         prop_assert_eq!(expected, actual);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -518,20 +514,20 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&initial_data).unwrap();
         file.set_size(new_size).unwrap();
-        
+
         let actual_size = file.get_size().unwrap();
         prop_assert_eq!(actual_size, new_size);
-        
+
         // Verify content up to min(initial_size, new_size)
         let min_size = initial_data.len().min(new_size as usize);
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut buf = vec![0u8; min_size];
         file.read_exact(&mut buf).unwrap();
         prop_assert_eq!(&buf[..], &initial_data[..min_size]);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -546,17 +542,17 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         file.seek(SeekFrom::Start(cursor_pos as u64)).unwrap();
-        
+
         let pos_before = file.stream_position().unwrap();
         let mut buf = vec![0u8; 3];
         file.read_at_offset(read_offset as u64, &mut buf).unwrap();
         let pos_after = file.stream_position().unwrap();
-        
+
         prop_assert_eq!(pos_before, pos_after);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -572,16 +568,16 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&initial_data).unwrap();
         file.seek(SeekFrom::Start(cursor_pos as u64)).unwrap();
-        
+
         let pos_before = file.stream_position().unwrap();
         file.write_to_offset(write_offset as u64, &write_data).unwrap();
         let pos_after = file.stream_position().unwrap();
-        
+
         prop_assert_eq!(pos_before, pos_after);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -590,19 +586,19 @@ proptest! {
     #[test]
     fn prop_local_exists_lifecycle(path in valid_file_path()) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Initially doesn't exist
         prop_assert!(!fs.exists(&path).unwrap());
-        
+
         // Create file
         let file = fs.create_file(&path).unwrap();
         prop_assert!(fs.exists(&path).unwrap());
-        
+
         // Remove file
         drop(file);
         fs.remove_file(&path).unwrap();
         prop_assert!(!fs.exists(&path).unwrap());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -610,20 +606,20 @@ proptest! {
     #[test]
     fn prop_local_file_directory_exclusive(path in valid_file_path()) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create as file
         let file = fs.create_file(&path).unwrap();
         prop_assert!(fs.is_file(&path).unwrap());
         prop_assert!(!fs.is_directory(&path).unwrap());
         drop(file);
         fs.remove_file(&path).unwrap();
-        
+
         // Create as directory
         let dir_path = format!("{}_dir", path);
         fs.create_directory(&dir_path).unwrap();
         prop_assert!(!fs.is_file(&dir_path).unwrap());
         prop_assert!(fs.is_directory(&dir_path).unwrap());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -635,13 +631,13 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         let size = fs.filesize(&path).unwrap();
         prop_assert_eq!(size, data.len() as u64);
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -653,13 +649,13 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
         prop_assert!(file.get_size().unwrap() > 0);
-        
+
         file.truncate().unwrap();
         prop_assert_eq!(file.get_size().unwrap(), 0);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -671,19 +667,19 @@ proptest! {
         data in file_content()
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create and write
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         // Open and read
         let mut file = fs.open_file(&path).unwrap();
         let mut read_data = Vec::new();
         file.read_to_end(&mut read_data).unwrap();
-        
+
         prop_assert_eq!(data, read_data);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -698,21 +694,21 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&initial_data).unwrap();
         file.write_to_offset(offset as u64, &patch_data).unwrap();
-        
+
         // Build expected result
         let mut expected = initial_data.clone();
         expected[offset..offset + patch_data.len()].copy_from_slice(&patch_data);
-        
+
         // Read and verify
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut actual = Vec::new();
         file.read_to_end(&mut actual).unwrap();
-        
+
         prop_assert_eq!(expected, actual);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -724,18 +720,18 @@ proptest! {
         data in file_content()
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create and write with first handle
         let mut file1 = fs.create_file(&path).unwrap();
         file1.write_all(&data).unwrap();
-        
+
         // Open second handle and read
         let mut file2 = fs.open_file(&path).unwrap();
         let mut read_data = Vec::new();
         file2.read_to_end(&mut read_data).unwrap();
-        
+
         prop_assert_eq!(data, read_data);
-        
+
         drop(file1);
         drop(file2);
         cleanup_temp_fs(&temp_dir);
@@ -747,20 +743,20 @@ proptest! {
 fn test_local_empty_file_operations() {
     let (fs, temp_dir) = create_temp_fs();
     let path = "/empty.txt";
-    
+
     let mut file = fs.create_file(path).unwrap();
     assert_eq!(file.get_size().unwrap(), 0);
-    
+
     // Reading empty file should return 0 bytes
     let mut buf = Vec::new();
     let n = file.read_to_end(&mut buf).unwrap();
     assert_eq!(n, 0);
     assert!(buf.is_empty());
-    
+
     // Seeking in empty file
     file.seek(SeekFrom::Start(0)).unwrap();
     file.seek(SeekFrom::End(0)).unwrap();
-    
+
     drop(file);
     cleanup_temp_fs(&temp_dir);
 }
@@ -769,23 +765,23 @@ fn test_local_empty_file_operations() {
 fn test_local_large_file_operations() {
     let (fs, temp_dir) = create_temp_fs();
     let path = "/large.bin";
-    
+
     let mut file = fs.create_file(path).unwrap();
-    
+
     // Write 1MB of data
     let chunk = vec![0xAB; 1024];
     for _ in 0..1024 {
         file.write_all(&chunk).unwrap();
     }
-    
+
     assert_eq!(file.get_size().unwrap(), 1024 * 1024);
-    
+
     // Verify content
     file.seek(SeekFrom::Start(0)).unwrap();
     let mut buf = vec![0u8; 1024];
     file.read_exact(&mut buf).unwrap();
     assert_eq!(buf, chunk);
-    
+
     drop(file);
     cleanup_temp_fs(&temp_dir);
 }
@@ -794,28 +790,25 @@ fn test_local_large_file_operations() {
 fn test_local_boundary_seek_positions() {
     let (fs, temp_dir) = create_temp_fs();
     let path = "/boundary.txt";
-    
+
     let mut file = fs.create_file(path).unwrap();
     file.write_all(b"0123456789").unwrap();
-    
+
     // Seek to exact end
     let pos = file.seek(SeekFrom::End(0)).unwrap();
     assert_eq!(pos, 10);
-    
+
     // Seek to exact start
     let pos = file.seek(SeekFrom::Start(0)).unwrap();
     assert_eq!(pos, 0);
-    
+
     // Seek to middle
     let pos = file.seek(SeekFrom::Start(5)).unwrap();
     assert_eq!(pos, 5);
-    
+
     drop(file);
     cleanup_temp_fs(&temp_dir);
 }
-
-
-
 
 // ============================================================================
 // OS-Specific Property Tests for LocalFileSystem
@@ -839,18 +832,18 @@ proptest! {
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         // Set permissions
         let abs_path = std::path::Path::new(&temp_dir).join(path.trim_start_matches('/'));
         let mut perms = std::fs::metadata(&abs_path).unwrap().permissions();
         perms.set_mode(mode);
         std::fs::set_permissions(&abs_path, perms).unwrap();
-        
+
         // Verify permissions
         let metadata = std::fs::metadata(&abs_path).unwrap();
         let actual_mode = metadata.permissions().mode() & 0o777;
         prop_assert_eq!(actual_mode, mode);
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -864,19 +857,19 @@ proptest! {
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         // Make file read-only
         let abs_path = std::path::Path::new(&temp_dir).join(path.trim_start_matches('/'));
         let mut perms = std::fs::metadata(&abs_path).unwrap().permissions();
         perms.set_mode(0o444);
         std::fs::set_permissions(&abs_path, perms).unwrap();
-        
+
         // Try to open for writing - should fail
         let result = std::fs::OpenOptions::new()
             .write(true)
             .open(&abs_path);
         prop_assert!(result.is_err());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 }
@@ -899,19 +892,19 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let fs = Arc::new(fs);
-        
+
         // Create and write file
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         // Spawn multiple readers
         let mut handles = vec![];
         for _ in 0..4 {
             let fs_clone = Arc::clone(&fs);
             let path_clone = path.clone();
             let data_clone = data.clone();
-            
+
             let handle = thread::spawn(move || {
                 let mut file = fs_clone.open_file(&path_clone).unwrap();
                 let mut read_data = Vec::new();
@@ -920,12 +913,12 @@ proptest! {
             });
             handles.push(handle);
         }
-        
+
         // Wait for all threads
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -937,34 +930,34 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let fs = Arc::new(fs);
-        
+
         // Ensure unique paths
         let paths: Vec<String> = paths.into_iter()
             .enumerate()
             .map(|(i, p)| format!("{}_file{}", p, i))
             .collect();
-        
+
         let data_sets = data_sets.into_iter().take(paths.len()).collect::<Vec<_>>();
-        
+
         // Spawn writers for different files
         let mut handles = vec![];
         for (path, data) in paths.iter().zip(data_sets.iter()) {
             let fs_clone = Arc::clone(&fs);
             let path_clone = path.clone();
             let data_clone = data.clone();
-            
+
             let handle = thread::spawn(move || {
                 let mut file = fs_clone.create_file(&path_clone).unwrap();
                 file.write_all(&data_clone).unwrap();
             });
             handles.push(handle);
         }
-        
+
         // Wait for all threads
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         // Verify all files
         for (path, expected_data) in paths.iter().zip(data_sets.iter()) {
             let mut file = fs.open_file(path).unwrap();
@@ -972,7 +965,7 @@ proptest! {
             file.read_to_end(&mut actual_data).unwrap();
             prop_assert_eq!(&actual_data, expected_data);
         }
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -984,23 +977,23 @@ proptest! {
         data in file_content()
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create file and acquire exclusive lock
         let mut file1 = fs.create_file(&path).unwrap();
         file1.write_all(&data).unwrap();
         file1.set_lock_status(FileLockMode::Exclusive).unwrap();
-        
+
         // Verify lock is set
         prop_assert_eq!(file1.get_lock_status().unwrap(), FileLockMode::Exclusive);
-        
+
         // Release lock and verify
         file1.set_lock_status(FileLockMode::Unlocked).unwrap();
         prop_assert_eq!(file1.get_lock_status().unwrap(), FileLockMode::Unlocked);
-        
+
         // Test shared lock
         file1.set_lock_status(FileLockMode::Shared).unwrap();
         prop_assert_eq!(file1.get_lock_status().unwrap(), FileLockMode::Shared);
-        
+
         // Clean up
         file1.set_lock_status(FileLockMode::Unlocked).unwrap();
         drop(file1);
@@ -1019,10 +1012,10 @@ proptest! {
     #[test]
     fn prop_local_open_nonexistent(path in valid_file_path()) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         let result = fs.open_file(&path);
         prop_assert!(result.is_err());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -1033,16 +1026,16 @@ proptest! {
         data in file_content()
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create first file
         let mut file1 = fs.create_file(&path).unwrap();
         file1.write_all(&data).unwrap();
         drop(file1);
-        
+
         // Try to create again - should fail
         let result = fs.create_file(&path);
         prop_assert!(result.is_err());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -1050,10 +1043,10 @@ proptest! {
     #[test]
     fn prop_local_remove_nonexistent(path in valid_file_path()) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         let result = fs.remove_file(&path);
         prop_assert!(result.is_err());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -1065,17 +1058,17 @@ proptest! {
     ) {
         let (fs, temp_dir) = create_temp_fs();
         let mut file = fs.create_file(&path).unwrap();
-        
+
         file.write_all(&data).unwrap();
-        
+
         // Seek beyond end
         file.seek(SeekFrom::Start(data.len() as u64 + 100)).unwrap();
-        
+
         // Try to read - should return 0 bytes
         let mut buf = vec![0u8; 100];
         let n = file.read(&mut buf).unwrap();
         prop_assert_eq!(n, 0);
-        
+
         drop(file);
         cleanup_temp_fs(&temp_dir);
     }
@@ -1086,13 +1079,13 @@ proptest! {
         invalid_path in prop::string::string_regex(".*[<>:\"|?*].*").expect("Invalid regex")
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Try to create file with invalid path
         let result = fs.create_file(&invalid_path);
         // On Windows, this should fail. On Unix, some chars are valid
         #[cfg(windows)]
         prop_assert!(result.is_err());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -1103,20 +1096,20 @@ proptest! {
         data in file_content()
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create a file
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&data).unwrap();
         drop(file);
-        
+
         // Try to list it as directory - should fail
         let result = fs.list_directory(&path);
         prop_assert!(result.is_err());
-        
+
         // Try to remove it as directory - should fail
         let result = fs.remove_directory(&path);
         prop_assert!(result.is_err());
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -1124,22 +1117,22 @@ proptest! {
     #[test]
     fn prop_local_directory_not_file(path in valid_file_path()) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create a directory
         let dir_path = format!("{}_dir", path);
         fs.create_directory(&dir_path).unwrap();
-        
+
         // Try to open it as file - should fail
         let result = fs.open_file(&dir_path);
         prop_assert!(result.is_err());
-        
+
         // Try to get filesize - on Unix should fail, on Windows may succeed
         #[cfg(unix)]
         {
             let result = fs.filesize(&dir_path);
             prop_assert!(result.is_err());
         }
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 
@@ -1151,25 +1144,25 @@ proptest! {
         write_data in file_content().prop_filter("Non-empty", |d| !d.is_empty())
     ) {
         let (fs, temp_dir) = create_temp_fs();
-        
+
         // Create and write initial data
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(&initial_data).unwrap();
         drop(file);
-        
+
         // Open read-only
         let abs_path = std::path::Path::new(&temp_dir).join(path.trim_start_matches('/'));
         let result = std::fs::OpenOptions::new()
             .read(true)
             .write(false)
             .open(&abs_path);
-        
+
         if let Ok(mut file) = result {
             // Try to write - should fail
             let write_result = file.write_all(&write_data);
             prop_assert!(write_result.is_err());
         }
-        
+
         cleanup_temp_fs(&temp_dir);
     }
 }
@@ -1181,47 +1174,47 @@ proptest! {
 #[test]
 fn test_local_nested_directory_creation() {
     let (fs, temp_dir) = create_temp_fs();
-    
+
     // Create nested directories
     let nested_path = "/level1/level2/level3";
     fs.create_directory_all(nested_path).unwrap();
-    
+
     assert!(fs.exists(nested_path).unwrap());
     assert!(fs.is_directory(nested_path).unwrap());
-    
+
     // Create file in nested directory
     let file_path = format!("{}/test.txt", nested_path);
     let mut file = fs.create_file(&file_path).unwrap();
     file.write_all(b"nested file").unwrap();
     drop(file);
-    
+
     assert!(fs.exists(&file_path).unwrap());
     assert!(fs.is_file(&file_path).unwrap());
-    
+
     cleanup_temp_fs(&temp_dir);
 }
 
 #[test]
 fn test_local_directory_listing() {
     let (fs, temp_dir) = create_temp_fs();
-    
+
     // Create multiple files
     for i in 0..5 {
         let path = format!("/file{}.txt", i);
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(format!("content {}", i).as_bytes()).unwrap();
     }
-    
+
     // List directory
     let entries = fs.list_directory("/").unwrap();
     assert_eq!(entries.len(), 5);
-    
+
     // Verify all files are listed
     for i in 0..5 {
         let filename = format!("file{}.txt", i);
         assert!(entries.contains(&filename));
     }
-    
+
     cleanup_temp_fs(&temp_dir);
 }
 
@@ -1229,16 +1222,16 @@ fn test_local_directory_listing() {
 fn test_local_sync_operations() {
     let (fs, temp_dir) = create_temp_fs();
     let path = "/sync_test.txt";
-    
+
     let mut file = fs.create_file(path).unwrap();
     file.write_all(b"test data").unwrap();
-    
+
     // Test sync_data
     file.sync_data().unwrap();
-    
+
     // Test sync_all
     file.sync_all().unwrap();
-    
+
     drop(file);
     cleanup_temp_fs(&temp_dir);
 }
@@ -1247,16 +1240,16 @@ fn test_local_sync_operations() {
 fn test_local_file_lock_modes() {
     let (fs, temp_dir) = create_temp_fs();
     let path = "/lock_test.txt";
-    
+
     let mut file = fs.create_file(path).unwrap();
     file.write_all(b"lock test").unwrap();
-    
+
     // Test unlocked state
     assert_eq!(file.get_lock_status().unwrap(), FileLockMode::Unlocked);
-    
+
     // Note: File locking behavior is platform-specific and may block
     // We just verify the basic unlock state works
-    
+
     drop(file);
     cleanup_temp_fs(&temp_dir);
 }
@@ -1265,25 +1258,20 @@ fn test_local_file_lock_modes() {
 fn test_local_cleanup_robustness() {
     // Test that cleanup works even with nested structures
     let (fs, temp_dir) = create_temp_fs();
-    
+
     // Create complex structure
     fs.create_directory_all("/a/b/c").unwrap();
     fs.create_directory_all("/x/y/z").unwrap();
-    
+
     for dir in &["/a", "/a/b", "/a/b/c", "/x", "/x/y", "/x/y/z"] {
         let path = format!("{}/file.txt", dir);
         let mut file = fs.create_file(&path).unwrap();
         file.write_all(b"test").unwrap();
     }
-    
+
     // Cleanup should handle everything
     cleanup_temp_fs(&temp_dir);
-    
+
     // Verify cleanup
     assert!(!std::path::Path::new(&temp_dir).exists());
 }
-
-
-
-
-

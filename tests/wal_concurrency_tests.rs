@@ -934,8 +934,3 @@ fn test_lsn_monotonicity_stress() {
         (num_threads * writes_per_thread) as usize
     );
 }
-
-
-
-
-
