@@ -36,7 +36,7 @@ use crate::table::{
     TableWriter, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{Bound, KeyBuf, ScanBounds, ValueBuf};
+use crate::types::{Bound, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use std::sync::Arc;
@@ -1152,6 +1152,143 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
             }
         }
     }
+
+    /// Navigate to the leftmost leaf page.
+    fn find_leftmost_leaf(&self) -> TableResult<PageId> {
+        let mut current_page_id = self.table.root_page_id;
+
+        loop {
+            let node = self.table.read_node(current_page_id)?;
+            match node {
+                BTreeNode::Internal { entries, .. } => {
+                    // Follow leftmost child
+                    if entries.is_empty() {
+                        return Err(crate::table::TableError::Corruption(
+                            "Empty internal node".to_string(),
+                        ));
+                    }
+                    current_page_id = entries[0].child_page_id;
+                }
+                BTreeNode::Leaf { .. } => {
+                    return Ok(current_page_id);
+                }
+            }
+        }
+    }
+
+    /// Navigate to the rightmost leaf page.
+    fn find_rightmost_leaf(&self) -> TableResult<PageId> {
+        let mut current_page_id = self.table.root_page_id;
+
+        loop {
+            let node = self.table.read_node(current_page_id)?;
+            match node {
+                BTreeNode::Internal { rightmost_child, .. } => {
+                    // Follow rightmost child
+                    current_page_id = rightmost_child;
+                }
+                BTreeNode::Leaf { .. } => {
+                    return Ok(current_page_id);
+                }
+            }
+        }
+    }
+
+    /// Load the current entry at the cursor position, checking MVCC visibility.
+    fn load_current_entry(&mut self) -> TableResult<()> {
+        let node = self.table.read_node(self.current_page_id)?;
+
+        if let BTreeNode::Leaf { entries, .. } = node {
+            if self.current_position < entries.len() {
+                let entry = &entries[self.current_position];
+                
+                // Check bounds
+                if !self.is_in_bounds(&entry.key) {
+                    self.exhausted = true;
+                    self.current_key = None;
+                    self.current_value = None;
+                    return Ok(());
+                }
+
+                // Check MVCC visibility
+                let snapshot = Snapshot::new(
+                    crate::snap::SnapshotId::from(0),
+                    String::new(),
+                    self.snapshot_lsn,
+                    0,
+                    0,
+                    Vec::new(),
+                );
+
+                if let Some(value) = entry.chain.find_visible_version(&snapshot) {
+                    self.current_key = Some(entry.key.clone());
+                    self.current_value = Some(value.to_vec());
+                } else {
+                    // Version not visible, mark as exhausted at this position
+                    self.current_key = None;
+                    self.current_value = None;
+                }
+            } else {
+                self.current_key = None;
+                self.current_value = None;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Advance to the next visible entry, skipping invisible versions.
+    fn advance_to_next_visible(&mut self) -> TableResult<()> {
+        loop {
+            let node = self.table.read_node(self.current_page_id)?;
+
+            if let BTreeNode::Leaf { entries, next_leaf } = node {
+                // Try to advance within current leaf
+                while self.current_position < entries.len() {
+                    self.load_current_entry()?;
+                    if self.current_key.is_some() {
+                        return Ok(());
+                    }
+                    self.current_position += 1;
+                }
+
+                // Move to next leaf if available
+                if next_leaf.as_u64() != 0 {
+                    self.current_page_id = next_leaf;
+                    self.current_position = 0;
+                } else {
+                    self.exhausted = true;
+                    return Ok(());
+                }
+            } else {
+                return Err(crate::table::TableError::Corruption(
+                    "Expected leaf node".to_string(),
+                ));
+            }
+        }
+    }
+
+    /// Move backward to the previous visible entry.
+    fn retreat_to_prev_visible(&mut self) -> TableResult<()> {
+        loop {
+            // Try to move backward within current leaf
+            if self.current_position > 0 {
+                self.current_position -= 1;
+                self.load_current_entry()?;
+                if self.current_key.is_some() {
+                    return Ok(());
+                }
+            } else {
+                // Need to find previous leaf - this requires parent tracking
+                // For now, mark as exhausted (reverse iteration without parent pointers
+                // would require maintaining a stack or scanning from root)
+                self.exhausted = true;
+                self.current_key = None;
+                self.current_value = None;
+                return Ok(());
+            }
+        }
+    }
 }
 
 impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
@@ -1168,38 +1305,161 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn next(&mut self) -> TableResult<()> {
-        // TODO: Implement cursor navigation
-        self.exhausted = true;
-        Ok(())
+        if self.exhausted {
+            return Ok(());
+        }
+
+        // Move to next position
+        self.current_position += 1;
+        self.advance_to_next_visible()
     }
 
     fn prev(&mut self) -> TableResult<()> {
-        // TODO: Implement reverse cursor navigation
-        self.exhausted = true;
-        Ok(())
+        if self.exhausted {
+            return Ok(());
+        }
+
+        self.retreat_to_prev_visible()
     }
 
-    fn seek(&mut self, _key: &[u8]) -> TableResult<()> {
-        // TODO: Implement seek
-        self.exhausted = true;
-        Ok(())
+    fn seek(&mut self, key: &[u8]) -> TableResult<()> {
+        // Reset exhausted state
+        self.exhausted = false;
+
+        // Check if key is within bounds
+        if !self.is_in_bounds(key) {
+            // Position at first entry if key is before start bound
+            match &self.bounds {
+                ScanBounds::Range { start, .. } => {
+                    let before_start = match start {
+                        Bound::Included(k) => key < k.0.as_slice(),
+                        Bound::Excluded(k) => key <= k.0.as_slice(),
+                        Bound::Unbounded => false,
+                    };
+                    if before_start {
+                        return self.first();
+                    }
+                }
+                _ => {}
+            }
+            
+            // Key is after end bound
+            self.exhausted = true;
+            self.current_key = None;
+            self.current_value = None;
+            return Ok(());
+        }
+
+        // Use tree search to find the leaf and position
+        let (leaf_page_id, pos) = self.table.search(key)?;
+        self.current_page_id = leaf_page_id;
+        self.current_position = pos;
+
+        // Load the entry at this position (or advance if not visible)
+        self.advance_to_next_visible()
     }
 
-    fn seek_for_prev(&mut self, _key: &[u8]) -> TableResult<()> {
-        // TODO: Implement seek_for_prev
-        self.exhausted = true;
+    fn seek_for_prev(&mut self, key: &[u8]) -> TableResult<()> {
+        // Reset exhausted state
+        self.exhausted = false;
+
+        // Check if key is within bounds
+        if !self.is_in_bounds(key) {
+            // Position at last entry if key is after end bound
+            match &self.bounds {
+                ScanBounds::Range { end, .. } => {
+                    let after_end = match end {
+                        Bound::Included(k) => key > k.0.as_slice(),
+                        Bound::Excluded(k) => key >= k.0.as_slice(),
+                        Bound::Unbounded => false,
+                    };
+                    if after_end {
+                        return self.last();
+                    }
+                }
+                _ => {}
+            }
+            
+            // Key is before start bound
+            self.exhausted = true;
+            self.current_key = None;
+            self.current_value = None;
+            return Ok(());
+        }
+
+        // Use tree search to find the leaf and position
+        let (leaf_page_id, pos) = self.table.search(key)?;
+        self.current_page_id = leaf_page_id;
+        
+        // If we found exact match or position after, move back one
+        let node = self.table.read_node(leaf_page_id)?;
+        if let BTreeNode::Leaf { entries, .. } = node {
+            if pos < entries.len() && entries[pos].key.as_slice() >= key {
+                // Found exact match or next key, position at previous
+                if pos > 0 {
+                    self.current_position = pos - 1;
+                    self.load_current_entry()?;
+                } else {
+                    // At start of leaf, need previous leaf (not implemented without parent pointers)
+                    self.exhausted = true;
+                    self.current_key = None;
+                    self.current_value = None;
+                }
+            } else {
+                // Position is at insertion point, which is the previous entry
+                if pos > 0 {
+                    self.current_position = pos - 1;
+                    self.load_current_entry()?;
+                } else {
+                    self.exhausted = true;
+                    self.current_key = None;
+                    self.current_value = None;
+                }
+            }
+        }
+
         Ok(())
     }
 
     fn first(&mut self) -> TableResult<()> {
-        // TODO: Implement first
-        self.exhausted = true;
-        Ok(())
+        // Reset exhausted state
+        self.exhausted = false;
+
+        // Navigate to leftmost leaf
+        self.current_page_id = self.find_leftmost_leaf()?;
+        self.current_position = 0;
+
+        // Find first visible entry within bounds
+        self.advance_to_next_visible()
     }
 
     fn last(&mut self) -> TableResult<()> {
-        // TODO: Implement last
-        self.exhausted = true;
+        // Reset exhausted state
+        self.exhausted = false;
+
+        // Navigate to rightmost leaf
+        self.current_page_id = self.find_rightmost_leaf()?;
+        
+        // Find last entry in the leaf
+        let node = self.table.read_node(self.current_page_id)?;
+        if let BTreeNode::Leaf { entries, .. } = node {
+            if entries.is_empty() {
+                self.exhausted = true;
+                self.current_key = None;
+                self.current_value = None;
+                return Ok(());
+            }
+            
+            // Start from last entry and work backwards to find visible entry
+            self.current_position = entries.len() - 1;
+            self.load_current_entry()?;
+            
+            // If not visible or out of bounds, retreat
+            if self.current_key.is_none() {
+                self.retreat_to_prev_visible()?;
+            }
+        }
+
         Ok(())
     }
 
