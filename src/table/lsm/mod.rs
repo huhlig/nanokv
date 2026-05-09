@@ -52,6 +52,8 @@ pub use self::config::{
     BloomFilterConfig, BlockCacheConfig, CacheEvictionPolicy, CompactionConfig,
     CompactionStrategy, LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
 };
-pub use self::sstable::{SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter};
+pub use self::sstable::{
+    DataBlock, SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter,
+};
 
 // Made with Bob

@@ -49,6 +49,7 @@ use crate::table::TableResult;
 use crate::txn::VersionChain;
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// SSTable identifier (unique within a table).
@@ -283,6 +284,294 @@ impl SStableFooter {
     }
 }
 
+/// Data block containing sorted key-value pairs with version chains.
+///
+/// Format:
+/// - Header: num_entries (4 bytes) + compressed_flag (1 byte) + checksum (32 bytes)
+/// - Entries: For each entry:
+///   - key_len (4 bytes)
+///   - key (variable)
+///   - version_chain_len (4 bytes)
+///   - serialized_version_chain (variable, bincode format)
+///
+/// Entries are stored in sorted order by key for efficient binary search.
+#[derive(Clone, Debug)]
+pub struct DataBlock {
+    /// Sorted entries (key, version chain)
+    entries: Vec<(Vec<u8>, VersionChain)>,
+}
+
+impl DataBlock {
+    /// Header size: num_entries (4) + compressed_flag (1) + checksum (32)
+    const HEADER_SIZE: usize = 37;
+
+    /// Create a new empty data block.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Create a data block from sorted entries.
+    ///
+    /// # Panics
+    /// Panics if entries are not sorted by key.
+    pub fn from_entries(entries: Vec<(Vec<u8>, VersionChain)>) -> Self {
+        // Verify entries are sorted
+        for i in 1..entries.len() {
+            assert!(
+                entries[i - 1].0 < entries[i].0,
+                "Entries must be sorted by key"
+            );
+        }
+        Self { entries }
+    }
+
+    /// Add an entry to the block.
+    ///
+    /// # Errors
+    /// Returns error if key is not greater than the last key (entries must be sorted).
+    pub fn add(&mut self, key: Vec<u8>, chain: VersionChain) -> TableResult<()> {
+        if let Some((last_key, _)) = self.entries.last() {
+            if &key <= last_key {
+                return Err(crate::table::TableError::Other(
+                    "Keys must be added in sorted order".to_string(),
+                ));
+            }
+        }
+        self.entries.push((key, chain));
+        Ok(())
+    }
+
+    /// Get the number of entries in this block.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the block is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Get all entries in the block.
+    pub fn entries(&self) -> &[(Vec<u8>, VersionChain)] {
+        &self.entries
+    }
+
+    /// Get the first key in the block (smallest).
+    pub fn first_key(&self) -> Option<&[u8]> {
+        self.entries.first().map(|(k, _)| k.as_slice())
+    }
+
+    /// Get the last key in the block (largest).
+    pub fn last_key(&self) -> Option<&[u8]> {
+        self.entries.last().map(|(k, _)| k.as_slice())
+    }
+
+    /// Binary search for a key in the block.
+    ///
+    /// Returns the index of the entry if found, or None if not found.
+    pub fn search(&self, key: &[u8]) -> Option<usize> {
+        self.entries
+            .binary_search_by(|(k, _)| k.as_slice().cmp(key))
+            .ok()
+    }
+
+    /// Get the version chain for a key.
+    pub fn get(&self, key: &[u8]) -> Option<&VersionChain> {
+        self.search(key).map(|idx| &self.entries[idx].1)
+    }
+
+    /// Serialize the data block to bytes.
+    ///
+    /// Format:
+    /// - num_entries (4 bytes)
+    /// - compressed_flag (1 byte) - 0 for uncompressed, 1 for compressed
+    /// - checksum (32 bytes) - SHA256 of the data portion
+    /// - For each entry:
+    ///   - key_len (4 bytes)
+    ///   - key (variable)
+    ///   - version_chain_len (4 bytes)
+    ///   - serialized_version_chain (variable, bincode)
+    pub fn to_bytes(&self, compress: bool) -> TableResult<Vec<u8>> {
+        // Serialize entries
+        let mut data = Vec::new();
+        for (key, chain) in &self.entries {
+            // Key length and data
+            data.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            data.extend_from_slice(key);
+
+            // Serialize version chain using bincode
+            let chain_bytes = bincode::serialize(chain).map_err(|e| {
+                crate::table::TableError::Other(format!("Failed to serialize version chain: {}", e))
+            })?;
+
+            // Version chain length and data
+            data.extend_from_slice(&(chain_bytes.len() as u32).to_le_bytes());
+            data.extend_from_slice(&chain_bytes);
+        }
+
+        // Optionally compress data
+        let (final_data, compressed_flag) = if compress && data.len() > 128 {
+            // Only compress if data is larger than 128 bytes
+            match lz4_flex::compress_prepend_size(&data) {
+                compressed if compressed.len() < data.len() => (compressed, 1u8),
+                _ => (data, 0u8), // Compression didn't help, use uncompressed
+            }
+        } else {
+            (data, 0u8)
+        };
+
+        // Calculate checksum of the data
+        let mut hasher = Sha256::new();
+        hasher.update(&final_data);
+        let checksum: [u8; 32] = hasher.finalize().into();
+
+        // Build final block with header
+        let mut block = Vec::with_capacity(Self::HEADER_SIZE + final_data.len());
+        
+        // Header
+        block.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        block.push(compressed_flag);
+        block.extend_from_slice(&checksum);
+        
+        // Data
+        block.extend_from_slice(&final_data);
+
+        Ok(block)
+    }
+
+    /// Deserialize a data block from bytes.
+    ///
+    /// Validates the checksum and decompresses if necessary.
+    pub fn from_bytes(bytes: &[u8]) -> TableResult<Self> {
+        if bytes.len() < Self::HEADER_SIZE {
+            return Err(crate::table::TableError::Corruption(
+                "Data block too small".to_string(),
+            ));
+        }
+
+        let mut offset = 0;
+
+        // Parse header
+        let num_entries = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        let compressed_flag = bytes[offset];
+        offset += 1;
+
+        let mut checksum = [0u8; 32];
+        checksum.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
+
+        // Extract data portion
+        let data_bytes = &bytes[offset..];
+
+        // Verify checksum
+        let mut hasher = Sha256::new();
+        hasher.update(data_bytes);
+        let computed_checksum: [u8; 32] = hasher.finalize().into();
+        
+        if checksum != computed_checksum {
+            return Err(crate::table::TableError::Corruption(
+                "Data block checksum mismatch".to_string(),
+            ));
+        }
+
+        // Decompress if necessary
+        let data = if compressed_flag == 1 {
+            lz4_flex::decompress_size_prepended(data_bytes).map_err(|e| {
+                crate::table::TableError::Corruption(format!("Failed to decompress data block: {}", e))
+            })?
+        } else {
+            data_bytes.to_vec()
+        };
+
+        // Deserialize entries
+        let mut entries = Vec::with_capacity(num_entries);
+        let mut offset = 0;
+
+        for _ in 0..num_entries {
+            if offset + 4 > data.len() {
+                return Err(crate::table::TableError::Corruption(
+                    "Truncated data block entry".to_string(),
+                ));
+            }
+
+            // Read key
+            let key_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+
+            if offset + key_len > data.len() {
+                return Err(crate::table::TableError::Corruption(
+                    "Truncated key in data block".to_string(),
+                ));
+            }
+
+            let key = data[offset..offset + key_len].to_vec();
+            offset += key_len;
+
+            // Read version chain
+            if offset + 4 > data.len() {
+                return Err(crate::table::TableError::Corruption(
+                    "Truncated version chain length".to_string(),
+                ));
+            }
+
+            let chain_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+
+            if offset + chain_len > data.len() {
+                return Err(crate::table::TableError::Corruption(
+                    "Truncated version chain data".to_string(),
+                ));
+            }
+
+            let chain_bytes = &data[offset..offset + chain_len];
+            offset += chain_len;
+
+            let chain: VersionChain = bincode::deserialize(chain_bytes).map_err(|e| {
+                crate::table::TableError::Corruption(format!(
+                    "Failed to deserialize version chain: {}",
+                    e
+                ))
+            })?;
+
+            entries.push((key, chain));
+        }
+
+        // Verify entries are sorted
+        for i in 1..entries.len() {
+            if entries[i - 1].0 >= entries[i].0 {
+                return Err(crate::table::TableError::Corruption(
+                    "Data block entries not sorted".to_string(),
+                ));
+            }
+        }
+
+        Ok(Self { entries })
+    }
+
+    /// Estimate the serialized size of this block.
+    pub fn estimate_size(&self) -> usize {
+        let mut size = Self::HEADER_SIZE;
+        for (key, chain) in &self.entries {
+            size += 4; // key_len
+            size += key.len();
+            size += 4; // chain_len
+            // Rough estimate for version chain size
+            size += bincode::serialized_size(chain).unwrap_or(0) as usize;
+        }
+        size
+    }
+}
+
+impl Default for DataBlock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// SSTable reader for reading data from an immutable SSTable.
 pub struct SStableReader<FS: FileSystem> {
     /// Pager for reading pages
@@ -505,6 +794,298 @@ mod tests {
         assert_eq!(restored.metadata.level, footer.metadata.level);
         assert_eq!(restored.metadata.min_key, footer.metadata.min_key);
         assert_eq!(restored.metadata.max_key, footer.metadata.max_key);
+    }
+
+    #[test]
+    fn test_data_block_empty() {
+        let block = DataBlock::new();
+        assert!(block.is_empty());
+        assert_eq!(block.len(), 0);
+        assert_eq!(block.first_key(), None);
+        assert_eq!(block.last_key(), None);
+    }
+
+    #[test]
+    fn test_data_block_add_entries() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        // Add entries in sorted order
+        let chain1 = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
+        block.add(b"key1".to_vec(), chain1).unwrap();
+        
+        let chain2 = VersionChain::new(b"value2".to_vec(), TransactionId::from(2));
+        block.add(b"key2".to_vec(), chain2).unwrap();
+        
+        let chain3 = VersionChain::new(b"value3".to_vec(), TransactionId::from(3));
+        block.add(b"key3".to_vec(), chain3).unwrap();
+
+        assert_eq!(block.len(), 3);
+        assert_eq!(block.first_key(), Some(b"key1".as_slice()));
+        assert_eq!(block.last_key(), Some(b"key3".as_slice()));
+    }
+
+    #[test]
+    fn test_data_block_add_unsorted_fails() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        let chain1 = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
+        block.add(b"key2".to_vec(), chain1).unwrap();
+        
+        // Try to add a key that's not greater than the last key
+        let chain2 = VersionChain::new(b"value2".to_vec(), TransactionId::from(2));
+        let result = block.add(b"key1".to_vec(), chain2);
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_data_block_binary_search() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        for i in 0..10 {
+            let key = format!("key{:02}", i);
+            let value = format!("value{}", i);
+            let chain = VersionChain::new(value.into_bytes(), TransactionId::from(i as u64));
+            block.add(key.into_bytes(), chain).unwrap();
+        }
+
+        // Search for existing keys
+        assert_eq!(block.search(b"key00"), Some(0));
+        assert_eq!(block.search(b"key05"), Some(5));
+        assert_eq!(block.search(b"key09"), Some(9));
+
+        // Search for non-existing keys
+        assert_eq!(block.search(b"key10"), None);
+        assert_eq!(block.search(b"key"), None);
+        assert_eq!(block.search(b"zzz"), None);
+    }
+
+    #[test]
+    fn test_data_block_get() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        let chain1 = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
+        block.add(b"key1".to_vec(), chain1).unwrap();
+        
+        let chain2 = VersionChain::new(b"value2".to_vec(), TransactionId::from(2));
+        block.add(b"key2".to_vec(), chain2).unwrap();
+
+        // Get existing key
+        let chain = block.get(b"key1").unwrap();
+        assert_eq!(chain.value, b"value1");
+
+        // Get non-existing key
+        assert!(block.get(b"key3").is_none());
+    }
+
+    #[test]
+    fn test_data_block_serialization_uncompressed() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        for i in 0..5 {
+            let key = format!("key{}", i);
+            let value = format!("value{}", i);
+            let chain = VersionChain::new(value.into_bytes(), TransactionId::from(i as u64));
+            block.add(key.into_bytes(), chain).unwrap();
+        }
+
+        // Serialize without compression
+        let bytes = block.to_bytes(false).unwrap();
+        
+        // Deserialize
+        let restored = DataBlock::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(restored.len(), block.len());
+        assert_eq!(restored.first_key(), block.first_key());
+        assert_eq!(restored.last_key(), block.last_key());
+        
+        // Verify all entries
+        for i in 0..5 {
+            let key = format!("key{}", i);
+            let chain = restored.get(key.as_bytes()).unwrap();
+            assert_eq!(chain.value, format!("value{}", i).into_bytes());
+        }
+    }
+
+    #[test]
+    fn test_data_block_serialization_compressed() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        // Add enough data to make compression worthwhile
+        for i in 0..50 {
+            let key = format!("key{:03}", i);
+            let value = format!("value{}", i).repeat(10); // Repeat to make it compressible
+            let chain = VersionChain::new(value.into_bytes(), TransactionId::from(i as u64));
+            block.add(key.into_bytes(), chain).unwrap();
+        }
+
+        // Serialize with compression
+        let bytes = block.to_bytes(true).unwrap();
+        
+        // Deserialize
+        let restored = DataBlock::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(restored.len(), block.len());
+        assert_eq!(restored.first_key(), block.first_key());
+        assert_eq!(restored.last_key(), block.last_key());
+        
+        // Verify all entries
+        for i in 0..50 {
+            let key = format!("key{:03}", i);
+            let chain = restored.get(key.as_bytes()).unwrap();
+            let expected_value = format!("value{}", i).repeat(10);
+            assert_eq!(chain.value, expected_value.into_bytes());
+        }
+    }
+
+    #[test]
+    fn test_data_block_checksum_validation() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        let chain = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
+        block.add(b"key1".to_vec(), chain).unwrap();
+
+        let mut bytes = block.to_bytes(false).unwrap();
+        
+        // Corrupt the data (after the header)
+        if bytes.len() > DataBlock::HEADER_SIZE + 10 {
+            bytes[DataBlock::HEADER_SIZE + 10] ^= 0xFF;
+        }
+        
+        // Deserialization should fail due to checksum mismatch
+        let result = DataBlock::from_bytes(&bytes);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::table::TableError::Corruption(_)
+        ));
+    }
+
+    #[test]
+    fn test_data_block_version_chain() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        // Create a version chain with multiple versions
+        let mut chain = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
+        chain.commit(LogSequenceNumber::from(10));
+        
+        let chain = chain.prepend(b"value2".to_vec(), TransactionId::from(2));
+        
+        block.add(b"key1".to_vec(), chain).unwrap();
+
+        // Serialize and deserialize
+        let bytes = block.to_bytes(false).unwrap();
+        let restored = DataBlock::from_bytes(&bytes).unwrap();
+        
+        // Verify version chain is preserved
+        let restored_chain = restored.get(b"key1").unwrap();
+        assert_eq!(restored_chain.value, b"value2");
+        assert!(restored_chain.prev_version.is_some());
+        
+        let prev = restored_chain.prev_version.as_ref().unwrap();
+        assert_eq!(prev.value, b"value1");
+        assert_eq!(prev.commit_lsn, Some(LogSequenceNumber::from(10)));
+    }
+
+    #[test]
+    fn test_data_block_from_entries() {
+        use crate::txn::TransactionId;
+
+        let entries = vec![
+            (b"key1".to_vec(), VersionChain::new(b"value1".to_vec(), TransactionId::from(1))),
+            (b"key2".to_vec(), VersionChain::new(b"value2".to_vec(), TransactionId::from(2))),
+            (b"key3".to_vec(), VersionChain::new(b"value3".to_vec(), TransactionId::from(3))),
+        ];
+
+        let block = DataBlock::from_entries(entries);
+        
+        assert_eq!(block.len(), 3);
+        assert_eq!(block.first_key(), Some(b"key1".as_slice()));
+        assert_eq!(block.last_key(), Some(b"key3".as_slice()));
+    }
+
+    #[test]
+    #[should_panic(expected = "Entries must be sorted by key")]
+    fn test_data_block_from_entries_unsorted_panics() {
+        use crate::txn::TransactionId;
+
+        let entries = vec![
+            (b"key2".to_vec(), VersionChain::new(b"value2".to_vec(), TransactionId::from(2))),
+            (b"key1".to_vec(), VersionChain::new(b"value1".to_vec(), TransactionId::from(1))),
+        ];
+
+        DataBlock::from_entries(entries);
+    }
+
+    #[test]
+    fn test_data_block_estimate_size() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        
+        for i in 0..10 {
+            let key = format!("key{}", i);
+            let value = format!("value{}", i);
+            let chain = VersionChain::new(value.into_bytes(), TransactionId::from(i as u64));
+            block.add(key.into_bytes(), chain).unwrap();
+        }
+
+        let estimated = block.estimate_size();
+        let actual = block.to_bytes(false).unwrap().len();
+        
+        // Estimate should be reasonably close to actual size
+        // Allow 20% margin for estimation error
+        let diff = if estimated > actual {
+            estimated - actual
+        } else {
+            actual - estimated
+        };
+        
+        assert!(diff < actual / 5, "Estimate {} too far from actual {}", estimated, actual);
+    }
+
+    #[test]
+    fn test_data_block_truncated_data() {
+        use crate::txn::TransactionId;
+
+        let mut block = DataBlock::new();
+        let chain = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
+        block.add(b"key1".to_vec(), chain).unwrap();
+
+        let bytes = block.to_bytes(false).unwrap();
+        
+        // Try to deserialize truncated data
+        let truncated = &bytes[..bytes.len() - 10];
+        let result = DataBlock::from_bytes(truncated);
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_data_block_empty_serialization() {
+        // Empty blocks should not be serializable in practice,
+        // but let's test the edge case
+        let block = DataBlock::new();
+        let bytes = block.to_bytes(false).unwrap();
+        
+        let restored = DataBlock::from_bytes(&bytes).unwrap();
+        assert!(restored.is_empty());
     }
 }
 
