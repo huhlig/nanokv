@@ -395,7 +395,15 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
     /// Search for a key in the tree, returning the leaf page ID and position.
     fn search(&self, key: &[u8]) -> TableResult<(PageId, usize)> {
+        let (leaf_page_id, pos, _path) = self.search_with_path(key)?;
+        Ok((leaf_page_id, pos))
+    }
+
+    /// Search for a key in the tree, tracking the path from root to leaf.
+    /// Returns the leaf page ID, position, and path (list of (parent_page_id, child_page_id) tuples).
+    fn search_with_path(&self, key: &[u8]) -> TableResult<(PageId, usize, Vec<(PageId, PageId)>)> {
         let mut current_page_id = self.get_root_page_id();
+        let mut path = Vec::new();
 
         loop {
             let node = self.read_node(current_page_id)?;
@@ -426,6 +434,9 @@ impl<FS: FileSystem> PagedBTree<FS> {
                             }
                         }
                     };
+                    
+                    // Track this parent and which child we're going to
+                    path.push((current_page_id, child_page_id));
                     current_page_id = child_page_id;
                 }
                 BTreeNode::Leaf { entries, .. } => {
@@ -435,7 +446,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         Ok(i) => i,
                         Err(i) => i,
                     };
-                    return Ok((current_page_id, idx));
+                    return Ok((current_page_id, idx, path));
                 }
             }
         }
@@ -812,8 +823,8 @@ impl<FS: FileSystem> PagedBTree<FS> {
         value: Vec<u8>,
         tx_id: TransactionId,
     ) -> TableResult<()> {
-        // Find the leaf page
-        let (leaf_page_id, pos) = self.search(&key)?;
+        // Find the leaf page with path
+        let (leaf_page_id, pos, path) = self.search_with_path(&key)?;
         let mut node = self.read_node(leaf_page_id)?;
 
         if let BTreeNode::Leaf { ref mut entries, .. } = node {
@@ -838,7 +849,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
             
             // Check if node needs to be split after writing
             if node.is_full() {
-                self.split_and_propagate(leaf_page_id, &node)?;
+                self.split_and_propagate(leaf_page_id, &node, path)?;
             }
         }
 
@@ -846,13 +857,15 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Split a node and propagate the split up the tree.
-    fn split_and_propagate(&self, page_id: PageId, node: &BTreeNode) -> TableResult<()> {
+    /// The path parameter contains (parent_page_id, child_page_id) tuples from root to the node being split.
+    fn split_and_propagate(&self, page_id: PageId, node: &BTreeNode, path: Vec<(PageId, PageId)>) -> TableResult<()> {
         let current_root = self.get_root_page_id();
+        
+        // Split the node
+        let (right_page_id, median_key) = self.split_node(page_id, node)?;
         
         // If this is the root, create a new root
         if page_id == current_root {
-            let (right_page_id, median_key) = self.split_node(page_id, node)?;
-            
             // Create new root
             let new_root_page_id = self.pager.allocate_page(PageType::BTreeInternal)?;
             let new_root = BTreeNode::Internal {
@@ -872,15 +885,139 @@ impl<FS: FileSystem> PagedBTree<FS> {
             
             Ok(())
         } else {
-            // Split the node
-            let (right_page_id, median_key) = self.split_node(page_id, node)?;
-            
-            // TODO: Find parent and insert median_key with right_page_id
-            // This requires maintaining parent pointers or a path stack during traversal
-            // For now, this is a placeholder
-            
+            // Insert median key into parent
+            self.insert_into_parent(page_id, median_key, right_page_id, path)?;
             Ok(())
         }
+    }
+
+    /// Insert a key and right child pointer into a parent node.
+    /// This is called after splitting a child node.
+    /// The path contains (parent_page_id, child_page_id) tuples from root to the child that was split.
+    fn insert_into_parent(
+        &self,
+        left_child: PageId,
+        key: Vec<u8>,
+        right_child: PageId,
+        mut path: Vec<(PageId, PageId)>,
+    ) -> TableResult<()> {
+        // Get the parent info (last element in path)
+        let (parent_page_id, _child_that_was_followed) = match path.pop() {
+            Some(info) => info,
+            None => {
+                // No parent means we're at root, which should have been handled already
+                return Err(crate::table::TableError::Corruption(
+                    "No parent found for non-root split".to_string(),
+                ));
+            }
+        };
+
+        // Read the parent node
+        let mut parent_node = self.read_node(parent_page_id)?;
+
+        if let BTreeNode::Internal { ref mut entries, ref mut rightmost_child } = parent_node {
+            // In our B-Tree structure:
+            // - entries[i].child_page_id contains keys < entries[i].key
+            // - Keys >= entries[i].key go to the next child (entries[i+1].child_page_id or rightmost_child)
+            //
+            // After splitting left_child into left_child and right_child with median key:
+            // - left_child now contains keys < median
+            // - right_child contains keys >= median
+            // - We need to insert median as a separator
+            //
+            // Strategy: Find where left_child is, insert median_key with right_child as the "next" pointer
+            
+            // Check if left_child is the rightmost child
+            if *rightmost_child == left_child {
+                // The split child was the rightmost child
+                // Add new entry: median_key points to left_child (keys < median go left)
+                // Update rightmost_child to right_child (keys >= median go right)
+                entries.push(InternalEntry {
+                    key,
+                    child_page_id: left_child,
+                });
+                *rightmost_child = right_child;
+            } else {
+                // Find where left_child appears in the parent
+                let mut insert_pos = None;
+                
+                // Check each entry's child pointer
+                for (i, entry) in entries.iter().enumerate() {
+                    if entry.child_page_id == left_child {
+                        // entries[i].child_page_id == left_child
+                        // This means keys < entries[i].key go to left_child
+                        // After split: keys < median go to left_child, keys >= median go to right_child
+                        // We need to insert median_key at position i, with right_child as the next pointer
+                        insert_pos = Some(i);
+                        break;
+                    }
+                }
+                
+                // Also check if left_child is the "next" child after an entry
+                if insert_pos.is_none() {
+                    for i in 0..entries.len() {
+                        let next_child = if i + 1 < entries.len() {
+                            entries[i + 1].child_page_id
+                        } else {
+                            *rightmost_child
+                        };
+                        if next_child == left_child {
+                            // Keys >= entries[i].key go to left_child
+                            // After split: we need to insert median at i+1
+                            insert_pos = Some(i + 1);
+                            break;
+                        }
+                    }
+                }
+                
+                match insert_pos {
+                    Some(pos) if pos < entries.len() && entries[pos].child_page_id == left_child => {
+                        // Case 1: left_child is at entries[pos].child_page_id
+                        // entries[pos] = {key: K, child: left_child}
+                        // This means left_child contains keys < K
+                        // After split: left_child has keys < median, right_child has keys >= median
+                        // We need to insert median at pos with left_child, and update entries[pos] to point to right_child
+                        entries.insert(pos, InternalEntry {
+                            key,
+                            child_page_id: left_child,
+                        });
+                        // Now entries[pos+1] is the old entry, update its child to right_child
+                        entries[pos + 1].child_page_id = right_child;
+                    }
+                    Some(pos) => {
+                        // Case 2: left_child is the "next" child after entries[pos-1]
+                        // This means keys >= entries[pos-1].key go to left_child
+                        // After split: we insert median at pos with left_child
+                        // The next entry (or rightmost) should point to right_child
+                        entries.insert(pos, InternalEntry {
+                            key,
+                            child_page_id: left_child,
+                        });
+                        // Update the next entry's child to right_child
+                        if pos + 1 < entries.len() {
+                            entries[pos + 1].child_page_id = right_child;
+                        } else {
+                            *rightmost_child = right_child;
+                        }
+                    }
+                    None => {
+                        return Err(crate::table::TableError::Corruption(
+                            format!("Could not find left_child {:?} in parent {:?}", left_child, parent_page_id),
+                        ));
+                    }
+                }
+            }
+
+            // Write the updated parent
+            self.write_node(parent_page_id, &parent_node)?;
+
+            // Check if parent is now full and needs to split
+            if parent_node.is_full() {
+                self.split_and_propagate(parent_page_id, &parent_node, path)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Delete a key from the tree, handling merges and redistributions as needed.
