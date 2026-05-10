@@ -310,6 +310,7 @@ Writes → Memtable → Immutable Memtable → L0 SSTable
 - `TransactionId`: Unique transaction identifier
 - `VersionChain`: Multi-version storage
 - `ConflictDetector`: Write-write conflict detection
+- `DeadlockDetector`: Wait-for graph cycle detection
 - `Snapshot`: Point-in-time view
 
 **Transaction Lifecycle**:
@@ -613,6 +614,21 @@ Database ready
 2. **Timeout**: Abort if lock not acquired
 3. **No nested locks**: Release before acquiring next
 4. **Lock-free structures**: FreeList uses lock-free queue
+5. **Deadlock detection**: Wait-for graph cycle detection for transactions
+
+**Transaction Deadlock Detection**:
+- `DeadlockDetector` maintains a wait-for graph
+- Tracks which transactions are waiting for locks held by other transactions
+- Uses depth-first search (DFS) to detect cycles in the wait-for graph
+- When a cycle is detected, one transaction is aborted to break the deadlock
+- Prevents transactions from waiting indefinitely for locks
+
+**Wait-For Graph**:
+```
+Transaction A → Transaction B  (A waits for B)
+Transaction B → Transaction C  (B waits for C)
+Transaction C → Transaction A  (C waits for A) ← Cycle detected!
+```
 
 ---
 
