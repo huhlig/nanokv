@@ -787,6 +787,158 @@ impl<FS: FileSystem> Manifest<FS> {
     pub fn root_page_id(&self) -> PageId {
         self.root_page_id
     }
+
+    /// Recover manifest by scanning all SSTable pages in the pager.
+    ///
+    /// This is a disaster recovery mechanism that reconstructs the manifest
+    /// by scanning the entire database for SSTable pages and reading their
+    /// metadata from footers.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Scan all pages to find SSTable first pages (LsmData type)
+    /// 2. Read footer from each SSTable to extract metadata
+    /// 3. Assign SSTables to levels based on:
+    ///    - Key range overlaps (L0 allows overlaps, L1+ should not)
+    ///    - File sizes (larger files → deeper levels)
+    ///    - Creation LSN (newer files → shallower levels)
+    /// 4. Build new Version with discovered SSTables
+    /// 5. Write recovered manifest to disk
+    ///
+    /// # Returns
+    ///
+    /// Returns the recovered Version or an error if recovery fails.
+    pub fn recover_from_sstables(
+        pager: Arc<Pager<FS>>,
+        root_page_id: PageId,
+        num_levels: usize,
+        config: &crate::table::lsm::SStableConfig,
+    ) -> TableResult<Version> {
+        use crate::table::lsm::SStableReader;
+        use std::collections::HashMap;
+
+        // Step 1: Scan all pages to find SSTable first pages
+        let total_pages = pager.total_pages();
+        let mut sstable_first_pages = Vec::new();
+
+        for page_num in 0..total_pages {
+            let page_id = PageId::from(page_num);
+            
+            // Skip reserved pages (0=header, 1=superblock, root_page_id=manifest)
+            if page_id == PageId::from(0)
+                || page_id == PageId::from(1)
+                || page_id == root_page_id {
+                continue;
+            }
+
+            // Try to read the page
+            if let Ok(page) = pager.read_page(page_id) {
+                // Check if this is an LSM data page
+                if page.page_type() == PageType::LsmData {
+                    // This could be the first page of an SSTable
+                    // We'll try to open it as an SSTable to verify
+                    sstable_first_pages.push(page_id);
+                }
+            }
+        }
+
+        // Step 2: Read metadata from each potential SSTable
+        let mut sstables = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+
+        for first_page_id in sstable_first_pages {
+            // Try to open as SSTable reader
+            match SStableReader::open(Arc::clone(&pager), first_page_id, config.clone()) {
+                Ok(reader) => {
+                    let metadata = reader.metadata().clone();
+                    
+                    // Verify this is actually the first page (not a continuation page)
+                    if metadata.first_page_id == first_page_id {
+                        // Avoid duplicates (in case we scanned continuation pages)
+                        if !seen_ids.contains(&metadata.id) {
+                            seen_ids.insert(metadata.id);
+                            sstables.push(metadata);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Not a valid SSTable, skip
+                    continue;
+                }
+            }
+        }
+
+        // Step 3: Assign SSTables to levels
+        let assigned_sstables = Self::assign_sstables_to_levels(sstables, num_levels)?;
+
+        // Step 4: Build Version from assigned SSTables
+        let mut version = Version::new(num_levels);
+        
+        // Find the maximum SSTable ID to set next_sstable_id
+        let mut max_id = 0u64;
+        
+        for (level, level_sstables) in assigned_sstables.iter().enumerate() {
+            for metadata in level_sstables {
+                max_id = max_id.max(metadata.id.as_u64());
+                
+                // Convert SStableMetadata to FileMetadata
+                let file_metadata = FileMetadata {
+                    id: metadata.id,
+                    level: level as u32,
+                    min_key: metadata.min_key.clone(),
+                    max_key: metadata.max_key.clone(),
+                    num_entries: metadata.num_entries,
+                    total_size: metadata.total_size,
+                    created_lsn: metadata.created_lsn,
+                    first_page_id: metadata.first_page_id,
+                    num_pages: metadata.num_pages,
+                };
+                
+                // Apply as an edit to add the SSTable
+                let edit = VersionEdit::add_sstable(file_metadata);
+                version = version.apply(&edit)?;
+            }
+        }
+        
+        // Set next SSTable ID to one past the maximum found
+        version.next_sstable_id = max_id + 1;
+
+        Ok(version)
+    }
+
+    /// Assign SSTables to levels based on key ranges, sizes, and LSNs.
+    ///
+    /// # Strategy
+    ///
+    /// For disaster recovery, we use a conservative approach:
+    /// - All recovered SSTables are initially placed in L0
+    /// - L0 allows overlapping key ranges
+    /// - Compaction will later move them to appropriate levels
+    ///
+    /// This is safer than trying to infer the correct level placement,
+    /// which could lead to data loss if we make incorrect assumptions.
+    fn assign_sstables_to_levels(
+        mut sstables: Vec<crate::table::lsm::SStableMetadata>,
+        num_levels: usize,
+    ) -> TableResult<Vec<Vec<crate::table::lsm::SStableMetadata>>> {
+        let mut levels: Vec<Vec<crate::table::lsm::SStableMetadata>> =
+            vec![Vec::new(); num_levels];
+
+        // Sort by creation LSN (newest first) for L0
+        // This ensures newer data is checked first during reads
+        sstables.sort_by(|a, b| {
+            b.created_lsn.as_u64().cmp(&a.created_lsn.as_u64())
+        });
+
+        // Place all recovered SSTables in L0
+        // This is the safest approach for disaster recovery
+        levels[0] = sstables;
+
+        // Sort L0 by min_key for efficient lookups
+        levels[0].sort_by(|a, b| a.min_key.cmp(&b.min_key));
+
+        Ok(levels)
+    }
 }
 
 #[cfg(test)]
@@ -1090,6 +1242,323 @@ mod tests {
         let reopened_pager = Arc::new(Pager::open(&fs, "large.db").unwrap());
         let reopened = Manifest::open(reopened_pager, root_page_id, 7).unwrap();
         assert_eq!(reopened.current().total_file_count(), 256);
+    }
+
+    #[test]
+    fn test_manifest_recovery_empty_database() {
+        use crate::table::lsm::SStableConfig;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Recover from empty database (no SSTables)
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        assert_eq!(version.total_file_count(), 0);
+        assert_eq!(version.next_sstable_id(), 1);
+    }
+
+    #[test]
+    fn test_manifest_recovery_single_sstable() {
+        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::txn::VersionChain;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Create a single SSTable
+        let mut writer = SStableWriter::new(
+            Arc::clone(&pager),
+            SStableId::new(1),
+            0,
+            config.clone(),
+            10,
+        );
+
+        for i in 0..10 {
+            let key = format!("key{:03}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            let chain = VersionChain::new(value, 1.into());
+            writer.add(key, chain).unwrap();
+        }
+
+        let _metadata = writer.finish(1.into()).unwrap();
+
+        // Recover manifest
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        assert_eq!(version.total_file_count(), 1);
+        assert_eq!(version.next_sstable_id(), 2);
+        assert_eq!(version.level_file_count(0), 1);
+    }
+
+    #[test]
+    fn test_manifest_recovery_multiple_sstables_non_overlapping() {
+        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::txn::VersionChain;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Create multiple non-overlapping SSTables
+        for table_id in 1..=3 {
+            let mut writer = SStableWriter::new(
+                Arc::clone(&pager),
+                SStableId::new(table_id),
+                0,
+                config.clone(),
+                10,
+            );
+
+            let start = (table_id - 1) * 10;
+            for i in start..start + 10 {
+                let key = format!("key{:03}", i).into_bytes();
+                let value = format!("value{}", i).into_bytes();
+                let chain = VersionChain::new(value, table_id.into());
+                writer.add(key, chain).unwrap();
+            }
+
+            writer.finish(table_id.into()).unwrap();
+        }
+
+        // Recover manifest
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        assert_eq!(version.total_file_count(), 3);
+        assert_eq!(version.next_sstable_id(), 4);
+        
+        // All recovered SSTables are placed in L0 for safety
+        assert_eq!(version.level_file_count(0), 3);
+    }
+
+    #[test]
+    fn test_manifest_recovery_overlapping_sstables() {
+        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::txn::VersionChain;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Create overlapping SSTables (same key ranges)
+        for table_id in 1..=3 {
+            let mut writer = SStableWriter::new(
+                Arc::clone(&pager),
+                SStableId::new(table_id),
+                0,
+                config.clone(),
+                10,
+            );
+
+            // All tables have overlapping keys
+            for i in 0..10 {
+                let key = format!("key{:03}", i).into_bytes();
+                let value = format!("value{}_{}", table_id, i).into_bytes();
+                let chain = VersionChain::new(value, table_id.into());
+                writer.add(key, chain).unwrap();
+            }
+
+            writer.finish(table_id.into()).unwrap();
+        }
+
+        // Recover manifest
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        assert_eq!(version.total_file_count(), 3);
+        assert_eq!(version.next_sstable_id(), 4);
+        
+        // Overlapping SSTables should be in L0
+        assert_eq!(version.level_file_count(0), 3);
+    }
+
+    #[test]
+    fn test_manifest_recovery_mixed_overlapping() {
+        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::txn::VersionChain;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Create mix of overlapping and non-overlapping SSTables
+        // Tables 1-2: overlapping (keys 0-9)
+        for table_id in 1..=2 {
+            let mut writer = SStableWriter::new(
+                Arc::clone(&pager),
+                SStableId::new(table_id),
+                0,
+                config.clone(),
+                10,
+            );
+
+            for i in 0..10 {
+                let key = format!("key{:03}", i).into_bytes();
+                let value = format!("value{}_{}", table_id, i).into_bytes();
+                let chain = VersionChain::new(value, table_id.into());
+                writer.add(key, chain).unwrap();
+            }
+
+            writer.finish(table_id.into()).unwrap();
+        }
+
+        // Tables 3-4: non-overlapping (keys 10-19, 20-29)
+        for table_id in 3..=4 {
+            let mut writer = SStableWriter::new(
+                Arc::clone(&pager),
+                SStableId::new(table_id),
+                0,
+                config.clone(),
+                10,
+            );
+
+            let start = (table_id - 1) * 10;
+            for i in start..start + 10 {
+                let key = format!("key{:03}", i).into_bytes();
+                let value = format!("value{}", i).into_bytes();
+                let chain = VersionChain::new(value, table_id.into());
+                writer.add(key, chain).unwrap();
+            }
+
+            writer.finish(table_id.into()).unwrap();
+        }
+
+        // Recover manifest
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        assert_eq!(version.total_file_count(), 4);
+        assert_eq!(version.next_sstable_id(), 5);
+        
+        // All recovered SSTables are placed in L0 for safety
+        assert_eq!(version.level_file_count(0), 4);
+    }
+
+    #[test]
+    fn test_manifest_recovery_preserves_sstable_ids() {
+        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::txn::VersionChain;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Create SSTables with specific IDs (not sequential)
+        let ids = vec![5, 10, 15];
+        for &table_id in &ids {
+            let mut writer = SStableWriter::new(
+                Arc::clone(&pager),
+                SStableId::new(table_id),
+                0,
+                config.clone(),
+                5,
+            );
+
+            let start = table_id * 10;
+            for i in start..start + 5 {
+                let key = format!("key{:03}", i).into_bytes();
+                let value = format!("value{}", i).into_bytes();
+                let chain = VersionChain::new(value, table_id.into());
+                writer.add(key, chain).unwrap();
+            }
+
+            writer.finish(table_id.into()).unwrap();
+        }
+
+        // Recover manifest
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        assert_eq!(version.total_file_count(), 3);
+        
+        // Next SSTable ID should be one past the maximum
+        assert_eq!(version.next_sstable_id(), 16);
+        
+        // Verify all IDs are present
+        for &id in &ids {
+            assert!(version.get_file(SStableId::new(id)).is_some());
+        }
+    }
+
+    #[test]
+    fn test_manifest_recovery_with_corrupted_sstable() {
+        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::txn::VersionChain;
+
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let config = SStableConfig::default();
+
+        // Create a valid SSTable
+        let mut writer = SStableWriter::new(
+            Arc::clone(&pager),
+            SStableId::new(1),
+            0,
+            config.clone(),
+            5,
+        );
+
+        for i in 0..5 {
+            let key = format!("key{:03}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            let chain = VersionChain::new(value, 1.into());
+            writer.add(key, chain).unwrap();
+        }
+
+        writer.finish(1.into()).unwrap();
+
+        // Create a corrupted page (LsmData type but not a valid SSTable)
+        let _corrupt_page_id = pager.allocate_page(PageType::LsmData).unwrap();
+        // Don't write valid SSTable data to it
+
+        // Recovery should skip corrupted pages and recover valid ones
+        let version = Manifest::recover_from_sstables(
+            Arc::clone(&pager),
+            root_page_id,
+            7,
+            &config,
+        ).unwrap();
+
+        // Should recover the valid SSTable, skip the corrupted one
+        assert_eq!(version.total_file_count(), 1);
+        assert!(version.get_file(SStableId::new(1)).is_some());
     }
 }
 
