@@ -23,8 +23,13 @@ pub type TransactionResult<T> = Result<T, TransactionError>;
 /// Transaction error type.
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionError {
-    #[error("Transaction {0} has invalid state for this operation")]
-    InvalidState(TransactionId),
+    /// Invalid state for the attempted operation
+    #[error("Transaction {transaction_id} has invalid state '{current_state}' for operation '{attempted_operation}'")]
+    InvalidState {
+        transaction_id: TransactionId,
+        current_state: String,
+        attempted_operation: String,
+    },
 
     #[error("Write-write conflict: object {0}, key {1:?} already locked by transaction {2}")]
     WriteWriteConflict(ObjectId, Vec<u8>, TransactionId),
@@ -38,12 +43,45 @@ pub enum TransactionError {
     #[error("Transaction {0} not found")]
     TransactionNotFound(TransactionId),
 
-    #[error("Deadlock detected involving transaction {0}")]
-    Deadlock(TransactionId),
+    /// Deadlock detected with cycle information
+    #[error("Deadlock detected involving transaction {transaction_id}: {cycle_description}")]
+    Deadlock {
+        transaction_id: TransactionId,
+        involved_transactions: Vec<TransactionId>,
+        cycle_description: String,
+    },
 
     /// Other error
     #[error("Transaction error: {0}")]
     Other(String),
+}
+
+impl TransactionError {
+    /// Create an invalid state error with full context
+    pub fn invalid_state(
+        transaction_id: TransactionId,
+        current_state: impl Into<String>,
+        attempted_operation: impl Into<String>,
+    ) -> Self {
+        Self::InvalidState {
+            transaction_id,
+            current_state: current_state.into(),
+            attempted_operation: attempted_operation.into(),
+        }
+    }
+
+    /// Create a deadlock error with full context
+    pub fn deadlock(
+        transaction_id: TransactionId,
+        involved_transactions: Vec<TransactionId>,
+        cycle_description: impl Into<String>,
+    ) -> Self {
+        Self::Deadlock {
+            transaction_id,
+            involved_transactions,
+            cycle_description: cycle_description.into(),
+        }
+    }
 }
 
 /// Cursor Result Type

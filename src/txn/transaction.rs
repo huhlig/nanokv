@@ -160,6 +160,17 @@ enum TransactionState {
     Aborted,
 }
 
+impl TransactionState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            TransactionState::Active => "Active",
+            TransactionState::Preparing => "Preparing",
+            TransactionState::Committed => "Committed",
+            TransactionState::Aborted => "Aborted",
+        }
+    }
+}
+
 /// Transaction struct for managing database transactions.
 pub struct Transaction {
     // Core transaction identity and isolation
@@ -229,7 +240,11 @@ impl Transaction {
     /// Transitions from Active to Preparing state.
     pub fn prepare(&mut self) -> TransactionResult<()> {
         if self.state != TransactionState::Active {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "prepare",
+            ));
         }
         self.state = TransactionState::Preparing;
         Ok(())
@@ -269,7 +284,11 @@ impl Transaction {
     pub fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "put",
+            ));
         }
 
         // Convert TableId to ObjectId for internal storage
@@ -301,7 +320,11 @@ impl Transaction {
     pub fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "delete",
+            ));
         }
 
         // Convert TableId to ObjectId for internal storage
@@ -325,7 +348,11 @@ impl Transaction {
     pub fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "get",
+            ));
         }
 
         // Convert TableId to ObjectId for internal storage
@@ -361,7 +388,11 @@ impl Transaction {
     pub fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "scan",
+            ));
         }
 
         // TODO: Implement range delete
@@ -382,7 +413,11 @@ impl Transaction {
     pub fn index_get(&self, index: IndexId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "create_table",
+            ));
         }
 
         // Convert IndexId to ObjectId for internal storage
@@ -414,7 +449,11 @@ impl Transaction {
     pub fn index_put(&mut self, index: IndexId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "drop_table",
+            ));
         }
 
         // Convert IndexId to ObjectId for internal storage
@@ -439,7 +478,11 @@ impl Transaction {
     pub fn index_delete(&mut self, index: IndexId, key: &[u8]) -> TransactionResult<bool> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "create_index",
+            ));
         }
 
         // Convert IndexId to ObjectId for internal storage
@@ -475,7 +518,11 @@ impl Transaction {
     pub fn index_range_delete(&mut self, index: IndexId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
         if !self.is_active() {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "drop_index",
+            ));
         }
 
         // TODO: Implement range delete for indexes
@@ -502,7 +549,11 @@ impl Transaction {
     pub fn commit(mut self) -> TransactionResult<CommitInfo> {
         // Validate state - must be Active or Preparing
         if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "commit",
+            ));
         }
 
         // For Serializable isolation, check for read-write conflicts
@@ -538,7 +589,11 @@ impl Transaction {
     pub fn rollback(mut self) -> TransactionResult<()> {
         // Can rollback from Active or Preparing state
         if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
-            return Err(TransactionError::InvalidState(self.txn_id));
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "rollback",
+            ));
         }
 
         // Transition to Aborted state
