@@ -438,6 +438,25 @@ pub enum Predicate<'a> {
         field: std::borrow::Cow<'a, str>,
         geometry: GeometryRef<'a>,
     },
+    /// Check if a field value is NULL.
+    IsNull {
+        field: std::borrow::Cow<'a, str>,
+    },
+    /// Check if a field value is NOT NULL.
+    IsNotNull {
+        field: std::borrow::Cow<'a, str>,
+    },
+    /// Check if a field value is in a set of values.
+    In {
+        field: std::borrow::Cow<'a, str>,
+        values: Vec<std::borrow::Cow<'a, [u8]>>,
+    },
+    /// Check if a field value is between two bounds (inclusive).
+    Between {
+        field: std::borrow::Cow<'a, str>,
+        low: std::borrow::Cow<'a, [u8]>,
+        high: std::borrow::Cow<'a, [u8]>,
+    },
     And(Vec<Predicate<'a>>),
     Or(Vec<Predicate<'a>>),
     Not(Box<Predicate<'a>>),
