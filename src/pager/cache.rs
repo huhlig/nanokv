@@ -223,53 +223,60 @@ impl PageCache {
         let shard_idx = self.shard_index(page_id);
         let mut shard = self.shards[shard_idx].write();
 
-        // Check if page already exists
-        if shard.entries.contains_key(&page_id) {
-            // Update existing entry
-            if let Some(entry) = shard.entries.get_mut(&page_id) {
-                entry.page = page;
-                entry.dirty = entry.dirty || dirty; // Keep dirty flag if already dirty
+        // Use entry API for atomic check-or-insert
+        use std::collections::hash_map::Entry;
+        match shard.entries.entry(page_id) {
+            Entry::Occupied(mut entry) => {
+                // Page already exists - update it
+                let cache_entry = entry.get_mut();
+                cache_entry.page = page;
+                cache_entry.dirty = cache_entry.dirty || dirty; // Keep dirty flag if already dirty
+                shard.move_to_front(page_id);
+                None
             }
-            shard.move_to_front(page_id);
-            return None;
-        }
+            Entry::Vacant(vacant) => {
+                // Page doesn't exist - need to evict if at capacity before inserting
+                // We must drop the vacant entry to release the borrow before evicting
+                drop(vacant);
+                
+                // Evict if at capacity
+                let evicted = if shard.entries.len() >= shard.capacity {
+                    shard.evict_lru()
+                } else {
+                    None
+                };
 
-        // Evict if at capacity
-        let evicted = if shard.entries.len() >= shard.capacity {
-            shard.evict_lru()
-        } else {
-            None
-        };
+                // Now insert the new entry (we know it doesn't exist)
+                let entry = CacheEntry {
+                    page,
+                    dirty,
+                    prev: None,
+                    next: shard.lru_head,
+                };
 
-        // Add new entry
-        let entry = CacheEntry {
-            page,
-            dirty,
-            prev: None,
-            next: shard.lru_head,
-        };
+                shard.entries.insert(page_id, entry);
 
-        shard.entries.insert(page_id, entry);
+                // Update LRU list
+                if let Some(old_head) = shard.lru_head {
+                    if let Some(head_entry) = shard.entries.get_mut(&old_head) {
+                        head_entry.prev = Some(page_id);
+                    }
+                }
 
-        // Update LRU list
-        if let Some(old_head) = shard.lru_head {
-            if let Some(head_entry) = shard.entries.get_mut(&old_head) {
-                head_entry.prev = Some(page_id);
+                shard.lru_head = Some(page_id);
+
+                if shard.lru_tail.is_none() {
+                    shard.lru_tail = Some(page_id);
+                }
+
+                shard.stats.current_size = shard.entries.len();
+                if dirty {
+                    shard.stats.dirty_pages += 1;
+                }
+
+                evicted
             }
         }
-
-        shard.lru_head = Some(page_id);
-
-        if shard.lru_tail.is_none() {
-            shard.lru_tail = Some(page_id);
-        }
-
-        shard.stats.current_size = shard.entries.len();
-        if dirty {
-            shard.stats.dirty_pages += 1;
-        }
-
-        evicted
     }
 
     /// Check if a page is in the cache
