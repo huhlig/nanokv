@@ -16,6 +16,7 @@ This directory contains Architecture Decision Records (ADRs) documenting key des
 | [008](./008-optional-compression-encryption.md) | Optional Compression and Encryption | Proposed | 2026-05-10 |
 | [009](./009-vfs-abstraction.md) | Virtual File System Abstraction | Proposed | 2026-05-10 |
 | [010](./010-lsm-bloom-filters.md) | Bloom Filters for LSM Trees | Proposed | 2026-05-10 |
+| [011](./011-indexes-as-specialty-tables.md) | Indexes as Specialty Tables | Accepted | 2026-05-10 |
 
 ## ADR Format
 
