@@ -15,6 +15,7 @@
 //
 
 pub mod blob;
+pub mod error;
 pub mod index;
 pub mod kvdb;
 pub mod pager;
