@@ -147,12 +147,16 @@ impl<FS: FileSystem> WalWriter<FS> {
         // Get file size to determine current offset
         let file_size = file.get_size()?;
 
-        // TODO: Scan the file to find the last LSN and active transactions
-        // For now, we'll start from LSN 1 and assume no active transactions
+        // Scan the file to find the last LSN and active transactions
+        let (last_lsn, active_txns) = Self::scan_wal_file(fs, path, config.encryption_key)?;
+        
+        // Next LSN is last_lsn + 1
+        let current_lsn = LogSequenceNumber::from(last_lsn.as_u64() + 1);
+        
         let state = WalWriterState {
-            current_lsn: LogSequenceNumber::from(1),
+            current_lsn,
             current_offset: file_size,
-            active_txns: HashSet::new(),
+            active_txns,
             buffer: Vec::with_capacity(config.buffer_size),
         };
 
@@ -194,6 +198,45 @@ impl<FS: FileSystem> WalWriter<FS> {
             state: state_arc,
             group_commit,
         })
+    }
+    
+    /// Scan the WAL file to find the last LSN and active transactions.
+    fn scan_wal_file(
+        fs: &FS,
+        path: &str,
+        encryption_key: Option<[u8; 32]>,
+    ) -> WalResult<(LogSequenceNumber, HashSet<TransactionId>)> {
+        use crate::wal::reader::WalReader;
+        use crate::wal::RecordData;
+        
+        let mut reader = WalReader::open(fs, path, encryption_key)?;
+        let mut last_lsn = LogSequenceNumber::from(0);
+        let mut active_txns = HashSet::new();
+        
+        // Read all records to find last LSN and track active transactions
+        while let Some(record) = reader.read_next()? {
+            last_lsn = record.lsn;
+            
+            match &record.data {
+                RecordData::Begin { txn_id } => {
+                    active_txns.insert(*txn_id);
+                }
+                RecordData::Commit { txn_id } | RecordData::Rollback { txn_id } => {
+                    active_txns.remove(txn_id);
+                }
+                RecordData::Checkpoint { lsn: _, active_txns: checkpoint_txns } => {
+                    // Checkpoint records contain the definitive list of active transactions
+                    // at that point, so we can reset our tracking
+                    active_txns.clear();
+                    active_txns.extend(checkpoint_txns.iter().copied());
+                }
+                RecordData::Write { .. } => {
+                    // Write records don't change transaction state
+                }
+            }
+        }
+        
+        Ok((last_lsn, active_txns))
     }
 
     /// Write a BEGIN record

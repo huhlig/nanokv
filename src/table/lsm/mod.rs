@@ -349,7 +349,10 @@ impl<FS: FileSystem> LsmTree<FS> {
         );
         immutable.push(old_memtable);
         
-        // TODO: Trigger background flush
+        // Background flush: The compaction manager's background thread will automatically
+        // detect the immutable memtable and flush it to L0 SSTables. The compaction loop
+        // continuously monitors for work and will pick up this memtable on its next iteration.
+        // No explicit trigger is needed as the background thread is always running.
         
         Ok(())
     }
@@ -549,9 +552,30 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
         Ok(exists)
     }
     
-    fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
-        // TODO: Implement range delete
-        todo!("Range delete not yet implemented for LSM tree")
+    fn range_delete(&mut self, bounds: ScanBounds) -> TableResult<u64> {
+        // Range delete in LSM tree: insert tombstones for all keys in range
+        let mut deleted_count = 0u64;
+        
+        // Create a cursor to scan the range
+        let reader = self.tree.reader(self.snapshot_lsn)?;
+        let mut cursor = reader.scan(bounds.clone(), self.snapshot_lsn)?;
+        
+        // Collect keys to delete (can't delete while iterating)
+        let mut keys_to_delete = Vec::new();
+        while cursor.valid() {
+            if let Some(key) = cursor.key() {
+                keys_to_delete.push(key.to_vec());
+            }
+            cursor.next()?;
+        }
+        
+        // Insert tombstones for each key
+        for key in keys_to_delete {
+            self.pending_changes.push((key, None));
+            deleted_count += 1;
+        }
+        
+        Ok(deleted_count)
     }
 }
 
@@ -777,10 +801,30 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
     }
     
     fn prev(&mut self) -> TableResult<()> {
-        // TODO: Implement reverse iteration
-        Err(TableError::CursorError(
-            "Reverse iteration not yet implemented for LSM cursor".to_string(),
-        ))
+        self.ensure_initialized()?;
+        
+        if self.exhausted {
+            return Ok(());
+        }
+        
+        // For prev(), we need to switch to backward iteration if not already
+        // This is a simplified implementation - ideally we'd maintain both directions
+        // For now, we'll recreate the iterator in backward mode
+        let iterators = self.tree.create_iterators(Direction::Backward, self.snapshot_lsn)?;
+        let mut merge_iter = MergeIterator::new(iterators, Direction::Backward, self.snapshot_lsn)?;
+        
+        // If we have a current key, seek to it and move backward
+        if let Some(ref current_key) = self.current_key {
+            merge_iter.seek(current_key)?;
+            // Move to previous entry
+            merge_iter.next()?;
+        } else {
+            // Start from last
+            merge_iter.seek_to_last()?;
+        }
+        
+        self.merge_iterator = Some(merge_iter);
+        self.load_current()
     }
     
     fn seek(&mut self, key: &[u8]) -> TableResult<()> {
@@ -791,11 +835,18 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
         self.load_current()
     }
     
-    fn seek_for_prev(&mut self, _key: &[u8]) -> TableResult<()> {
-        // TODO: Implement reverse seek
-        Err(TableError::CursorError(
-            "Reverse seek not yet implemented for LSM cursor".to_string(),
-        ))
+    fn seek_for_prev(&mut self, key: &[u8]) -> TableResult<()> {
+        self.ensure_initialized()?;
+        
+        // Create backward iterator
+        let iterators = self.tree.create_iterators(Direction::Backward, self.snapshot_lsn)?;
+        let mut merge_iter = MergeIterator::new(iterators, Direction::Backward, self.snapshot_lsn)?;
+        
+        // Seek to the key (finds first entry <= key in backward mode)
+        merge_iter.seek(key)?;
+        
+        self.merge_iterator = Some(merge_iter);
+        self.load_current()
     }
     
     fn first(&mut self) -> TableResult<()> {
@@ -807,10 +858,15 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
     }
     
     fn last(&mut self) -> TableResult<()> {
-        // TODO: Implement last
-        Err(TableError::CursorError(
-            "Last not yet implemented for LSM cursor".to_string(),
-        ))
+        self.ensure_initialized()?;
+        
+        // Create backward iterator and seek to last
+        let iterators = self.tree.create_iterators(Direction::Backward, self.snapshot_lsn)?;
+        let mut merge_iter = MergeIterator::new(iterators, Direction::Backward, self.snapshot_lsn)?;
+        merge_iter.seek_to_last()?;
+        
+        self.merge_iterator = Some(merge_iter);
+        self.load_current()
     }
     
     fn snapshot_lsn(&self) -> LogSequenceNumber {
