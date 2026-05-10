@@ -86,7 +86,10 @@ use crate::txn::TransactionId;
 use crate::types::{Bound, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
+use metrics::{counter, gauge, histogram};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
+use tracing::{debug, instrument};
 
 /// LSM Tree storage engine.
 ///
@@ -200,7 +203,11 @@ impl<FS: FileSystem> LsmTree<FS> {
     }
     
     /// Get a value from the LSM tree at a specific snapshot.
+    #[instrument(skip(self, key), fields(key_len = key.len()))]
     fn get_internal(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<Vec<u8>>> {
+        let start = Instant::now();
+        debug!("LSM get operation");
+        
         // 1. Check active memtable
         {
             let memtable = self.active_memtable.read().unwrap();
@@ -280,10 +287,13 @@ impl<FS: FileSystem> LsmTree<FS> {
             }
         }
         
+        histogram!("lsm.get_duration").record(start.elapsed().as_secs_f64());
+        counter!("lsm.sstable_read").increment(1);
         Ok(None)
     }
     
     /// Insert a key-value pair into the active memtable.
+    #[instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     fn insert_internal(
         &self,
         key: Vec<u8>,
@@ -291,10 +301,13 @@ impl<FS: FileSystem> LsmTree<FS> {
         tx_id: TransactionId,
         commit_lsn: Option<LogSequenceNumber>,
     ) -> TableResult<()> {
+        let start = Instant::now();
+        debug!("LSM insert operation");
+        
         let memtable = self.active_memtable.write().unwrap();
         
         // Try to insert
-        match memtable.insert(key.clone(), value.clone(), tx_id, commit_lsn) {
+        let result = match memtable.insert(key.clone(), value.clone(), tx_id, commit_lsn) {
             Ok(()) => Ok(()),
             Err(TableError::MemtableFull) => {
                 // Memtable is full, need to rotate
@@ -306,7 +319,14 @@ impl<FS: FileSystem> LsmTree<FS> {
                 new_memtable.insert(key, value, tx_id, commit_lsn)
             }
             Err(e) => Err(e),
+        };
+        
+        if result.is_ok() {
+            counter!("lsm.memtable_write").increment(1);
+            histogram!("lsm.write_duration").record(start.elapsed().as_secs_f64());
         }
+        
+        result
     }
     
     /// Delete a key from the active memtable (inserts tombstone).
@@ -335,7 +355,11 @@ impl<FS: FileSystem> LsmTree<FS> {
     }
     
     /// Rotate the active memtable to immutable state.
+    #[instrument(skip(self))]
     fn rotate_memtable(&self) -> TableResult<()> {
+        let start = Instant::now();
+        debug!("Rotating memtable");
+        
         let mut active = self.active_memtable.write().unwrap();
         let mut immutable = self.immutable_memtables.write().unwrap();
         
@@ -348,6 +372,10 @@ impl<FS: FileSystem> LsmTree<FS> {
             Memtable::new(self.config.memtable.max_size),
         );
         immutable.push(old_memtable);
+        
+        counter!("lsm.memtable_flush").increment(1);
+        histogram!("lsm.flush_duration").record(start.elapsed().as_secs_f64());
+        // Note: memtable size tracking would require adding a size() method to Memtable
         
         // Background flush: The compaction manager's background thread will automatically
         // detect the immutable memtable and flush it to L0 SSTables. The compaction loop

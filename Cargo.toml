@@ -20,6 +20,8 @@ sha2 = { version = "0.11" }
 fs2 = "0.4.3"
 tracing = "0.1.44"
 tracing-test = "0.2.6"
+tracing-timing = "0.6"
+metrics = "0.24"
 lz4_flex = "0.13"
 zstd = "0.13"
 aes-gcm = "0.10"

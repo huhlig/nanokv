@@ -28,3 +28,8 @@ pub mod vfs;
 pub mod wal;
 
 pub mod prelude {}
+
+// Re-export metrics and tracing for convenience
+pub use metrics;
+pub use tracing;
+pub use tracing_timing;

@@ -22,10 +22,13 @@ use crate::txn::TransactionId;
 use crate::vfs::{File, FileSystem};
 use crate::wal::commit::{GroupCommitConfig, GroupCommitCoordinator};
 use crate::wal::{LogSequenceNumber, RecordData, WalError, WalRecord, WalResult};
+use metrics::{counter, gauge, histogram};
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, instrument, warn};
 
 /// WAL writer configuration
 #[derive(Debug, Clone)]
@@ -90,7 +93,9 @@ pub struct WalWriter<FS: FileSystem> {
 
 impl<FS: FileSystem> WalWriter<FS> {
     /// Create a new WAL writer
+    #[instrument(skip(fs, config), fields(path = %path))]
     pub fn create(fs: &FS, path: &str, config: WalWriterConfig) -> WalResult<Self> {
+        debug!("Creating new WAL writer");
         let file = fs.create_file(path)?;
 
         let state = WalWriterState {
@@ -139,7 +144,9 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Open an existing WAL file
+    #[instrument(skip(fs, config), fields(path = %path))]
     pub fn open(fs: &FS, path: &str, config: WalWriterConfig) -> WalResult<Self> {
+        debug!("Opening existing WAL writer");
         let file = fs.open_file(path)?;
 
         // Get file size to determine current offset
@@ -238,11 +245,16 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Write a BEGIN record
+    #[instrument(skip(self), fields(txn_id = %txn_id))]
     pub fn write_begin(&self, txn_id: TransactionId) -> WalResult<LogSequenceNumber> {
+        let start = Instant::now();
+        debug!("Writing BEGIN record");
         let mut state = self.state.write();
 
         // Check if transaction already exists
         if state.active_txns.contains(&txn_id) {
+            warn!("Transaction already exists");
+            counter!("wal.error", "type" => "transaction_already_exists").increment(1);
             return Err(WalError::TransactionAlreadyExists(txn_id));
         }
 
@@ -260,11 +272,16 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Track active transaction
         state.active_txns.insert(txn_id);
+        
+        counter!("wal.write").increment(1);
+        histogram!("wal.write_duration").record(start.elapsed().as_secs_f64());
+        gauge!("wal.active_transactions").set(state.active_txns.len() as f64);
 
         Ok(lsn)
     }
 
     /// Write a WRITE record
+    #[instrument(skip(self, key, value), fields(txn_id = %txn_id, table_id = %table_id, key_len = key.len(), value_len = value.len()))]
     pub fn write_operation(
         &self,
         txn_id: TransactionId,
@@ -273,10 +290,15 @@ impl<FS: FileSystem> WalWriter<FS> {
         key: Vec<u8>,
         value: Vec<u8>,
     ) -> WalResult<LogSequenceNumber> {
+        let start = Instant::now();
+        let bytes_written = key.len() + value.len();
+        debug!("Writing WRITE record");
         let mut state = self.state.write();
 
         // Check if transaction exists
         if !state.active_txns.contains(&txn_id) {
+            warn!("Transaction not found");
+            counter!("wal.error", "type" => "transaction_not_found").increment(1);
             return Err(WalError::TransactionNotFound(txn_id));
         }
 
@@ -297,17 +319,26 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Write record
         self.write_record_internal(&mut state, record)?;
+        
+        counter!("wal.write").increment(1);
+        counter!("wal.bytes_written").increment(bytes_written as u64);
+        histogram!("wal.write_duration").record(start.elapsed().as_secs_f64());
 
         Ok(lsn)
     }
 
     /// Write a COMMIT record
+    #[instrument(skip(self), fields(txn_id = %txn_id))]
     pub fn write_commit(&self, txn_id: TransactionId) -> WalResult<LogSequenceNumber> {
+        let start = Instant::now();
+        debug!("Writing COMMIT record");
         let lsn = {
             let mut state = self.state.write();
 
             // Check if transaction exists
             if !state.active_txns.contains(&txn_id) {
+                warn!("Transaction not found");
+                counter!("wal.error", "type" => "transaction_not_found").increment(1);
                 return Err(WalError::TransactionNotFound(txn_id));
             }
 
@@ -325,6 +356,8 @@ impl<FS: FileSystem> WalWriter<FS> {
 
             // Remove from active transactions
             state.active_txns.remove(&txn_id);
+            
+            gauge!("wal.active_transactions").set(state.active_txns.len() as f64);
 
             lsn
         };
@@ -334,8 +367,13 @@ impl<FS: FileSystem> WalWriter<FS> {
         if let Some(coordinator) = &self.group_commit {
             coordinator.submit_commit(txn_id, lsn)?;
         } else if self.config.sync_on_write {
+            let sync_start = Instant::now();
             self.flush()?;
+            histogram!("wal.sync_duration").record(sync_start.elapsed().as_secs_f64());
         }
+        
+        counter!("wal.write").increment(1);
+        histogram!("wal.write_duration").record(start.elapsed().as_secs_f64());
 
         Ok(lsn)
     }
@@ -420,7 +458,9 @@ impl<FS: FileSystem> WalWriter<FS> {
     }
 
     /// Flush buffered writes to disk
+    #[instrument(skip(self))]
     pub fn flush(&self) -> WalResult<()> {
+        debug!("Flushing WAL buffer");
         let mut state = self.state.write();
         self.flush_internal(&mut state)
     }
@@ -439,11 +479,14 @@ impl<FS: FileSystem> WalWriter<FS> {
         // Sync if configured AND group commit is disabled
         // When group commit is enabled, syncing is handled by the coordinator
         if self.config.sync_on_write && self.group_commit.is_none() {
+            counter!("wal.sync").increment(1);
             file.sync_data()?;
         }
 
         // Clear buffer
         state.buffer.clear();
+        
+        gauge!("wal.size_bytes").set(state.current_offset as f64);
 
         Ok(())
     }

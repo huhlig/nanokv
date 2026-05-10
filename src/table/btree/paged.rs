@@ -39,7 +39,10 @@ use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
+use metrics::{counter, histogram};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
+use tracing::{debug, instrument};
 
 /// Default B-Tree order (maximum keys per node).
 const DEFAULT_ORDER: usize = 64;
@@ -375,13 +378,26 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Read a node from disk.
+    #[instrument(skip(self), fields(page_id = %page_id))]
     fn read_node(&self, page_id: PageId) -> TableResult<BTreeNode> {
+        let start = Instant::now();
         let page = self.pager.read_page(page_id)?;
-        BTreeNode::from_bytes(page.data())
+        let result = BTreeNode::from_bytes(page.data());
+        
+        if result.is_ok() {
+            counter!("btree.node_read").increment(1);
+            histogram!("btree.read_duration").record(start.elapsed().as_secs_f64());
+        }
+        
+        result
     }
 
     /// Write a node to disk.
+    #[instrument(skip(self, node), fields(page_id = %page_id))]
     fn write_node(&self, page_id: PageId, node: &BTreeNode) -> TableResult<()> {
+        let start = Instant::now();
+        debug!("Writing BTree node");
+        
         let page_type = match node.node_type() {
             NodeType::Internal => PageType::BTreeInternal,
             NodeType::Leaf => PageType::BTreeLeaf,
@@ -390,12 +406,21 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let mut page = Page::new(page_id, page_type, self.pager.page_size().data_size());
         page.data_mut().extend_from_slice(&node.to_bytes());
         self.pager.write_page(&page)?;
+        
+        counter!("btree.node_write").increment(1);
+        histogram!("btree.write_duration").record(start.elapsed().as_secs_f64());
         Ok(())
     }
 
     /// Search for a key in the tree, returning the leaf page ID and position.
+    #[instrument(skip(self, key), fields(key_len = key.len()))]
     fn search(&self, key: &[u8]) -> TableResult<(PageId, usize)> {
+        let start = Instant::now();
+        debug!("BTree search operation");
+        
         let (leaf_page_id, pos, _path) = self.search_with_path(key)?;
+        
+        histogram!("btree.search_duration").record(start.elapsed().as_secs_f64());
         Ok((leaf_page_id, pos))
     }
 

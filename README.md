@@ -16,6 +16,7 @@
 - **Optional compression**: LZ4 and Zstd support
 - **Optional encryption**: AES-256-GCM encryption
 - **Virtual file system**: Pluggable storage backends
+- **Metrics & observability**: Built-in metrics and tracing for production monitoring
 
 ## Documentation
 
@@ -23,6 +24,7 @@
 
 - **[Architecture Overview](docs/ARCHITECTURE.md)** - System architecture and component details
 - **[File Format Specification](docs/FILE_FORMAT.md)** - Database and WAL file formats
+- **[Metrics and Observability](docs/METRICS_AND_OBSERVABILITY.md)** - Production monitoring and performance tracking
 - **[Architecture Decision Records](docs/adrs/)** - Key design decisions
 
 ### Key ADRs

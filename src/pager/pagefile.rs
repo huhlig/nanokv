@@ -21,8 +21,11 @@ use crate::pager::{
     PageType, PagerConfig, PagerError, PagerResult, PinTable, Superblock,
 };
 use crate::vfs::{File, FileSystem};
+use metrics::{counter, gauge, histogram};
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, instrument, warn};
 
 /// Pager - Manages page-level storage operations
 ///
@@ -55,7 +58,9 @@ pub struct Pager<FS: FileSystem> {
 
 impl<FS: FileSystem> Pager<FS> {
     /// Create a new database file with the given configuration
+    #[instrument(skip(fs, config), fields(path = %path))]
     pub fn create(fs: &FS, path: &str, config: PagerConfig) -> PagerResult<Self> {
+        debug!("Creating new pager");
         // Validate configuration
         config.validate().map_err(PagerError::ConfigError)?;
 
@@ -118,7 +123,9 @@ impl<FS: FileSystem> Pager<FS> {
     }
 
     /// Open an existing database file
+    #[instrument(skip(fs), fields(path = %path))]
     pub fn open(fs: &FS, path: &str) -> PagerResult<Self> {
+        debug!("Opening existing pager");
         let mut file = fs.open_file(path)?;
 
         // Read and parse file header from page 0
@@ -215,7 +222,11 @@ impl<FS: FileSystem> Pager<FS> {
     /// This will either:
     /// 1. Reuse a page from the free list, or
     /// 2. Grow the database by allocating a new page
+    #[instrument(skip(self), fields(page_type = ?page_type))]
     pub fn allocate_page(&self, page_type: PageType) -> PagerResult<PageId> {
+        let start = Instant::now();
+        debug!("Allocating page");
+        
         // Lock-free allocation: Try to pop from free list first
         // If that fails, allocate a new page from superblock
         let page_id = if let Some(page_id) = self.free_list.pop_page() {
@@ -228,6 +239,8 @@ impl<FS: FileSystem> Pager<FS> {
             let mut superblock = self.superblock.write();
             superblock.allocate_new_page()
         };
+        
+        counter!("pager.page_allocated").increment(1);
 
         // Acquire page-level write lock for the newly allocated page
         // This prevents concurrent access during initialization
@@ -282,19 +295,28 @@ impl<FS: FileSystem> Pager<FS> {
                 superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(page_size as u64, &superblock_bytes)?;
         }
-
+        
+        histogram!("pager.allocate_duration").record(start.elapsed().as_secs_f64());
         Ok(page_id)
     }
 
     /// Free a page (add it to the free list)
+    #[instrument(skip(self), fields(page_id = %page_id))]
     pub fn free_page(&self, page_id: PageId) -> PagerResult<()> {
+        let start = Instant::now();
+        debug!("Freeing page");
+        
         if page_id == PageId::from(0) || page_id == PageId::from(1) {
+            warn!("Attempted to free reserved page");
+            counter!("pager.error", "type" => "invalid_page_id").increment(1);
             return Err(PagerError::InvalidPageId(page_id));
         }
 
         // CRITICAL: Check if page is pinned before freeing
         // This prevents freeing pages that are currently being read
         if self.pin_table.is_pinned(page_id) {
+            warn!("Attempted to free pinned page");
+            counter!("pager.error", "type" => "page_pinned").increment(1);
             return Err(PagerError::PagePinned(page_id));
         }
 
@@ -378,19 +400,28 @@ impl<FS: FileSystem> Pager<FS> {
                 superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(page_size as u64, &superblock_bytes)?;
         }
-
+        
+        counter!("pager.page_freed").increment(1);
+        histogram!("pager.free_duration").record(start.elapsed().as_secs_f64());
         Ok(())
     }
 
     /// Read a page from disk (with caching)
+    #[instrument(skip(self), fields(page_id = %page_id))]
     pub fn read_page(&self, page_id: PageId) -> PagerResult<Page> {
+        let start = Instant::now();
+        debug!("Reading page");
+        
         if page_id.as_u64() >= self.total_pages() {
+            counter!("pager.error", "type" => "page_not_found").increment(1);
             return Err(PagerError::PageNotFound(page_id));
         }
 
         // Try cache first
         if let Some(cache) = &self.cache {
             if let Some(page) = cache.get(page_id) {
+                counter!("pager.page_read").increment(1);
+                histogram!("pager.read_duration").record(start.elapsed().as_secs_f64());
                 return Ok(page);
             }
         }
@@ -434,12 +465,20 @@ impl<FS: FileSystem> Pager<FS> {
 
         // CRITICAL: Always unpin the page, even if an error occurred
         self.pin_table.unpin(page_id);
+        
+        if result.is_ok() {
+            counter!("pager.page_read").increment(1);
+            histogram!("pager.read_duration").record(start.elapsed().as_secs_f64());
+        }
 
         result
     }
 
     /// Write a page to disk (with caching)
+    #[instrument(skip(self, page), fields(page_id = %page.page_id()))]
     pub fn write_page(&self, page: &Page) -> PagerResult<()> {
+        let start = Instant::now();
+        debug!("Writing page");
         if let Some(cache) = &self.cache {
             // Keep the cache updated, but also persist the page immediately so
             // reopened pagers observe the latest on-disk bytes.
@@ -459,7 +498,14 @@ impl<FS: FileSystem> Pager<FS> {
         }
 
         // No cache - write directly to disk
-        self.write_page_to_disk(page)
+        let result = self.write_page_to_disk(page);
+        
+        if result.is_ok() {
+            counter!("pager.page_write").increment(1);
+            histogram!("pager.write_duration").record(start.elapsed().as_secs_f64());
+        }
+        
+        result
     }
 
     /// Write a page directly to disk (bypassing cache)
@@ -492,7 +538,16 @@ impl<FS: FileSystem> Pager<FS> {
 
     /// Get cache statistics
     pub fn cache_stats(&self) -> Option<crate::pager::CacheStats> {
-        self.cache.as_ref().map(|c| c.stats())
+        let stats = self.cache.as_ref().map(|c| c.stats());
+        
+        // Update metrics gauges with current cache stats
+        if let Some(ref s) = stats {
+            gauge!("pager.cache.size").set(s.current_size as f64);
+            gauge!("pager.cache.dirty_pages").set(s.dirty_pages as f64);
+            gauge!("pager.cache.hit_rate").set(s.hit_rate());
+        }
+        
+        stats
     }
 
     /// Clear the cache
@@ -508,12 +563,18 @@ impl<FS: FileSystem> Pager<FS> {
     }
 
     /// Sync all changes to disk
+    #[instrument(skip(self))]
     pub fn sync(&self) -> PagerResult<()> {
+        let start = Instant::now();
+        debug!("Syncing pager to disk");
+        
         // Flush cache first
         self.flush_cache()?;
 
         let mut file = self.file.write();
         file.sync_all()?;
+        
+        histogram!("pager.sync_duration").record(start.elapsed().as_secs_f64());
         Ok(())
     }
 

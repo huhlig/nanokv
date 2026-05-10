@@ -28,6 +28,7 @@
 //! allowing concurrent operations on different shards.
 
 use crate::pager::{Page, PageId};
+use metrics::{counter, gauge};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -199,6 +200,7 @@ impl PageCache {
         if shard.entries.contains_key(&page_id) {
             // Cache hit
             shard.stats.hits += 1;
+            counter!("cache.hit").increment(1);
 
             // Clone the page before moving to front
             let page = shard.entries.get(&page_id).unwrap().page.clone();
@@ -210,6 +212,7 @@ impl PageCache {
         } else {
             // Cache miss
             shard.stats.misses += 1;
+            counter!("cache.miss").increment(1);
             None
         }
     }
@@ -398,6 +401,11 @@ impl PageCache {
             total_stats.current_size += shard.stats.current_size;
             total_stats.dirty_pages += shard.stats.dirty_pages;
         }
+        
+        // Update metrics gauges
+        gauge!("cache.size").set(total_stats.current_size as f64);
+        gauge!("cache.dirty_pages").set(total_stats.dirty_pages as f64);
+        gauge!("cache.hit_rate").set(total_stats.hit_rate());
 
         total_stats
     }
@@ -487,6 +495,7 @@ impl CacheShard {
     fn evict_lru(&mut self) -> Option<Page> {
         let tail_id = self.lru_tail?;
         self.stats.evictions += 1;
+        counter!("cache.eviction").increment(1);
         self.remove_entry(tail_id)
     }
 
