@@ -14,48 +14,37 @@
 // limitations under the License.
 //
 
-//! Manifest file for tracking LSM tree state and versions.
+//! Manifest storage for tracking LSM tree state and versions.
 //!
 //! The manifest tracks the current state of the LSM tree, including which SSTables
-//! are active at each level. It supports atomic updates through version edits and
-//! provides crash recovery by persisting state to disk.
+//! are active at each level. Unlike a standalone MANIFEST file, this implementation
+//! persists the entire manifest snapshot inside dedicated pager pages so it remains
+//! part of the single database file.
 //!
 //! # Architecture
 //!
 //! - **Version**: Immutable snapshot of LSM tree state (SSTables per level)
 //! - **VersionEdit**: Delta describing changes to apply to a version
-//! - **Manifest**: Manages versions and persists edits to disk
+//! - **Manifest**: Manages versions and persists them to pager-backed metadata pages
 //!
-//! # File Format
+//! # Storage Format
 //!
-//! The manifest file is a log of version edits in JSON Lines format:
-//! ```text
-//! {"type":"add_sstable","id":1,"level":0,"min_key":[...],"max_key":[...],...}
-//! {"type":"remove_sstable","id":1}
-//! {"type":"add_sstable","id":2,"level":1,"min_key":[...],"max_key":[...],...}
-//! ```
-//!
-//! # Atomic Updates
-//!
-//! Updates are atomic through a write-new-rename strategy:
-//! 1. Write new manifest to temporary file
-//! 2. Fsync temporary file
-//! 3. Rename temporary file to manifest file (atomic on POSIX)
-//! 4. Fsync directory
+//! The manifest is serialized as a binary snapshot using `bincode` and written across
+//! one or more contiguous `PageType::LsmMeta` pages. The first page stores a small
+//! header followed by manifest payload bytes. Remaining pages store continuation data.
 //!
 //! # Recovery
 //!
-//! On startup, the manifest is replayed from disk to reconstruct the current version.
+//! On startup, the manifest is recovered by reading the manifest root page and
+//! reconstructing the current version from the persisted snapshot.
 
-use crate::pager::PageId;
+use crate::pager::{Page, PageId, PageType, Pager};
 use crate::table::error::{TableError, TableResult};
 use crate::table::lsm::SStableId;
-use crate::vfs::{File, FileSystem};
+use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 /// Serialize bytes as hex string for JSON
@@ -409,194 +398,375 @@ impl Version {
     }
 }
 
-/// Manifest manages versions and persists state to disk.
+/// Persisted manifest snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ManifestSnapshot {
+    version: VersionDisk,
+}
+
+/// Disk-serializable version representation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct VersionDisk {
+    levels: Vec<Vec<FileMetadata>>,
+    next_sstable_id: u64,
+    log_number: u64,
+}
+
+impl From<&Version> for VersionDisk {
+    fn from(version: &Version) -> Self {
+        Self {
+            levels: version.levels.clone(),
+            next_sstable_id: version.next_sstable_id,
+            log_number: version.log_number,
+        }
+    }
+}
+
+impl VersionDisk {
+    fn into_version(self, num_levels: usize) -> TableResult<Version> {
+        if self.levels.len() != num_levels {
+            return Err(TableError::Corruption(format!(
+                "Manifest level count mismatch: expected {}, got {}",
+                num_levels,
+                self.levels.len()
+            )));
+        }
+
+        let mut files_by_id = HashMap::new();
+        for (level_idx, level_files) in self.levels.iter().enumerate() {
+            for metadata in level_files {
+                if metadata.level as usize != level_idx {
+                    return Err(TableError::Corruption(format!(
+                        "Manifest file {} stored in wrong level: metadata={}, container={}",
+                        metadata.id,
+                        metadata.level,
+                        level_idx
+                    )));
+                }
+                if files_by_id.insert(metadata.id, metadata.clone()).is_some() {
+                    return Err(TableError::Corruption(format!(
+                        "Duplicate SSTable ID {} in manifest",
+                        metadata.id
+                    )));
+                }
+            }
+        }
+
+        Ok(Version {
+            levels: self.levels,
+            files_by_id,
+            next_sstable_id: self.next_sstable_id,
+            log_number: self.log_number,
+        })
+    }
+}
+
+/// Manifest page header layout.
+/// [magic:8][format_version:4][num_levels:4][payload_len:8][page_count:4][page_ids...]
+struct ManifestPageHeader;
+
+impl ManifestPageHeader {
+    const MAGIC: [u8; 8] = *b"NKVMANF1";
+    const FORMAT_VERSION: u32 = 2;
+    const FIXED_SIZE: usize = 28;
+
+    fn size_for_page_count(page_count: usize) -> usize {
+        Self::FIXED_SIZE + (page_count * 8)
+    }
+
+    fn max_page_count(first_page_capacity: usize) -> usize {
+        if first_page_capacity <= Self::FIXED_SIZE {
+            return 0;
+        }
+        (first_page_capacity - Self::FIXED_SIZE) / 8
+    }
+
+    fn encode(
+        num_levels: usize,
+        payload_len: usize,
+        page_ids: &[PageId],
+    ) -> TableResult<Vec<u8>> {
+        let num_levels = u32::try_from(num_levels)
+            .map_err(|_| TableError::Other("Too many manifest levels".to_string()))?;
+        let payload_len = u64::try_from(payload_len)
+            .map_err(|_| TableError::Other("Manifest payload too large".to_string()))?;
+        let page_count = u32::try_from(page_ids.len())
+            .map_err(|_| TableError::Other("Manifest page count too large".to_string()))?;
+
+        let mut bytes = Vec::with_capacity(Self::size_for_page_count(page_ids.len()));
+        bytes.extend_from_slice(&Self::MAGIC);
+        bytes.extend_from_slice(&Self::FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&num_levels.to_le_bytes());
+        bytes.extend_from_slice(&payload_len.to_le_bytes());
+        bytes.extend_from_slice(&page_count.to_le_bytes());
+        for page_id in page_ids {
+            bytes.extend_from_slice(&page_id.as_u64().to_le_bytes());
+        }
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8], expected_num_levels: usize) -> TableResult<(usize, Vec<PageId>, usize)> {
+        if bytes.len() < Self::FIXED_SIZE {
+            return Err(TableError::Corruption("Manifest page header truncated".to_string()));
+        }
+        if bytes[0..8] != Self::MAGIC {
+            return Err(TableError::Corruption("Invalid manifest page magic".to_string()));
+        }
+
+        let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        if version != Self::FORMAT_VERSION {
+            return Err(TableError::InvalidFormatVersion(version));
+        }
+
+        let num_levels = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        if num_levels != expected_num_levels {
+            return Err(TableError::Corruption(format!(
+                "Manifest num_levels mismatch: expected {}, got {}",
+                expected_num_levels,
+                num_levels
+            )));
+        }
+
+        let payload_len = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
+        let page_count = u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize;
+        if page_count == 0 {
+            return Err(TableError::Corruption("Manifest page count cannot be zero".to_string()));
+        }
+
+        let header_size = Self::size_for_page_count(page_count);
+        if bytes.len() < header_size {
+            return Err(TableError::Corruption("Manifest page header missing page IDs".to_string()));
+        }
+
+        let mut page_ids = Vec::with_capacity(page_count);
+        let mut offset = Self::FIXED_SIZE;
+        for _ in 0..page_count {
+            let raw = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            page_ids.push(PageId::from(raw));
+            offset += 8;
+        }
+
+        Ok((payload_len, page_ids, header_size))
+    }
+}
+
+/// Manifest manages versions and persists state to pager pages.
 pub struct Manifest<FS: FileSystem> {
-    /// Virtual file system
-    fs: Arc<FS>,
-    
-    /// Path to manifest file
-    manifest_path: PathBuf,
-    
+    /// Pager used for manifest persistence.
+    pager: Arc<Pager<FS>>,
+
+    /// Root page ID of the manifest snapshot.
+    root_page_id: PageId,
+
     /// Current version (protected by RwLock for concurrent reads)
     current: Arc<RwLock<Version>>,
-    
+
     /// Number of levels in the LSM tree
     num_levels: usize,
 }
 
 impl<FS: FileSystem> Manifest<FS> {
-    /// Manifest file name
-    const MANIFEST_FILE: &'static str = "MANIFEST";
-    
-    /// Temporary manifest file name (for atomic updates)
-    const MANIFEST_TEMP: &'static str = "MANIFEST.tmp";
-    
-    /// Create a new manifest.
-    pub fn new(fs: Arc<FS>, dir: &Path, num_levels: usize) -> Self {
-        let manifest_path = dir.join(Self::MANIFEST_FILE);
-        let current = Arc::new(RwLock::new(Version::new(num_levels)));
-        
-        Self {
-            fs,
-            manifest_path,
-            current,
+    /// Create a new empty manifest at the provided root page.
+    pub fn new(pager: Arc<Pager<FS>>, root_page_id: PageId, num_levels: usize) -> TableResult<Self> {
+        let version = Version::new(num_levels);
+        let manifest = Self {
+            pager,
+            root_page_id,
+            current: Arc::new(RwLock::new(version.clone())),
             num_levels,
-        }
-    }
-    
-    /// Open an existing manifest or create a new one.
-    pub fn open(fs: Arc<FS>, dir: &Path, num_levels: usize) -> TableResult<Self> {
-        let manifest_path = dir.join(Self::MANIFEST_FILE);
-        let manifest_path_str = manifest_path.to_str().ok_or_else(|| {
-            TableError::Other("Invalid manifest path".to_string())
-        })?;
-        
-        let version = if fs.exists(manifest_path_str).map_err(|e| {
-            TableError::Other(format!("Failed to check manifest existence: {}", e))
-        })? {
-            // Recover from existing manifest
-            Self::recover_from_file(&fs, manifest_path_str, num_levels)?
-        } else {
-            // Create new empty version
-            Version::new(num_levels)
         };
-        
-        let current = Arc::new(RwLock::new(version));
-        
+        manifest.write_manifest(&version)?;
+        Ok(manifest)
+    }
+
+    /// Open an existing manifest from pager pages.
+    pub fn open(pager: Arc<Pager<FS>>, root_page_id: PageId, num_levels: usize) -> TableResult<Self> {
+        let version = Self::recover_from_pages(&pager, root_page_id, num_levels)?;
         Ok(Self {
-            fs,
-            manifest_path,
-            current,
+            pager,
+            root_page_id,
+            current: Arc::new(RwLock::new(version)),
             num_levels,
         })
     }
-    
-    /// Recover version from manifest file.
-    fn recover_from_file(
-        fs: &Arc<FS>,
-        path: &str,
-        num_levels: usize,
-    ) -> TableResult<Version> {
-        let file = fs.open_file(path).map_err(|e| {
-            TableError::Other(format!("Failed to open manifest: {}", e))
-        })?;
-        let reader = BufReader::new(file);
-        
-        let mut version = Version::new(num_levels);
-        
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| {
-                TableError::Corruption(format!("Failed to read manifest line {}: {}", line_num, e))
-            })?;
-            
-            if line.trim().is_empty() {
-                continue;
-            }
-            
-            let edit: VersionEdit = serde_json::from_str(&line).map_err(|e| {
-                TableError::Corruption(format!(
-                    "Failed to parse manifest line {}: {}",
-                    line_num, e
-                ))
-            })?;
-            
-            version = version.apply(&edit)?;
-        }
-        
-        Ok(version)
-    }
-    
+
     /// Apply a version edit atomically.
     pub fn apply_edit(&self, edit: VersionEdit) -> TableResult<()> {
         self.apply_edits(vec![edit])
     }
-    
+
     /// Apply multiple version edits atomically.
     pub fn apply_edits(&self, edits: Vec<VersionEdit>) -> TableResult<()> {
-        // Apply edits to create new version
         let new_version = {
             let current = self.current.read().unwrap();
             let mut version = current.clone();
-            
+
             for edit in &edits {
                 version = version.apply(edit)?;
             }
-            
+
             version
         };
-        
-        // Write new manifest atomically
+
         self.write_manifest(&new_version)?;
-        
-        // Update current version
+
         {
             let mut current = self.current.write().unwrap();
             *current = new_version;
         }
-        
+
         Ok(())
     }
-    
-    /// Write manifest to disk atomically.
+
+    fn recover_from_pages(
+        pager: &Arc<Pager<FS>>,
+        root_page_id: PageId,
+        num_levels: usize,
+    ) -> TableResult<Version> {
+        let first_page = pager.read_page(root_page_id)?;
+        if first_page.page_type() != PageType::LsmMeta {
+            return Err(TableError::Corruption(format!(
+                "Manifest root page {} has wrong type {:?}",
+                root_page_id,
+                first_page.page_type()
+            )));
+        }
+
+        let first_data = first_page.data();
+        let (payload_len, page_ids, header_size) = ManifestPageHeader::decode(first_data, num_levels)?;
+        let mut payload = Vec::with_capacity(payload_len);
+
+        let first_chunk = &first_data[header_size..];
+        payload.extend_from_slice(&first_chunk[..first_chunk.len().min(payload_len)]);
+
+        for page_id in page_ids.iter().skip(1) {
+            let page = pager.read_page(*page_id)?;
+            if page.page_type() != PageType::LsmMeta {
+                return Err(TableError::Corruption(format!(
+                    "Manifest continuation page {} has wrong type {:?}",
+                    page_id,
+                    page.page_type()
+                )));
+            }
+            let remaining = payload_len.saturating_sub(payload.len());
+            if remaining == 0 {
+                break;
+            }
+            let data = page.data();
+            payload.extend_from_slice(&data[..data.len().min(remaining)]);
+        }
+
+        payload.truncate(payload_len);
+
+        if payload.len() != payload_len {
+            return Err(TableError::Corruption(format!(
+                "Manifest payload truncated: expected {} bytes, got {}",
+                payload_len,
+                payload.len()
+            )));
+        }
+
+        let snapshot: ManifestSnapshot = bincode::deserialize(&payload).map_err(|e| {
+            TableError::Corruption(format!("Failed to deserialize manifest snapshot: {}", e))
+        })?;
+
+        snapshot.version.into_version(num_levels)
+    }
+
     fn write_manifest(&self, version: &Version) -> TableResult<()> {
-        let manifest_path_str = self.manifest_path.to_str().ok_or_else(|| {
-            TableError::Other("Invalid manifest path".to_string())
+        let snapshot = ManifestSnapshot {
+            version: VersionDisk::from(version),
+        };
+        let payload = bincode::serialize(&snapshot).map_err(|e| {
+            TableError::Other(format!("Failed to serialize manifest snapshot: {}", e))
         })?;
-        
-        // Remove existing manifest if it exists
-        if self.fs.exists(manifest_path_str).unwrap_or(false) {
-            let _ = self.fs.remove_file(manifest_path_str);
+
+        let page_capacity = self.pager.page_size().data_size();
+        let max_page_count = ManifestPageHeader::max_page_count(page_capacity);
+        if max_page_count == 0 {
+            return Err(TableError::Other(
+                "Pager page size too small for manifest metadata".to_string(),
+            ));
         }
-        
-        // Write directly to manifest file (simpler approach without atomic rename)
-        // In production, you'd want atomic rename, but VFS doesn't support it yet
-        let mut file = self.fs.create_file(manifest_path_str).map_err(|e| {
-            TableError::Other(format!("Failed to create manifest: {}", e))
-        })?;
-        
-        // Write all edits to reconstruct this version
-        // First, set the next SSTable ID
-        let edit = VersionEdit::set_next_sstable_id(version.next_sstable_id);
-        let line = serde_json::to_string(&edit).map_err(|e| {
-            TableError::Other(format!("Failed to serialize edit: {}", e))
-        })?;
-        writeln!(file, "{}", line)?;
-        
-        // Set log number
-        let edit = VersionEdit::set_log_number(version.log_number);
-        let line = serde_json::to_string(&edit).map_err(|e| {
-            TableError::Other(format!("Failed to serialize edit: {}", e))
-        })?;
-        writeln!(file, "{}", line)?;
-        
-        // Add all files
-        for (_, metadata) in &version.files_by_id {
-            let edit = VersionEdit::add_sstable(metadata.clone());
-            let line = serde_json::to_string(&edit).map_err(|e| {
-                TableError::Other(format!("Failed to serialize edit: {}", e))
-            })?;
-            writeln!(file, "{}", line)?;
+
+        let mut page_ids = vec![self.root_page_id];
+        let page_count = loop {
+            let page_count = page_ids.len();
+            let header_size = ManifestPageHeader::size_for_page_count(page_count);
+            if header_size >= page_capacity {
+                return Err(TableError::Other(
+                    "Manifest header exceeds pager page capacity".to_string(),
+                ));
+            }
+
+            let first_page_capacity = page_capacity - header_size;
+            let remaining = payload.len().saturating_sub(first_page_capacity);
+            let continuation_pages = if remaining == 0 {
+                0
+            } else {
+                remaining.div_ceil(page_capacity)
+            };
+            let required_page_count = 1 + continuation_pages;
+
+            if required_page_count > max_page_count {
+                return Err(TableError::Other(format!(
+                    "Manifest requires {} pages, exceeds header address capacity {}",
+                    required_page_count, max_page_count
+                )));
+            }
+
+            if required_page_count == page_count {
+                break required_page_count;
+            }
+
+            while page_ids.len() < required_page_count {
+                page_ids.push(self.pager.allocate_page(PageType::LsmMeta)?);
+            }
+        };
+
+        let header = ManifestPageHeader::encode(self.num_levels, payload.len(), &page_ids)?;
+        let first_page_capacity = page_capacity - header.len();
+
+        for (page_offset, page_id) in page_ids.iter().copied().take(page_count).enumerate() {
+            let mut page = Page::new(page_id, PageType::LsmMeta, page_capacity);
+
+            let start = if page_offset == 0 {
+                0
+            } else {
+                first_page_capacity + (page_offset - 1) * page_capacity
+            };
+            let end = if page_offset == 0 {
+                first_page_capacity.min(payload.len())
+            } else {
+                (start + page_capacity).min(payload.len())
+            };
+
+            if page_offset == 0 {
+                page.data_mut().extend_from_slice(&header);
+            }
+
+            if start < end {
+                page.data_mut().extend_from_slice(&payload[start..end]);
+            }
+
+            self.pager.write_page(&page)?;
         }
-        
-        // Fsync file
-        file.sync_all().map_err(|e| {
-            TableError::Other(format!("Failed to sync manifest: {}", e))
-        })?;
-        
+
+        self.pager.sync()?;
         Ok(())
     }
-    
+
     /// Get the current version.
     pub fn current(&self) -> Version {
         self.current.read().unwrap().clone()
     }
-    
+
     /// Allocate a new SSTable ID.
     pub fn allocate_sstable_id(&self) -> SStableId {
         let mut current = self.current.write().unwrap();
         current.allocate_sstable_id()
     }
-    
+
     /// Get obsolete files that can be garbage collected.
     ///
     /// Returns file IDs that are not in the current version but may still
@@ -604,21 +774,27 @@ impl<FS: FileSystem> Manifest<FS> {
     pub fn get_obsolete_files(&self, all_file_ids: &HashSet<SStableId>) -> HashSet<SStableId> {
         let current = self.current.read().unwrap();
         let active_ids = current.active_file_ids();
-        
+
         all_file_ids.difference(&active_ids).copied().collect()
     }
-    
+
     /// Get the number of levels.
     pub fn num_levels(&self) -> usize {
         self.num_levels
+    }
+
+    /// Get the manifest root page ID.
+    pub fn root_page_id(&self) -> PageId {
+        self.root_page_id
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pager::{PageType, Pager, PagerConfig};
     use crate::vfs::MemoryFileSystem;
-    
+
     fn create_test_metadata(id: u64, level: u32) -> FileMetadata {
         FileMetadata {
             id: SStableId::new(id),
@@ -770,58 +946,57 @@ mod tests {
         assert_eq!(version.next_sstable_id(), 4);
     }
     
+    fn create_test_manifest() -> (Arc<Pager<MemoryFileSystem>>, Manifest<MemoryFileSystem>) {
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let manifest = Manifest::new(pager.clone(), root_page_id, 7).unwrap();
+        (pager, manifest)
+    }
+
     #[test]
     fn test_manifest_new() {
-        let fs = Arc::new(MemoryFileSystem::new());
-        let dir = Path::new("/test");
-        let manifest = Manifest::new(fs, dir, 7);
-        
+        let (_pager, manifest) = create_test_manifest();
+
         let version = manifest.current();
         assert_eq!(version.num_levels(), 7);
         assert_eq!(version.total_file_count(), 0);
     }
-    
+
     #[test]
     fn test_manifest_apply_edit() {
-        let fs = Arc::new(MemoryFileSystem::new());
-        let dir = Path::new("/test");
-        let dir_str = dir.to_str().unwrap();
-        fs.create_directory_all(dir_str).unwrap();
-        
-        let manifest = Manifest::new(fs, dir, 7);
-        
+        let (_pager, manifest) = create_test_manifest();
+
         let metadata = create_test_metadata(1, 0);
         let edit = VersionEdit::add_sstable(metadata);
         manifest.apply_edit(edit).unwrap();
-        
+
         let version = manifest.current();
         assert_eq!(version.total_file_count(), 1);
         assert_eq!(version.level_file_count(0), 1);
     }
-    
+
     #[test]
     fn test_manifest_persistence() {
-        let fs = Arc::new(MemoryFileSystem::new());
-        let dir = Path::new("/test");
-        let dir_str = dir.to_str().unwrap();
-        fs.create_directory_all(dir_str).unwrap();
-        
-        // Create manifest and add files
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+
         {
-            let manifest = Manifest::new(fs.clone(), dir, 7);
-            
+            let manifest = Manifest::new(pager.clone(), root_page_id, 7).unwrap();
+
             for id in 1..=3 {
                 let metadata = create_test_metadata(id, 0);
                 let edit = VersionEdit::add_sstable(metadata);
                 manifest.apply_edit(edit).unwrap();
             }
         }
-        
-        // Reopen manifest and verify state
+
         {
-            let manifest = Manifest::open(fs, dir, 7).unwrap();
+            let reopened_pager = Arc::new(Pager::open(&fs, "test.db").unwrap());
+            let manifest = Manifest::open(reopened_pager, root_page_id, 7).unwrap();
             let version = manifest.current();
-            
+
             assert_eq!(version.total_file_count(), 3);
             assert_eq!(version.level_file_count(0), 3);
             assert!(version.get_file(SStableId::new(1)).is_some());
@@ -829,81 +1004,63 @@ mod tests {
             assert!(version.get_file(SStableId::new(3)).is_some());
         }
     }
-    
+
     #[test]
     fn test_manifest_allocate_sstable_id() {
-        let fs = Arc::new(MemoryFileSystem::new());
-        let dir = Path::new("/test");
-        let dir_str = dir.to_str().unwrap();
-        fs.create_directory_all(dir_str).unwrap();
-        
-        let manifest = Manifest::new(fs, dir, 7);
-        
+        let (_pager, manifest) = create_test_manifest();
+
         let id1 = manifest.allocate_sstable_id();
         let id2 = manifest.allocate_sstable_id();
-        
+
         assert_eq!(id1, SStableId::new(1));
         assert_eq!(id2, SStableId::new(2));
     }
-    
+
     #[test]
     fn test_manifest_get_obsolete_files() {
-        let fs = Arc::new(MemoryFileSystem::new());
-        let dir = Path::new("/test");
-        let dir_str = dir.to_str().unwrap();
-        fs.create_directory_all(dir_str).unwrap();
-        
-        let manifest = Manifest::new(fs, dir, 7);
-        
-        // Add files 1, 2, 3
+        let (_pager, manifest) = create_test_manifest();
+
         for id in 1..=3 {
             let metadata = create_test_metadata(id, 0);
             let edit = VersionEdit::add_sstable(metadata);
             manifest.apply_edit(edit).unwrap();
         }
-        
-        // Remove file 2
+
         let edit = VersionEdit::remove_sstable(SStableId::new(2));
         manifest.apply_edit(edit).unwrap();
-        
-        // All files on disk: 1, 2, 3, 4
+
         let all_files: HashSet<_> = (1..=4).map(SStableId::new).collect();
-        
-        // Obsolete files should be 2 and 4
+
         let obsolete = manifest.get_obsolete_files(&all_files);
         assert_eq!(obsolete.len(), 2);
         assert!(obsolete.contains(&SStableId::new(2)));
         assert!(obsolete.contains(&SStableId::new(4)));
     }
-    
+
     #[test]
     fn test_manifest_recovery_with_edits() {
-        let fs = Arc::new(MemoryFileSystem::new());
-        let dir = Path::new("/test");
-        let dir_str = dir.to_str().unwrap();
-        fs.create_directory_all(dir_str).unwrap();
-        
-        // Create manifest and apply multiple edits
+        let fs = MemoryFileSystem::new();
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+
         {
-            let manifest = Manifest::new(fs.clone(), dir, 7);
-            
-            // Add files
+            let manifest = Manifest::new(pager.clone(), root_page_id, 7).unwrap();
+
             for id in 1..=5 {
                 let metadata = create_test_metadata(id, 0);
                 let edit = VersionEdit::add_sstable(metadata);
                 manifest.apply_edit(edit).unwrap();
             }
-            
-            // Remove some files
+
             manifest.apply_edit(VersionEdit::remove_sstable(SStableId::new(2))).unwrap();
             manifest.apply_edit(VersionEdit::remove_sstable(SStableId::new(4))).unwrap();
         }
-        
-        // Reopen and verify final state
+
         {
-            let manifest = Manifest::open(fs, dir, 7).unwrap();
+            let reopened_pager = Arc::new(Pager::open(&fs, "test.db").unwrap());
+            let manifest = Manifest::open(reopened_pager, root_page_id, 7).unwrap();
             let version = manifest.current();
-            
+
             assert_eq!(version.total_file_count(), 3);
             assert!(version.get_file(SStableId::new(1)).is_some());
             assert!(version.get_file(SStableId::new(2)).is_none());
@@ -911,6 +1068,28 @@ mod tests {
             assert!(version.get_file(SStableId::new(4)).is_none());
             assert!(version.get_file(SStableId::new(5)).is_some());
         }
+    }
+
+    #[test]
+    fn test_manifest_spans_multiple_pages() {
+        let fs = MemoryFileSystem::new();
+        let mut config = PagerConfig::default();
+        config.page_size = crate::pager::PageSize::Size4KB;
+        let pager = Arc::new(Pager::create(&fs, "large.db", config).unwrap());
+        let root_page_id = pager.allocate_page(PageType::LsmMeta).unwrap();
+        let manifest = Manifest::new(pager.clone(), root_page_id, 7).unwrap();
+
+        for id in 1..=256 {
+            let mut metadata = create_test_metadata(id, (id % 3) as u32);
+            metadata.min_key = vec![b'a'; 64];
+            metadata.max_key = vec![b'z'; 64];
+            metadata.total_size = 1024 * id;
+            manifest.apply_edit(VersionEdit::add_sstable(metadata)).unwrap();
+        }
+
+        let reopened_pager = Arc::new(Pager::open(&fs, "large.db").unwrap());
+        let reopened = Manifest::open(reopened_pager, root_page_id, 7).unwrap();
+        assert_eq!(reopened.current().total_file_count(), 256);
     }
 }
 
