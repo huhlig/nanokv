@@ -15,11 +15,15 @@
 //
 pub mod btree;
 mod error;
-mod lsm;
+pub mod lsm;
 mod traits;
 
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
+pub use self::lsm::{
+    BloomFilter, BloomFilterBuilder, CompactionConfig, CompactionStrategy, LevelConfig,
+    LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
+};
 pub use self::traits::{
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
     ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
