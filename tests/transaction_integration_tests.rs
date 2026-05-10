@@ -20,9 +20,15 @@
 //! isolation levels, and commit/rollback behavior.
 
 use nanokv::table::TableId;
-use nanokv::txn::{Transaction, TransactionId};
+use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::IsolationLevel;
 use nanokv::wal::LogSequenceNumber;
+use std::sync::{Arc, Mutex};
+
+/// Helper to create a shared conflict detector for tests
+fn create_conflict_detector() -> Arc<Mutex<ConflictDetector>> {
+    Arc::new(Mutex::new(ConflictDetector::new()))
+}
 
 /// Test basic transaction creation and state
 #[test]
@@ -31,6 +37,7 @@ fn test_transaction_creation() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     assert_eq!(tx.id(), TransactionId::from(1));
@@ -46,6 +53,7 @@ fn test_transaction_put() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -67,6 +75,7 @@ fn test_transaction_delete() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -91,6 +100,7 @@ fn test_transaction_delete_nonexistent() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -107,6 +117,7 @@ fn test_transaction_get_from_write_set() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -138,6 +149,7 @@ fn test_transaction_update() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -165,6 +177,7 @@ fn test_transaction_commit() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -183,6 +196,7 @@ fn test_transaction_rollback() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -199,6 +213,7 @@ fn test_transaction_state_transitions() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     // Initially active
@@ -219,6 +234,7 @@ fn test_operations_after_commit_fail() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -238,6 +254,7 @@ fn test_transaction_multiple_tables() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table1 = TableId::from(1);
@@ -281,6 +298,7 @@ fn test_transaction_isolation_levels() {
             TransactionId::from(i as u64),
             LogSequenceNumber::from(100),
             *level,
+            create_conflict_detector(),
         );
         assert_eq!(tx.isolation_level(), *level);
     }
@@ -293,6 +311,7 @@ fn test_transaction_read_tracking_serializable() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::Serializable,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -313,6 +332,7 @@ fn test_transaction_read_tracking_read_committed() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -332,6 +352,7 @@ fn test_transaction_large_write_set() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -365,6 +386,7 @@ fn test_transaction_mixed_operations() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -399,6 +421,7 @@ fn test_transaction_prepare_phase() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -418,6 +441,7 @@ fn test_transaction_cannot_prepare_twice() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     // First prepare succeeds
@@ -434,6 +458,7 @@ fn test_transaction_empty_write_set_commit() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     // Commit with no writes should succeed
@@ -447,6 +472,7 @@ fn test_transaction_empty_write_set_rollback() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     // Rollback with no writes should succeed
@@ -460,6 +486,7 @@ fn test_transaction_record_write() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);
@@ -482,6 +509,7 @@ fn test_transaction_record_delete() {
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
+        create_conflict_detector(),
     );
     
     let table_id = TableId::from(1);

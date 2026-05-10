@@ -15,11 +15,12 @@
 //
 
 use crate::table::TableId;
-use crate::txn::{TransactionError, TransactionResult};
+use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{IsolationLevel, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
+use std::sync::{Arc, Mutex};
 
 /// Transaction ID type
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
@@ -66,6 +67,43 @@ pub struct CommitInfo {
     pub durable_lsn: Option<LogSequenceNumber>,
 }
 
+/// Transaction trait for supporting multiple storage engines.
+///
+/// Different storage engines have different transaction semantics:
+/// - In-memory BTree: Transactions are trivially rolled back by discarding changes
+/// - LSM Tree: Requires WAL coordination for durability
+/// - Paged BTree: Requires page-level undo/redo logging
+///
+/// This trait provides a uniform interface for transaction operations across engines.
+pub trait TransactionOps {
+    /// Get the transaction ID.
+    fn id(&self) -> TransactionId;
+
+    /// Get the isolation level of this transaction.
+    fn isolation_level(&self) -> IsolationLevel;
+
+    /// Get the snapshot LSN at which this transaction reads.
+    fn snapshot_lsn(&self) -> LogSequenceNumber;
+
+    /// Get a value from a table.
+    fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
+
+    /// Put a key-value pair into a table.
+    fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
+
+    /// Delete a key from a table.
+    fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool>;
+
+    /// Delete a range of keys from a table.
+    fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64>;
+
+    /// Commit the transaction.
+    fn commit(self) -> TransactionResult<CommitInfo>;
+
+    /// Rollback the transaction.
+    fn rollback(self) -> TransactionResult<()>;
+}
+
 // TODO(MVCC): Transaction state machine for ACID properties
 // Tracks the lifecycle of a transaction:
 // - Active: Transaction is open and can perform operations
@@ -87,30 +125,32 @@ enum TransactionState {
 
 /// Transaction struct for managing database transactions.
 pub struct Transaction {
-    // TODO(MVCC): Implement transaction state tracking
     // Core transaction identity and isolation
     txn_id: TransactionId,
     snapshot_lsn: LogSequenceNumber,
     isolation: IsolationLevel,
     state: TransactionState,
 
-    // TODO(MVCC): Implement read/write set tracking for conflict detection
     // For Serializable isolation: track all keys read to detect read-write conflicts
     // Only populated when isolation == Serializable
     read_set: HashSet<(TableId, Vec<u8>)>,
 
     // Track all writes for commit/rollback
     // (TableId, Key) -> Option<Value> mapping of all mutations in this transaction
-    // None represents a delete, Some(value) represents a put
+    // None represents a delete (tombstone), Some(value) represents a put
     write_set: HashMap<(TableId, Vec<u8>), Option<Vec<u8>>>,
+
+    // Shared conflict detector for coordinating with other transactions
+    conflict_detector: Arc<Mutex<ConflictDetector>>,
 }
 
 impl Transaction {
-    /// Create a new transaction with the given ID, snapshot LSN, and isolation level.
+    /// Create a new transaction with the given ID, snapshot LSN, isolation level, and conflict detector.
     pub fn new(
         txn_id: TransactionId,
         snapshot_lsn: LogSequenceNumber,
         isolation: IsolationLevel,
+        conflict_detector: Arc<Mutex<ConflictDetector>>,
     ) -> Self {
         Self {
             txn_id,
@@ -119,6 +159,7 @@ impl Transaction {
             state: TransactionState::Active,
             read_set: HashSet::new(),
             write_set: HashMap::new(),
+            conflict_detector,
         }
     }
 
@@ -223,6 +264,12 @@ impl Transaction {
             return Err(TransactionError::InvalidState(self.txn_id));
         }
 
+        // Check for write-write conflicts and acquire lock
+        let mut detector = self.conflict_detector.lock().unwrap();
+        detector.check_write_conflict(table, key, self.txn_id)?;
+        detector.acquire_write_lock(table, key.to_vec(), self.txn_id);
+        drop(detector);
+
         // Record the write in the write set
         self.record_write(table, key.to_vec(), value.to_vec());
         Ok(())
@@ -237,6 +284,12 @@ impl Transaction {
         if !self.is_active() {
             return Err(TransactionError::InvalidState(self.txn_id));
         }
+
+        // Check for write-write conflicts and acquire lock
+        let mut detector = self.conflict_detector.lock().unwrap();
+        detector.check_write_conflict(table, key, self.txn_id)?;
+        detector.acquire_write_lock(table, key.to_vec(), self.txn_id);
+        drop(detector);
 
         let write_key = (table, key.to_vec());
         
@@ -282,28 +335,34 @@ impl Transaction {
     ///
     /// # Implementation Note
     ///
-    /// Currently only validates state and returns mock commit info. Full implementation
-    /// requires:
-    /// 1. Conflict detection with other transactions
-    /// 2. Writing changes to WAL
-    /// 3. Applying write set to table engines
-    /// 4. Releasing locks
+    /// Currently validates state, performs conflict detection, and releases locks.
+    /// Full implementation requires:
+    /// 1. Writing changes to WAL
+    /// 2. Applying write set to table engines
     pub fn commit(mut self) -> TransactionResult<CommitInfo> {
         // Validate state - must be Active or Preparing
         if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
             return Err(TransactionError::InvalidState(self.txn_id));
         }
 
+        // For Serializable isolation, check for read-write conflicts
+        if self.isolation == IsolationLevel::Serializable {
+            let detector = self.conflict_detector.lock().unwrap();
+            detector.check_read_write_conflicts(&self.read_set, self.txn_id)?;
+        }
+
         // Transition to Committed state
         self.state = TransactionState::Committed;
 
         // TODO: Full implementation needs to:
-        // 1. Acquire write locks for all keys in write_set
-        // 2. Perform conflict detection (check for write-write conflicts)
-        // 3. Write commit record to WAL
-        // 4. Apply write_set to table engines
-        // 5. Release locks
+        // 1. Write commit record to WAL
+        // 2. Apply write_set to table engines
         
+        // Release all locks held by this transaction
+        let mut detector = self.conflict_detector.lock().unwrap();
+        detector.release_locks(self.txn_id);
+        drop(detector);
+
         // For now, return mock commit info
         // In real implementation, commit_lsn would come from WAL
         Ok(CommitInfo {
@@ -325,11 +384,54 @@ impl Transaction {
         // Transition to Aborted state
         self.state = TransactionState::Aborted;
 
+        // Release all locks held by this transaction
+        let mut detector = self.conflict_detector.lock().unwrap();
+        detector.release_locks(self.txn_id);
+        drop(detector);
+
         // Write set is automatically dropped when self is consumed
         // TODO: In full implementation, also need to:
-        // 1. Release any locks held
-        // 2. Write abort record to WAL (optional, for diagnostics)
+        // 1. Write abort record to WAL (optional, for diagnostics)
         
         Ok(())
+    }
+}
+
+/// Implement the TransactionOps trait for Transaction.
+impl TransactionOps for Transaction {
+    fn id(&self) -> TransactionId {
+        self.txn_id
+    }
+
+    fn isolation_level(&self) -> IsolationLevel {
+        self.isolation
+    }
+
+    fn snapshot_lsn(&self) -> LogSequenceNumber {
+        self.snapshot_lsn
+    }
+
+    fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+        Transaction::get(self, table, key)
+    }
+
+    fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+        Transaction::put(self, table, key, value)
+    }
+
+    fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool> {
+        Transaction::delete(self, table, key)
+    }
+
+    fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
+        Transaction::range_delete(self, table, bounds)
+    }
+
+    fn commit(self) -> TransactionResult<CommitInfo> {
+        Transaction::commit(self)
+    }
+
+    fn rollback(self) -> TransactionResult<()> {
+        Transaction::rollback(self)
     }
 }

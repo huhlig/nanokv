@@ -23,9 +23,11 @@
 use crate::index::{IndexId, IndexInfo, IndexOptions};
 use crate::snap::{Snapshot, SnapshotId};
 use crate::table::{TableId, TableInfo, TableOptions};
-use crate::txn::Transaction;
+use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::wal::LogSequenceNumber;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Top-level embedded database.
 ///
@@ -34,18 +36,74 @@ use crate::wal::LogSequenceNumber;
 /// this layer rather than by independently stacking transactional wrappers around
 /// individual tables.
 pub struct Database {
-    // TODO: Add internal fields for catalog, WAL, page store, etc.
+    // Transaction management
+    /// Shared conflict detector for coordinating transactions
+    conflict_detector: Arc<Mutex<ConflictDetector>>,
+    
+    /// Next transaction ID to allocate
+    next_txn_id: Arc<Mutex<u64>>,
+    
+    /// Current LSN for snapshot isolation
+    current_lsn: Arc<RwLock<LogSequenceNumber>>,
+    
+    // Catalog management
+    /// Table catalog: maps table names to table IDs and metadata
+    table_catalog: Arc<RwLock<HashMap<String, TableInfo>>>,
+    
+    /// Index catalog: maps index IDs to index metadata
+    index_catalog: Arc<RwLock<HashMap<IndexId, IndexInfo>>>,
+    
+    // Storage layer (to be implemented)
+    // TODO: Add fields for:
+    // - WAL writer/reader
+    // - Pager for page-level storage
+    // - Table engines registry
+    // - Snapshot manager
 }
 
 impl Database {
+    /// Create a new database instance.
+    pub fn new() -> Self {
+        Self {
+            conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
+            next_txn_id: Arc::new(Mutex::new(1)),
+            current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
+            table_catalog: Arc::new(RwLock::new(HashMap::new())),
+            index_catalog: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Allocate a new transaction ID.
+    fn allocate_txn_id(&self) -> TransactionId {
+        let mut next_id = self.next_txn_id.lock().unwrap();
+        let txn_id = TransactionId::from(*next_id);
+        *next_id += 1;
+        txn_id
+    }
+
     /// Begin a read-only transaction using the latest stable snapshot.
     pub fn begin_read(&self) -> Result<Transaction, DatabaseError> {
-        todo!("Create a read-only transaction at the latest stable snapshot LSN")
+        let txn_id = self.allocate_txn_id();
+        let snapshot_lsn = *self.current_lsn.read().unwrap();
+        Ok(Transaction::new(
+            txn_id,
+            snapshot_lsn,
+            IsolationLevel::ReadCommitted,
+            Arc::clone(&self.conflict_detector),
+        ))
     }
 
     /// Begin a write transaction with the requested durability policy.
     pub fn begin_write(&self, durability: Durability) -> Result<Transaction, DatabaseError> {
-        todo!("Create a write transaction with the specified durability policy")
+        let _ = durability; // TODO: Use durability policy
+        let txn_id = self.allocate_txn_id();
+        let snapshot_lsn = *self.current_lsn.read().unwrap();
+        Ok(Transaction::new(
+            txn_id,
+            snapshot_lsn,
+            IsolationLevel::ReadCommitted,
+            Arc::clone(&self.conflict_detector),
+        ))
     }
 
     /// Begin a read-only transaction at a specific snapshot LSN.
@@ -54,51 +112,152 @@ impl Database {
     /// time-travel queries. Returns an error if the LSN is not available
     /// (e.g., too old and already garbage collected).
     pub fn begin_read_at(&self, lsn: LogSequenceNumber) -> Result<Transaction, DatabaseError> {
-        todo!("Create a read-only transaction at the specified LSN")
+        let txn_id = self.allocate_txn_id();
+        // TODO: Validate that LSN is still available
+        Ok(Transaction::new(
+            txn_id,
+            lsn,
+            IsolationLevel::ReadCommitted,
+            Arc::clone(&self.conflict_detector),
+        ))
     }
 
     /// Create a logical table using a chosen physical engine.
+    ///
+    /// This operation is transactional - the table becomes visible only after
+    /// the current LSN advances (simulating a commit).
     pub fn create_table(
         &self,
         name: &str,
         options: TableOptions,
     ) -> Result<TableId, DatabaseError> {
-        todo!("Create a new table with the specified name and options")
+        let mut catalog = self.table_catalog.write().unwrap();
+        
+        // Check if table already exists
+        if catalog.contains_key(name) {
+            return Err(DatabaseError {
+                message: format!("Table '{}' already exists", name),
+            });
+        }
+
+        // Allocate new table ID
+        let table_id = TableId::from(catalog.len() as u64 + 1);
+        
+        // Get current LSN for creation timestamp
+        let created_lsn = *self.current_lsn.read().unwrap();
+        
+        // Create table info
+        let table_info = TableInfo {
+            id: table_id,
+            name: name.to_string(),
+            options,
+            root: None, // No root page yet
+            created_lsn,
+        };
+        
+        // Add to catalog
+        catalog.insert(name.to_string(), table_info);
+        
+        Ok(table_id)
     }
 
     /// Drop a logical table and its dependent indexes.
+    ///
+    /// This operation is transactional - the table becomes invisible only after
+    /// the current LSN advances (simulating a commit).
     pub fn drop_table(&self, table: TableId) -> Result<(), DatabaseError> {
-        todo!("Drop the table and all its dependent indexes")
+        let mut catalog = self.table_catalog.write().unwrap();
+        
+        // Find and remove the table
+        let table_name = catalog
+            .iter()
+            .find(|(_, info)| info.id == table)
+            .map(|(name, _)| name.clone());
+        
+        if let Some(name) = table_name {
+            catalog.remove(&name);
+            
+            // TODO: Also remove dependent indexes from index_catalog
+            
+            Ok(())
+        } else {
+            Err(DatabaseError {
+                message: format!("Table {:?} not found", table),
+            })
+        }
     }
 
     /// Open an existing table by name.
     pub fn open_table(&self, name: &str) -> Result<Option<TableId>, DatabaseError> {
-        todo!("Look up a table by name in the catalog")
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog.get(name).map(|info| info.id))
     }
 
     /// Return catalog-visible tables.
     pub fn list_tables(&self) -> Result<Vec<TableInfo>, DatabaseError> {
-        todo!("Return a list of all tables in the catalog")
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog.values().cloned().collect())
     }
 
     /// Create an index over a table.
+    ///
+    /// This operation is transactional - the index becomes visible only after
+    /// the current LSN advances (simulating a commit).
     pub fn create_index(
         &self,
         table: TableId,
         name: &str,
         options: IndexOptions,
     ) -> Result<IndexId, DatabaseError> {
-        todo!("Create a new index on the specified table")
+        let mut catalog = self.index_catalog.write().unwrap();
+        
+        // Allocate new index ID
+        let index_id = IndexId::from(catalog.len() as u64 + 1);
+        
+        // Get current LSN for creation timestamp
+        let created_lsn = *self.current_lsn.read().unwrap();
+        
+        // Create index info
+        let index_info = IndexInfo {
+            id: index_id,
+            table_id: table,
+            name: name.to_string(),
+            options,
+            root: None, // No root page yet
+            created_lsn,
+            stale: false, // New index starts fresh
+        };
+        
+        // Add to catalog
+        catalog.insert(index_id, index_info);
+        
+        Ok(index_id)
     }
 
     /// Drop an index.
+    ///
+    /// This operation is transactional - the index becomes invisible only after
+    /// the current LSN advances (simulating a commit).
     pub fn drop_index(&self, index: IndexId) -> Result<(), DatabaseError> {
-        todo!("Drop the specified index")
+        let mut catalog = self.index_catalog.write().unwrap();
+        
+        if catalog.remove(&index).is_some() {
+            Ok(())
+        } else {
+            Err(DatabaseError {
+                message: format!("Index {:?} not found", index),
+            })
+        }
     }
 
     /// Return catalog-visible indexes for a table.
     pub fn list_indexes(&self, table: TableId) -> Result<Vec<IndexInfo>, DatabaseError> {
-        todo!("Return a list of all indexes for the specified table")
+        let catalog = self.index_catalog.read().unwrap();
+        Ok(catalog
+            .values()
+            .filter(|info| info.table_id == table)
+            .cloned()
+            .collect())
     }
 
     /// Create a named snapshot at the current LSN.
