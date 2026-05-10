@@ -1,21 +1,89 @@
-# Agentic Memory Nonsense
+# NanoKV
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Actions Status](https://github.com/huhlig/nanokv/workflows/rust/badge.svg)](https://github.com/huhlig/nanokv/actions)
 
-> NanoKV is a lightweight embeddable single file key value table service.
+> NanoKV is a lightweight embeddable single-file key-value database with ACID transactions, MVCC concurrency, and multiple storage engines.
+
+## Features
+
+- **Single-file database**: All data in one file for easy deployment
+- **ACID transactions**: Full transaction support with snapshot isolation
+- **Multiple storage engines**: BTree (read-optimized) and LSM (write-optimized)
+- **MVCC concurrency**: Non-blocking reads with version chains
+- **Write-ahead logging**: Crash recovery and durability
+- **Configurable pages**: 4KB to 64KB page sizes
+- **Optional compression**: LZ4 and Zstd support
+- **Optional encryption**: AES-256-GCM encryption
+- **Virtual file system**: Pluggable storage backends
+
+## Documentation
+
+### Core Documentation
+
+- **[Architecture Overview](docs/ARCHITECTURE.md)** - System architecture and component details
+- **[File Format Specification](docs/FILE_FORMAT.md)** - Database and WAL file formats
+- **[Architecture Decision Records](docs/adrs/)** - Key design decisions
+
+### Key ADRs
+
+- [ADR-001: Single-File Database Design](docs/adrs/001-single-file-database.md)
+- [ADR-003: MVCC Concurrency Control](docs/adrs/003-mvcc-concurrency.md)
+- [ADR-004: Multiple Storage Engines](docs/adrs/004-multiple-storage-engines.md)
+- [ADR-006: Sharded Concurrency Model](docs/adrs/006-sharded-concurrency.md)
+
+### Implementation Details
+
+- [Pager Concurrency](docs/PAGER_CONCURRENCY_COMPLETE.md)
+- [Lock-Free FreeList](docs/LOCK_FREE_FREELIST_IMPLEMENTATION.md)
+- [Sharded Cache](docs/SHARDED_CACHE_IMPLEMENTATION.md)
+- [BTree Split/Merge](docs/BTREE_SPLIT_MERGE_IMPLEMENTATION.md)
+
+## Quick Start
+
+```rust
+use nanokv::{Database, TableConfig, TableEngineKind};
+
+// Create database
+let db = Database::create("mydb.db")?;
+
+// Create table
+let config = TableConfig {
+    engine: TableEngineKind::BTree,
+    name: "users".to_string(),
+};
+let table = db.create_table(config)?;
+
+// Start transaction
+let mut txn = db.begin_transaction()?;
+
+// Write data
+txn.put(b"user:1", b"Alice")?;
+txn.put(b"user:2", b"Bob")?;
+
+// Commit
+txn.commit()?;
+
+// Read data
+let txn = db.begin_transaction()?;
+let value = txn.get(b"user:1")?;
+assert_eq!(value, Some(b"Alice".to_vec()));
+```
 
 ## Project Structure
 
 ```
 nanokv/
 ├── docs/            # Documentation, Architecture, ADRs
-├── api/             # Embeddable API
-├── cli/             # CLI Utilities
-├── net/             # Network Service
-├── table/           # Key Value Tables
-├── pager/           # File Pager
-└── vfs/             # Virtual File System
+├── src/
+│   ├── vfs/         # Virtual File System
+│   ├── wal/         # Write-Ahead Log
+│   ├── pager/       # Page Management
+│   ├── table/       # Storage Engines (BTree, LSM)
+│   ├── txn/         # Transaction Management
+│   └── ...
+├── tests/           # Integration Tests
+└── benches/         # Performance Benchmarks
 ```
 
 ---
