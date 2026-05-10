@@ -216,7 +216,8 @@ GroupCommitConfig {
 
 ### Backward Compatibility
 - Group commit is opt-in via configuration
-- Default behavior unchanged (sync_on_write=true)
+- When group commit is disabled, default behavior unchanged (sync_on_write=true)
+- When group commit is enabled, sync_on_write is ignored (coordinator handles syncing)
 - No changes to WAL file format
 - No changes to recovery logic
 

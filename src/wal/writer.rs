@@ -107,7 +107,6 @@ impl<FS: FileSystem> WalWriter<FS> {
         let group_commit = if config.group_commit.enabled {
             let file_clone = file_arc.clone();
             let state_clone = state_arc.clone();
-            let sync_on_write = config.sync_on_write;
 
             let coordinator = GroupCommitCoordinator::new(config.group_commit.clone(), move || {
                 let mut state = state_clone.write();
@@ -118,9 +117,8 @@ impl<FS: FileSystem> WalWriter<FS> {
                 let mut file = file_clone.write();
                 file.write_all(&state.buffer).map_err(WalError::IoError)?;
 
-                if sync_on_write {
-                    file.sync_data()?;
-                }
+                // Always sync in group commit mode - the coordinator handles timing
+                file.sync_data()?;
 
                 state.buffer.clear();
                 Ok(())
@@ -406,8 +404,11 @@ impl<FS: FileSystem> WalWriter<FS> {
         // Add to buffer
         state.buffer.extend_from_slice(&bytes);
 
-        // Flush if buffer is full or sync is enabled
-        if state.buffer.len() >= self.config.buffer_size || self.config.sync_on_write {
+        // Flush if buffer is full, or if sync is enabled AND group commit is disabled
+        let should_flush = state.buffer.len() >= self.config.buffer_size
+            || (self.config.sync_on_write && self.group_commit.is_none());
+        
+        if should_flush {
             self.flush_internal(state)?;
         }
 
@@ -435,8 +436,9 @@ impl<FS: FileSystem> WalWriter<FS> {
         // Write buffer to file
         file.write_all(&state.buffer).map_err(WalError::IoError)?;
 
-        // Sync if configured
-        if self.config.sync_on_write {
+        // Sync if configured AND group commit is disabled
+        // When group commit is enabled, syncing is handled by the coordinator
+        if self.config.sync_on_write && self.group_commit.is_none() {
             file.sync_data()?;
         }
 
