@@ -131,6 +131,14 @@ pub enum TableError {
     #[error("Memtable is not immutable")]
     MemtableNotImmutable,
 
+    /// Compaction already running
+    #[error("Compaction already running")]
+    CompactionAlreadyRunning,
+
+    /// Compaction thread panicked
+    #[error("Compaction thread panicked")]
+    CompactionThreadPanic,
+
     /// I/O error from pager
     #[error("Pager error: {0}")]
     Pager(#[from] PagerError),

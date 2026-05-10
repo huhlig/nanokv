@@ -44,6 +44,7 @@
 //! - Encryption: Optional per-block encryption
 
 mod bloom;
+mod compaction;
 mod config;
 mod iterator;
 mod manifest;
@@ -51,6 +52,9 @@ mod memtable;
 mod sstable;
 
 pub use self::bloom::{BloomFilter, BloomFilterBuilder};
+pub use self::compaction::{
+    CompactionExecutor, CompactionJob, CompactionManager, CompactionPicker, CompactionStats,
+};
 pub use self::config::{
     BloomFilterConfig, BlockCacheConfig, CacheEvictionPolicy, CompactionConfig,
     CompactionStrategy, LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
