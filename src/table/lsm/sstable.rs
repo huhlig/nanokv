@@ -1195,6 +1195,16 @@ impl<FS: FileSystem> SStableReader<FS> {
     pub fn metadata(&self) -> &SStableMetadata {
         &self.metadata
     }
+
+    /// Get the index block for this SSTable.
+    pub fn index_block(&self) -> &IndexBlock {
+        &self.index_block
+    }
+
+    /// Get the pager for this SSTable.
+    pub fn pager(&self) -> &Arc<Pager<FS>> {
+        &self.pager
+    }
 }
 
 /// SSTable writer for creating new SSTables.

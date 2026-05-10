@@ -35,7 +35,7 @@
 //! - Maintains key ordering across all sources
 
 use crate::table::error::TableResult;
-use crate::table::lsm::{Memtable, SStableReader};
+use crate::table::lsm::{DataBlock, Memtable, SStableReader};
 use crate::txn::VersionChain;
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
@@ -326,17 +326,19 @@ impl LsmIterator for MemtableIterator {
     }
 }
 
-/// Iterator over an SSTable.
+/// Iterator over an SSTable using block-level iteration.
 ///
-/// Note: This is a simplified implementation that loads all entries into memory.
-/// A production implementation would use block-level iteration for better memory efficiency.
+/// This implementation loads data blocks on demand rather than loading all entries
+/// into memory, providing better memory efficiency for large SSTables.
 pub struct SStableIterator<FS: FileSystem> {
     /// SSTable reader
     reader: Arc<SStableReader<FS>>,
-    /// Cached entries (simplified approach)
-    entries: Vec<(Vec<u8>, VersionChain)>,
-    /// Current position
-    position: Option<usize>,
+    /// Current data block index in the index block
+    current_block_idx: Option<usize>,
+    /// Current data block (loaded on demand)
+    current_block: Option<DataBlock>,
+    /// Position within the current block
+    position_in_block: Option<usize>,
     /// Iteration direction
     direction: Direction,
     /// Source priority for merge ordering
@@ -346,46 +348,134 @@ pub struct SStableIterator<FS: FileSystem> {
 }
 
 impl<FS: FileSystem> SStableIterator<FS> {
-    /// Create a new SSTable iterator.
-    ///
-    /// Note: This simplified implementation loads all entries into memory.
-    /// A production implementation would iterate block-by-block.
+    /// Create a new SSTable iterator with block-level iteration.
     pub fn new(
         reader: Arc<SStableReader<FS>>,
         direction: Direction,
         priority: usize,
     ) -> TableResult<Self> {
-        // In a real implementation, we would iterate through blocks
-        // For now, we'll return an empty iterator as a placeholder
-        // TODO: Implement block-level iteration
-        let entries = Vec::new();
-
         let mut iter = Self {
             reader,
-            entries,
-            position: None,
+            current_block_idx: None,
+            current_block: None,
+            position_in_block: None,
             direction,
             priority,
             current: None,
         };
 
-        if !iter.entries.is_empty() {
-            iter.seek_to_first()?;
-        }
+        // Position at first entry
+        iter.seek_to_first()?;
 
         Ok(iter)
     }
 
-    /// Update the current entry cache.
+    /// Load a data block by index.
+    fn load_block(&mut self, block_idx: usize) -> TableResult<()> {
+        let index_entry = self.reader.index_block().get(block_idx)
+            .ok_or_else(|| crate::table::TableError::Corruption(
+                format!("Invalid block index: {}", block_idx)
+            ))?;
+
+        // Read the data block from the page
+        let page = self.reader.pager().read_page(index_entry.page_id)?;
+        let page_data = page.data();
+        let block_start = index_entry.offset as usize;
+
+        // Calculate block end
+        let block_end = if block_idx + 1 < self.reader.index_block().len() {
+            let next_entry = self.reader.index_block().get(block_idx + 1).unwrap();
+            if next_entry.page_id == index_entry.page_id {
+                next_entry.offset as usize
+            } else {
+                page_data.len()
+            }
+        } else {
+            // Last data block - find where index block starts
+            let page_size = self.reader.pager().page_size().data_size();
+            let page_index = (index_entry.page_id.as_u64() - self.reader.metadata().first_page_id.as_u64()) as usize;
+            let page_start_offset = page_index * page_size;
+            let index_start_in_sstable = self.reader.metadata().index_offset as usize;
+
+            if index_start_in_sstable >= page_start_offset &&
+               index_start_in_sstable < page_start_offset + page_size {
+                index_start_in_sstable - page_start_offset
+            } else {
+                page_data.len()
+            }
+        };
+
+        if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end {
+            return Err(crate::table::TableError::Corruption(
+                format!("Invalid data block bounds: start={}, end={}, page_len={}",
+                    block_start, block_end, page_data.len())
+            ));
+        }
+
+        let data_block_bytes = &page_data[block_start..block_end];
+        let data_block = DataBlock::from_bytes(data_block_bytes)?;
+
+        self.current_block = Some(data_block);
+        self.current_block_idx = Some(block_idx);
+
+        Ok(())
+    }
+
+    /// Update the current entry cache from the current block and position.
     fn update_current(&mut self) {
-        if let Some(pos) = self.position {
-            if pos < self.entries.len() {
-                let (key, chain) = &self.entries[pos];
+        if let (Some(block), Some(pos)) = (&self.current_block, self.position_in_block) {
+            if let Some((key, chain)) = block.entries().get(pos) {
                 self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
                 return;
             }
         }
         self.current = None;
+    }
+
+    /// Move to the next block in the iteration direction.
+    fn advance_to_next_block(&mut self) -> TableResult<bool> {
+        let num_blocks = self.reader.index_block().len();
+        
+        if let Some(current_idx) = self.current_block_idx {
+            let next_idx = match self.direction {
+                Direction::Forward => {
+                    if current_idx + 1 < num_blocks {
+                        Some(current_idx + 1)
+                    } else {
+                        None
+                    }
+                }
+                Direction::Backward => {
+                    if current_idx > 0 {
+                        Some(current_idx - 1)
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(idx) = next_idx {
+                self.load_block(idx)?;
+                // Position at first/last entry in new block
+                if let Some(block) = &self.current_block {
+                    if !block.is_empty() {
+                        self.position_in_block = match self.direction {
+                            Direction::Forward => Some(0),
+                            Direction::Backward => Some(block.len() - 1),
+                        };
+                        self.update_current();
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        // No more blocks
+        self.current_block_idx = None;
+        self.current_block = None;
+        self.position_in_block = None;
+        self.current = None;
+        Ok(false)
     }
 }
 
@@ -395,95 +485,189 @@ impl<FS: FileSystem> LsmIterator for SStableIterator<FS> {
     }
 
     fn next(&mut self) -> TableResult<Option<LsmEntry>> {
-        if let Some(pos) = self.position {
-            match self.direction {
-                Direction::Forward => {
-                    if pos + 1 < self.entries.len() {
-                        self.position = Some(pos + 1);
-                    } else {
-                        self.position = None;
-                    }
-                }
-                Direction::Backward => {
-                    if pos > 0 {
-                        self.position = Some(pos - 1);
-                    } else {
-                        self.position = None;
-                    }
+        if self.position_in_block.is_none() {
+            return Ok(None);
+        }
+
+        let pos = self.position_in_block.unwrap();
+        let block_len = self.current_block.as_ref().map(|b| b.len()).unwrap_or(0);
+
+        match self.direction {
+            Direction::Forward => {
+                if pos + 1 < block_len {
+                    // Move to next entry in current block
+                    self.position_in_block = Some(pos + 1);
+                    self.update_current();
+                } else {
+                    // Move to next block
+                    self.advance_to_next_block()?;
                 }
             }
-            self.update_current();
+            Direction::Backward => {
+                if pos > 0 {
+                    // Move to previous entry in current block
+                    self.position_in_block = Some(pos - 1);
+                    self.update_current();
+                } else {
+                    // Move to previous block
+                    self.advance_to_next_block()?;
+                }
+            }
         }
+
         Ok(self.current.clone())
     }
 
     fn seek(&mut self, target: &[u8]) -> TableResult<()> {
-        if self.entries.is_empty() {
-            self.position = None;
+        let num_blocks = self.reader.index_block().len();
+        if num_blocks == 0 {
+            self.current_block_idx = None;
+            self.current_block = None;
+            self.position_in_block = None;
             self.current = None;
             return Ok(());
         }
 
-        match self.direction {
-            Direction::Forward => {
-                let pos = self
-                    .entries
-                    .binary_search_by(|(k, _)| k.as_slice().cmp(target))
-                    .unwrap_or_else(|pos| pos);
-
-                if pos < self.entries.len() {
-                    self.position = Some(pos);
+        // Find the block that may contain the target key
+        let block_idx = match self.reader.index_block().search(target) {
+            Some(idx) => idx,
+            None => {
+                // Key is before all blocks
+                if self.direction == Direction::Forward {
+                    // Position at first block
+                    0
                 } else {
-                    self.position = None;
+                    // No valid position for backward iteration
+                    self.current_block_idx = None;
+                    self.current_block = None;
+                    self.position_in_block = None;
+                    self.current = None;
+                    return Ok(());
                 }
             }
-            Direction::Backward => {
-                let pos = self
-                    .entries
-                    .binary_search_by(|(k, _)| k.as_slice().cmp(target));
+        };
 
-                self.position = match pos {
-                    Ok(exact) => Some(exact),
-                    Err(insert_pos) => {
-                        if insert_pos > 0 {
-                            Some(insert_pos - 1)
-                        } else {
-                            None
-                        }
+        // Load the block
+        self.load_block(block_idx)?;
+
+        // Binary search within the block
+        if let Some(block) = &self.current_block {
+            match self.direction {
+                Direction::Forward => {
+                    // Find first entry >= target
+                    let pos = block.entries()
+                        .binary_search_by(|(k, _)| k.as_slice().cmp(target))
+                        .unwrap_or_else(|pos| pos);
+
+                    if pos < block.len() {
+                        self.position_in_block = Some(pos);
+                        self.update_current();
+                    } else {
+                        // Target is after all entries in this block, move to next block
+                        self.advance_to_next_block()?;
                     }
-                };
+                }
+                Direction::Backward => {
+                    // Find last entry <= target
+                    let pos = block.entries()
+                        .binary_search_by(|(k, _)| k.as_slice().cmp(target));
+
+                    self.position_in_block = match pos {
+                        Ok(exact) => Some(exact),
+                        Err(insert_pos) => {
+                            if insert_pos > 0 {
+                                Some(insert_pos - 1)
+                            } else {
+                                // Target is before all entries in this block
+                                // Move to previous block's last entry
+                                if block_idx > 0 {
+                                    self.load_block(block_idx - 1)?;
+                                    if let Some(prev_block) = &self.current_block {
+                                        if !prev_block.is_empty() {
+                                            Some(prev_block.len() - 1)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    };
+                    self.update_current();
+                }
             }
         }
 
-        self.update_current();
         Ok(())
     }
 
     fn seek_to_first(&mut self) -> TableResult<()> {
-        if !self.entries.is_empty() {
-            self.position = match self.direction {
-                Direction::Forward => Some(0),
-                Direction::Backward => Some(self.entries.len() - 1),
-            };
-            self.update_current();
-        } else {
-            self.position = None;
+        let num_blocks = self.reader.index_block().len();
+        if num_blocks == 0 {
+            self.current_block_idx = None;
+            self.current_block = None;
+            self.position_in_block = None;
             self.current = None;
+            return Ok(());
         }
+
+        let first_block_idx = match self.direction {
+            Direction::Forward => 0,
+            Direction::Backward => num_blocks - 1,
+        };
+
+        self.load_block(first_block_idx)?;
+
+        if let Some(block) = &self.current_block {
+            if !block.is_empty() {
+                self.position_in_block = match self.direction {
+                    Direction::Forward => Some(0),
+                    Direction::Backward => Some(block.len() - 1),
+                };
+                self.update_current();
+            } else {
+                self.position_in_block = None;
+                self.current = None;
+            }
+        }
+
         Ok(())
     }
 
     fn seek_to_last(&mut self) -> TableResult<()> {
-        if !self.entries.is_empty() {
-            self.position = match self.direction {
-                Direction::Forward => Some(self.entries.len() - 1),
-                Direction::Backward => Some(0),
-            };
-            self.update_current();
-        } else {
-            self.position = None;
+        let num_blocks = self.reader.index_block().len();
+        if num_blocks == 0 {
+            self.current_block_idx = None;
+            self.current_block = None;
+            self.position_in_block = None;
             self.current = None;
+            return Ok(());
         }
+
+        let last_block_idx = match self.direction {
+            Direction::Forward => num_blocks - 1,
+            Direction::Backward => 0,
+        };
+
+        self.load_block(last_block_idx)?;
+
+        if let Some(block) = &self.current_block {
+            if !block.is_empty() {
+                self.position_in_block = match self.direction {
+                    Direction::Forward => Some(block.len() - 1),
+                    Direction::Backward => Some(0),
+                };
+                self.update_current();
+            } else {
+                self.position_in_block = None;
+                self.current = None;
+            }
+        }
+
         Ok(())
     }
 }
