@@ -7,15 +7,15 @@ This directory contains Architecture Decision Records (ADRs) documenting key des
 | ADR | Title | Status | Date |
 |-----|-------|--------|------|
 | [001](./001-single-file-database.md) | Single-File Database Design | Accepted | 2026-05-10 |
-| [002](./002-page-based-storage.md) | Page-Based Storage Architecture | Accepted | 2026-05-10 |
+| [002](./002-page-based-storage.md) | Page-Based Storage Architecture | Proposed | 2026-05-10 |
 | [003](./003-mvcc-concurrency.md) | MVCC Concurrency Control | Accepted | 2026-05-10 |
 | [004](./004-multiple-storage-engines.md) | Multiple Storage Engines | Accepted | 2026-05-10 |
-| [005](./005-write-ahead-logging.md) | Write-Ahead Logging for Durability | Accepted | 2026-05-10 |
+| [005](./005-write-ahead-logging.md) | Write-Ahead Logging for Durability | Proposed | 2026-05-10 |
 | [006](./006-sharded-concurrency.md) | Sharded Concurrency Model | Accepted | 2026-05-10 |
-| [007](./007-lock-free-freelist.md) | Lock-Free Free List | Accepted | 2026-05-10 |
-| [008](./008-optional-compression-encryption.md) | Optional Compression and Encryption | Accepted | 2026-05-10 |
-| [009](./009-vfs-abstraction.md) | Virtual File System Abstraction | Accepted | 2026-05-10 |
-| [010](./010-lsm-bloom-filters.md) | Bloom Filters for LSM Trees | Accepted | 2026-05-10 |
+| [007](./007-unified-object-id.md) | Unified ObjectId System | Accepted | 2026-05-10 |
+| [008](./008-optional-compression-encryption.md) | Optional Compression and Encryption | Proposed | 2026-05-10 |
+| [009](./009-vfs-abstraction.md) | Virtual File System Abstraction | Proposed | 2026-05-10 |
+| [010](./010-lsm-bloom-filters.md) | Bloom Filters for LSM Trees | Proposed | 2026-05-10 |
 
 ## ADR Format
 

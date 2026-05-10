@@ -18,6 +18,7 @@
 
 use nanokv::table::TableId;
 use nanokv::txn::{ConflictDetector, TransactionError, TransactionId};
+use nanokv::types::ObjectId;
 use std::collections::HashSet;
 
 #[test]
@@ -28,13 +29,13 @@ fn test_no_conflict_different_keys() {
     let table = TableId::from(1);
 
     // Transaction 1 locks key "a"
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 
     // Transaction 2 should be able to lock key "b" without conflict
-    let result = detector.check_write_conflict(table, b"b", txn2);
+    let result = detector.check_write_conflict(table.as_object_id(), b"b", txn2);
     assert!(result.is_ok());
 
-    detector.acquire_write_lock(table, b"b".to_vec(), txn2);
+    detector.acquire_write_lock(table.as_object_id(), b"b".to_vec(), txn2);
 }
 
 #[test]
@@ -45,15 +46,15 @@ fn test_write_write_conflict_same_key() {
     let table = TableId::from(1);
 
     // Transaction 1 locks key "a"
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 
     // Transaction 2 tries to lock the same key - should conflict
-    let result = detector.check_write_conflict(table, b"a", txn2);
+    let result = detector.check_write_conflict(table.as_object_id(), b"a", txn2);
     assert!(result.is_err());
 
     match result {
         Err(TransactionError::WriteWriteConflict(t, k, holder)) => {
-            assert_eq!(t, table);
+            assert_eq!(t, table.as_object_id());
             assert_eq!(k, b"a");
             assert_eq!(holder, txn1);
         }
@@ -68,14 +69,14 @@ fn test_same_transaction_can_relock() {
     let table = TableId::from(1);
 
     // Transaction 1 locks key "a"
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 
     // Same transaction can check the same key without conflict
-    let result = detector.check_write_conflict(table, b"a", txn1);
+    let result = detector.check_write_conflict(table.as_object_id(), b"a", txn1);
     assert!(result.is_ok());
 
     // And can re-acquire the lock
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 }
 
 #[test]
@@ -86,22 +87,22 @@ fn test_release_locks() {
     let table = TableId::from(1);
 
     // Transaction 1 locks multiple keys
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
-    detector.acquire_write_lock(table, b"b".to_vec(), txn1);
-    detector.acquire_write_lock(table, b"c".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"b".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"c".to_vec(), txn1);
 
     // Transaction 2 should conflict on all keys
-    assert!(detector.check_write_conflict(table, b"a", txn2).is_err());
-    assert!(detector.check_write_conflict(table, b"b", txn2).is_err());
-    assert!(detector.check_write_conflict(table, b"c", txn2).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"a", txn2).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"b", txn2).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"c", txn2).is_err());
 
     // Release all locks for transaction 1
     detector.release_locks(txn1);
 
     // Transaction 2 should now be able to lock all keys
-    assert!(detector.check_write_conflict(table, b"a", txn2).is_ok());
-    assert!(detector.check_write_conflict(table, b"b", txn2).is_ok());
-    assert!(detector.check_write_conflict(table, b"c", txn2).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"a", txn2).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"b", txn2).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"c", txn2).is_ok());
 }
 
 #[test]
@@ -112,17 +113,17 @@ fn test_release_locks_selective() {
     let table = TableId::from(1);
 
     // Both transactions lock different keys
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
-    detector.acquire_write_lock(table, b"b".to_vec(), txn2);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"b".to_vec(), txn2);
 
     // Release only transaction 1's locks
     detector.release_locks(txn1);
 
     // Transaction 2's lock should still be held
-    assert!(detector.check_write_conflict(table, b"b", txn1).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"b", txn1).is_err());
 
     // But transaction 1's lock should be released
-    assert!(detector.check_write_conflict(table, b"a", txn2).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"a", txn2).is_ok());
 }
 
 #[test]
@@ -134,13 +135,13 @@ fn test_different_tables_no_conflict() {
     let table2 = TableId::from(2);
 
     // Transaction 1 locks key "a" in table 1
-    detector.acquire_write_lock(table1, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table1.as_object_id(), b"a".to_vec(), txn1);
 
     // Transaction 2 should be able to lock key "a" in table 2
-    let result = detector.check_write_conflict(table2, b"a", txn2);
+    let result = detector.check_write_conflict(table2.as_object_id(), b"a", txn2);
     assert!(result.is_ok());
 
-    detector.acquire_write_lock(table2, b"a".to_vec(), txn2);
+    detector.acquire_write_lock(table2.as_object_id(), b"a".to_vec(), txn2);
 }
 
 #[test]
@@ -151,12 +152,12 @@ fn test_read_write_conflict_detection() {
     let table = TableId::from(1);
 
     // Transaction 1 locks key "a" for writing
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 
     // Transaction 2 has read key "a" and "b"
     let mut read_set = HashSet::new();
-    read_set.insert((table, b"a".to_vec()));
-    read_set.insert((table, b"b".to_vec()));
+    read_set.insert((table.as_object_id(), b"a".to_vec()));
+    read_set.insert((table.as_object_id(), b"b".to_vec()));
 
     // Should detect read-write conflict on key "a"
     let result = detector.check_read_write_conflicts(&read_set, txn2);
@@ -164,7 +165,7 @@ fn test_read_write_conflict_detection() {
 
     match result {
         Err(TransactionError::ReadWriteConflict(t, k)) => {
-            assert_eq!(t, table);
+            assert_eq!(t, table.as_object_id());
             assert_eq!(k, b"a");
         }
         _ => panic!("Expected ReadWriteConflict error"),
@@ -179,11 +180,11 @@ fn test_read_write_no_conflict_different_keys() {
     let table = TableId::from(1);
 
     // Transaction 1 locks key "a" for writing
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 
     // Transaction 2 has read only key "b"
     let mut read_set = HashSet::new();
-    read_set.insert((table, b"b".to_vec()));
+    read_set.insert((table.as_object_id(), b"b".to_vec()));
 
     // Should not detect conflict
     let result = detector.check_read_write_conflicts(&read_set, txn2);
@@ -197,11 +198,11 @@ fn test_read_write_same_transaction_no_conflict() {
     let table = TableId::from(1);
 
     // Transaction 1 locks key "a" for writing
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
 
     // Same transaction has read key "a"
     let mut read_set = HashSet::new();
-    read_set.insert((table, b"a".to_vec()));
+    read_set.insert((table.as_object_id(), b"a".to_vec()));
 
     // Should not conflict with own writes
     let result = detector.check_read_write_conflicts(&read_set, txn1);
@@ -228,34 +229,34 @@ fn test_multiple_transactions_complex_scenario() {
     let table = TableId::from(1);
 
     // Transaction 1 locks keys "a" and "b"
-    detector.acquire_write_lock(table, b"a".to_vec(), txn1);
-    detector.acquire_write_lock(table, b"b".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"b".to_vec(), txn1);
 
     // Transaction 2 locks key "c"
-    detector.acquire_write_lock(table, b"c".to_vec(), txn2);
+    detector.acquire_write_lock(table.as_object_id(), b"c".to_vec(), txn2);
 
     // Transaction 3 should conflict on "a" and "b" but not "c"
-    assert!(detector.check_write_conflict(table, b"a", txn3).is_err());
-    assert!(detector.check_write_conflict(table, b"b", txn3).is_err());
-    assert!(detector.check_write_conflict(table, b"c", txn3).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"a", txn3).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"b", txn3).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"c", txn3).is_err());
 
     // Release transaction 1's locks
     detector.release_locks(txn1);
 
     // Now transaction 3 can lock "a" and "b" but not "c"
-    assert!(detector.check_write_conflict(table, b"a", txn3).is_ok());
-    assert!(detector.check_write_conflict(table, b"b", txn3).is_ok());
-    assert!(detector.check_write_conflict(table, b"c", txn3).is_err());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"a", txn3).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"b", txn3).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"c", txn3).is_err());
 
     // Acquire locks for transaction 3
-    detector.acquire_write_lock(table, b"a".to_vec(), txn3);
-    detector.acquire_write_lock(table, b"b".to_vec(), txn3);
+    detector.acquire_write_lock(table.as_object_id(), b"a".to_vec(), txn3);
+    detector.acquire_write_lock(table.as_object_id(), b"b".to_vec(), txn3);
 
     // Release transaction 2's locks
     detector.release_locks(txn2);
 
     // Now transaction 3 can lock "c"
-    assert!(detector.check_write_conflict(table, b"c", txn3).is_ok());
+    assert!(detector.check_write_conflict(table.as_object_id(), b"c", txn3).is_ok());
 }
 
 // Made with Bob

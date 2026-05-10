@@ -397,7 +397,7 @@ fn test_error_propagation_transaction_to_nanokv() {
 
 #[test]
 fn test_error_propagation_vfs_to_pager() {
-    let vfs_error = FileSystemError::PathMissing;
+    let vfs_error = FileSystemError::path_missing("test.db");
     let pager_error: PagerError = vfs_error.into();
 
     match pager_error {
@@ -436,20 +436,20 @@ fn test_error_propagation_io_to_multiple_layers() {
 #[test]
 fn test_write_write_conflict_error_details() {
     let error = TransactionError::WriteWriteConflict(
-        TableId::from(1),
+        TableId::from(1).as_object_id(),
         b"user:123".to_vec(),
         TransactionId::from(42),
     );
 
     let error_str = error.to_string();
     assert!(error_str.contains("Write-write conflict"));
-    // The error format uses Debug for TableId and TransactionId
+    // The error format uses Debug for ObjectId and TransactionId
     assert!(error_str.contains("already locked"));
 }
 
 #[test]
 fn test_read_write_conflict_error_details() {
-    let error = TransactionError::ReadWriteConflict(TableId::from(2), b"product:456".to_vec());
+    let error = TransactionError::ReadWriteConflict(TableId::from(2).as_object_id(), b"product:456".to_vec());
 
     let error_str = error.to_string();
     assert!(error_str.contains("Read-write conflict"));
@@ -546,20 +546,20 @@ fn test_recovery_from_write_conflict() {
     let table = TableId::from(1);
 
     // Transaction 1 locks a key
-    detector.acquire_write_lock(table, b"key1".to_vec(), txn1);
+    detector.acquire_write_lock(table.as_object_id(), b"key1".to_vec(), txn1);
 
     // Transaction 2 tries to lock the same key and fails
-    let result = detector.check_write_conflict(table, b"key1", txn2);
+    let result = detector.check_write_conflict(table.as_object_id(), b"key1", txn2);
     assert!(result.is_err());
 
     // Transaction 2 should be able to lock a different key
-    let result2 = detector.check_write_conflict(table, b"key2", txn2);
+    let result2 = detector.check_write_conflict(table.as_object_id(), b"key2", txn2);
     assert!(result2.is_ok());
-    detector.acquire_write_lock(table, b"key2".to_vec(), txn2);
+    detector.acquire_write_lock(table.as_object_id(), b"key2".to_vec(), txn2);
 
     // After transaction 1 releases locks, transaction 2 should be able to acquire
     detector.release_locks(txn1);
-    let result3 = detector.check_write_conflict(table, b"key1", txn2);
+    let result3 = detector.check_write_conflict(table.as_object_id(), b"key1", txn2);
     assert!(result3.is_ok());
 }
 
@@ -595,31 +595,39 @@ fn test_vfs_path_missing_error() {
     assert!(result.is_err());
 
     match result.unwrap_err() {
-        FileSystemError::PathMissing => {}
+        FileSystemError::PathMissing { path } => {
+            assert_eq!(path, "nonexistent.db");
+        }
         e => panic!("Expected PathMissing error, got: {:?}", e),
     }
 }
 
 #[test]
 fn test_vfs_invalid_path_error() {
-    let error = FileSystemError::InvalidPath("/invalid/path".to_string());
-    let error_str = format!("{:?}", error);
-    assert!(error_str.contains("InvalidPath"));
+    let error = FileSystemError::invalid_path("/invalid/path", "test reason");
+    let error_str = format!("{}", error);
+    assert!(error_str.contains("Invalid path"));
     assert!(error_str.contains("/invalid/path"));
+    assert!(error_str.contains("test reason"));
 }
 
 #[test]
 fn test_vfs_permission_denied_error() {
-    let error = FileSystemError::PermissionDenied;
-    let error_str = format!("{:?}", error);
-    assert!(error_str.contains("PermissionDenied"));
+    let error = FileSystemError::permission_denied("/test/file", "write");
+    let error_str = format!("{}", error);
+    assert!(error_str.contains("Permission denied"));
+    assert!(error_str.contains("/test/file"));
+    assert!(error_str.contains("write"));
 }
 
 #[test]
 fn test_vfs_already_locked_error() {
-    let error = FileSystemError::AlreadyLocked;
-    let error_str = format!("{:?}", error);
-    assert!(error_str.contains("AlreadyLocked"));
+    let error = FileSystemError::AlreadyLocked {
+        path: "/test/file".to_string(),
+    };
+    let error_str = format!("{}", error);
+    assert!(error_str.contains("already locked"));
+    assert!(error_str.contains("/test/file"));
 }
 
 // ============================================================================

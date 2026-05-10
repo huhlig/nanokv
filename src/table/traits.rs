@@ -28,34 +28,44 @@ use crate::pager::PhysicalLocation;
 use crate::table::TableResult;
 use crate::txn::TransactionId;
 use crate::types::{
-    CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, ScanBounds, ValueBuf,
+    CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, ObjectId, ScanBounds, ValueBuf,
 };
 use crate::wal::LogSequenceNumber;
 use std::borrow::Cow;
 
 /// Logical table identifier assigned by the catalog.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct TableId(u64);
+pub struct TableId(ObjectId);
 
 impl TableId {
-    pub fn as_u64(&self) -> u64 {
+    /// Convert to the underlying ObjectId for transaction/storage operations.
+    pub fn as_object_id(&self) -> ObjectId {
         self.0
     }
 
+    /// Create a TableId from an ObjectId.
+    pub fn from_object_id(id: ObjectId) -> Self {
+        Self(id)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0.as_u64()
+    }
+
     pub fn to_bytes(&self) -> [u8; 8] {
-        self.0.to_le_bytes()
+        self.0.to_bytes()
     }
 }
 
 impl std::fmt::Display for TableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TableId({})", self.0)
+        write!(f, "TableId({})", self.0.as_u64())
     }
 }
 
 impl From<u64> for TableId {
     fn from(value: u64) -> Self {
-        Self(value)
+        Self(ObjectId::from(value))
     }
 }
 

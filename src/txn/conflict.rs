@@ -20,8 +20,8 @@
 //! transaction isolation. It tracks which transactions have accessed
 //! which keys and detects conflicts based on the isolation level.
 
-use crate::table::TableId;
 use crate::txn::{TransactionError, TransactionId, TransactionResult};
+use crate::types::ObjectId;
 use std::collections::{HashMap, HashSet};
 
 /// Types of conflicts that can occur between transactions:
@@ -43,8 +43,8 @@ pub enum ConflictType {
 /// 2. If no conflict, call acquire_write_lock()
 /// 3. On commit/abort, call release_locks()
 pub struct ConflictDetector {
-    // Maps (table_id, key) -> transaction ID that has write lock
-    write_locks: HashMap<(TableId, Vec<u8>), TransactionId>,
+    // Maps (object_id, key) -> transaction ID that has write lock
+    write_locks: HashMap<(ObjectId, Vec<u8>), TransactionId>,
 }
 
 impl ConflictDetector {
@@ -59,15 +59,15 @@ impl ConflictDetector {
     /// Returns an error if another transaction holds a write lock on the key.
     pub fn check_write_conflict(
         &self,
-        table_id: TableId,
+        object_id: ObjectId,
         key: &[u8],
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
-        let lock_key = (table_id, key.to_vec());
+        let lock_key = (object_id, key.to_vec());
         if let Some(&other_txn) = self.write_locks.get(&lock_key) {
             if other_txn != txn_id {
                 return Err(TransactionError::WriteWriteConflict(
-                    table_id,
+                    object_id,
                     key.to_vec(),
                     other_txn,
                 ));
@@ -79,8 +79,8 @@ impl ConflictDetector {
     /// Acquire a write lock on a key for the given transaction.
     ///
     /// Should be called after check_write_conflict() succeeds.
-    pub fn acquire_write_lock(&mut self, table_id: TableId, key: Vec<u8>, txn_id: TransactionId) {
-        self.write_locks.insert((table_id, key), txn_id);
+    pub fn acquire_write_lock(&mut self, object_id: ObjectId, key: Vec<u8>, txn_id: TransactionId) {
+        self.write_locks.insert((object_id, key), txn_id);
     }
 
     /// Release all write locks held by the given transaction.
@@ -96,13 +96,13 @@ impl ConflictDetector {
     /// has been written by another transaction.
     pub fn check_read_write_conflicts(
         &self,
-        read_set: &HashSet<(TableId, Vec<u8>)>,
+        read_set: &HashSet<(ObjectId, Vec<u8>)>,
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
-        for (table_id, key) in read_set {
-            if let Some(&other_txn) = self.write_locks.get(&(*table_id, key.clone())) {
+        for (object_id, key) in read_set {
+            if let Some(&other_txn) = self.write_locks.get(&(*object_id, key.clone())) {
                 if other_txn != txn_id {
-                    return Err(TransactionError::ReadWriteConflict(*table_id, key.clone()));
+                    return Err(TransactionError::ReadWriteConflict(*object_id, key.clone()));
                 }
             }
         }

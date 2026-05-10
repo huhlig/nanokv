@@ -174,7 +174,7 @@ fn test_filesystem_directory_operations<FS: FileSystem>(fs: &FS) {
 
     // Test duplicate creation fails
     match fs.create_directory(dir_path) {
-        Err(FileSystemError::PathExists) => {}
+        Err(FileSystemError::PathExists { .. }) => {}
         _ => panic!("Should fail to create duplicate directory"),
     }
 
@@ -218,13 +218,13 @@ fn test_filesystem_nested_directories<FS: FileSystem>(fs: &FS) {
 fn test_filesystem_error_conditions<FS: FileSystem>(fs: &FS) {
     // Test opening non-existent file
     match fs.open_file("/nonexistent.txt") {
-        Err(FileSystemError::PathMissing) => {}
+        Err(FileSystemError::PathMissing { .. }) => {}
         _ => panic!("Should fail to open non-existent file"),
     }
 
     // Test removing non-existent file
     match fs.remove_file("/nonexistent.txt") {
-        Err(FileSystemError::PathMissing) => {}
+        Err(FileSystemError::PathMissing { .. }) => {}
         _ => panic!("Should fail to remove non-existent file"),
     }
 
@@ -232,14 +232,14 @@ fn test_filesystem_error_conditions<FS: FileSystem>(fs: &FS) {
     let path = "/duplicate.txt";
     fs.create_file(path).expect("Failed to create file");
     match fs.create_file(path) {
-        Err(FileSystemError::PathExists) => {}
+        Err(FileSystemError::PathExists { .. }) => {}
         _ => panic!("Should fail to create duplicate file"),
     }
     fs.remove_file(path).expect("Failed to remove file");
 
     // Test filesize on non-existent path
     match fs.filesize("/nonexistent.txt") {
-        Err(FileSystemError::PathMissing) => {}
+        Err(FileSystemError::PathMissing { .. }) => {}
         _ => panic!("Should fail to get filesize of non-existent file"),
     }
 }

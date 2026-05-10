@@ -136,13 +136,13 @@ fn test_memory_fs_remove_nonexistent() {
 
     // Try to remove non-existent file
     match fs.remove_file("/nonexistent.txt") {
-        Err(FileSystemError::PathMissing) => {}
+        Err(FileSystemError::PathMissing { .. }) => {}
         _ => panic!("Should fail with PathMissing"),
     }
 
     // Try to remove non-existent directory
     match fs.remove_directory("/nonexistent_dir") {
-        Err(FileSystemError::PathMissing) => {}
+        Err(FileSystemError::PathMissing { .. }) => {}
         _ => panic!("Should fail with PathMissing"),
     }
 }
@@ -157,7 +157,7 @@ fn test_memory_fs_create_duplicate() {
 
     // Try to create again
     match fs.create_file(path) {
-        Err(FileSystemError::PathExists) => {}
+        Err(FileSystemError::PathExists { .. }) => {}
         _ => panic!("Should fail with PathExists"),
     }
 }
@@ -344,23 +344,26 @@ fn test_local_fs_large_file() {
 #[test]
 fn test_error_display() {
     // Test that errors can be displayed
-    let err = FileSystemError::PathMissing;
+    let err = FileSystemError::path_missing("/test/path");
     let display = format!("{}", err);
     assert!(!display.is_empty());
+    assert!(display.contains("/test/path"));
 
-    let err = FileSystemError::PathExists;
+    let err = FileSystemError::path_exists("/test/path");
     let display = format!("{}", err);
     assert!(!display.is_empty());
+    assert!(display.contains("/test/path"));
 
-    let err = FileSystemError::InvalidPath("/bad/path".to_string());
+    let err = FileSystemError::invalid_path("/bad/path", "invalid characters");
     let display = format!("{}", err);
     assert!(!display.is_empty());
+    assert!(display.contains("/bad/path"));
 }
 
 #[test]
 fn test_error_debug() {
     // Test that errors can be debugged
-    let err = FileSystemError::PermissionDenied;
+    let err = FileSystemError::permission_denied("/test/file", "write");
     let debug = format!("{:?}", err);
     assert!(!debug.is_empty());
 }
@@ -629,7 +632,7 @@ fn test_extremely_long_filename() {
             // Should fail with InvalidPath or similar
             assert!(matches!(
                 e,
-                FileSystemError::InvalidPath(_)
+                FileSystemError::InvalidPath { .. }
                     | FileSystemError::InternalError(_)
                     | FileSystemError::WrappedError(_)
             ));
@@ -884,7 +887,7 @@ fn test_case_sensitivity_memory_fs() {
             assert_eq!(buf1, b"lowercase");
             assert_eq!(buf2, b"uppercase");
         }
-        Err(FileSystemError::PathExists) => {
+        Err(FileSystemError::PathExists { .. }) => {
             // Filesystem is case-insensitive
             println!("MemoryFileSystem is case-insensitive");
         }
@@ -916,7 +919,7 @@ fn test_case_sensitivity_local_fs() {
             assert!(fs.exists("/test.txt").unwrap());
             assert!(fs.exists("/TEST.txt").unwrap());
         }
-        Err(FileSystemError::PathExists) => {
+        Err(FileSystemError::PathExists { .. }) => {
             // Filesystem is case-insensitive (Windows, macOS default)
             println!("LocalFileSystem is case-insensitive on this platform");
 
@@ -945,7 +948,7 @@ fn test_case_sensitivity_directory_operations() {
             assert!(fs.exists("/mydir").unwrap());
             assert!(fs.exists("/MYDIR").unwrap());
         }
-        Err(FileSystemError::PathExists) => {
+        Err(FileSystemError::PathExists { .. }) => {
             // Case-insensitive: only one exists
             assert!(fs.exists("/mydir").unwrap());
         }
@@ -1040,7 +1043,7 @@ fn test_broken_symlink() {
     // Try to open the broken symlink
     let result = fs.open_file("/broken_link.txt");
     match result {
-        Err(FileSystemError::PathMissing) => {
+        Err(FileSystemError::PathMissing { .. }) => {
             // Expected behavior
         }
         Err(e) => {

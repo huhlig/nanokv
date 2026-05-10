@@ -96,10 +96,10 @@ impl FileSystem for MemoryFileSystem {
                     let data = file.0.read().expect("Poisoned Lock");
                     Ok(data.buffer.len() as u64)
                 }
-                _ => Err(FileSystemError::InvalidOperation),
+                _ => Err(FileSystemError::invalid_operation(path, "filesize on non-file")),
             }
         } else {
-            Err(FileSystemError::PathMissing)
+            Err(FileSystemError::path_missing(path))
         }
     }
 
@@ -107,7 +107,7 @@ impl FileSystem for MemoryFileSystem {
     fn create_directory(&self, path: &str) -> FileSystemResult<()> {
         let mut tree = self.0.write().expect("Poisoned Lock");
         if tree.contains_key(path) {
-            Err(FileSystemError::PathExists)
+            Err(FileSystemError::path_exists(path))
         } else {
             tree.insert(
                 path.to_string(),
@@ -123,7 +123,7 @@ impl FileSystem for MemoryFileSystem {
     fn create_directory_all(&self, path: &str) -> FileSystemResult<()> {
         let mut tree = self.0.write().expect("Poisoned Lock");
         if tree.contains_key(path) {
-            Err(FileSystemError::PathExists)
+            Err(FileSystemError::path_exists(path))
         } else {
             // Create all parent directories
             let path_str = path.trim_start_matches('/');
@@ -150,10 +150,10 @@ impl FileSystem for MemoryFileSystem {
                     let dir = dir.0.read().expect("Poisoned Lock");
                     Ok(dir.0.keys().cloned().collect())
                 }
-                _ => Err(FileSystemError::InvalidOperation),
+                _ => Err(FileSystemError::invalid_operation(path, "list_directory on non-directory")),
             }
         } else {
-            Err(FileSystemError::PathMissing)
+            Err(FileSystemError::path_missing(path))
         }
     }
 
@@ -167,7 +167,7 @@ impl FileSystem for MemoryFileSystem {
         let mut tree = self.0.write().expect("Poisoned Lock");
         match tree.remove(path) {
             Some(_) => Ok(()),
-            None => Err(FileSystemError::PathMissing),
+            None => Err(FileSystemError::path_missing(path)),
         }
     }
 
@@ -175,7 +175,7 @@ impl FileSystem for MemoryFileSystem {
     fn create_file(&self, path: &str) -> FileSystemResult<Self::File> {
         let mut tree = self.0.write().expect("Poisoned Lock");
         if tree.contains_key(path) {
-            Err(FileSystemError::PathExists)
+            Err(FileSystemError::path_exists(path))
         } else {
             let inner = Arc::new(RwLock::new(MemoryFileData {
                 buffer: Vec::default(),
@@ -202,10 +202,10 @@ impl FileSystem for MemoryFileSystem {
                     name: path.to_string(),
                     data: file.0.clone(),
                 }),
-                _ => Err(FileSystemError::InvalidOperation),
+                _ => Err(FileSystemError::invalid_operation(path, "open_file on non-file")),
             }
         } else {
-            Err(FileSystemError::PathMissing)
+            Err(FileSystemError::path_missing(path))
         }
     }
 
@@ -215,7 +215,7 @@ impl FileSystem for MemoryFileSystem {
             self.0.write().expect("Poisoned Lock").remove(path);
             Ok(())
         } else {
-            Err(FileSystemError::PathMissing)
+            Err(FileSystemError::path_missing(path))
         }
     }
 }

@@ -117,7 +117,7 @@ impl FileSystem for LocalFileSystem {
                     .chars()
                     .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
                 {
-                    return Err(FileSystemError::InvalidPath(path.to_string()));
+                    return Err(FileSystemError::invalid_path(path, "invalid characters in path component"));
                 }
             }
         }
@@ -154,7 +154,7 @@ impl FileSystem for LocalFileSystem {
                     .chars()
                     .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
                 {
-                    return Err(FileSystemError::InvalidPath(path.to_string()));
+                    return Err(FileSystemError::invalid_path(path, "invalid characters in path component"));
                 }
             }
         }
@@ -271,11 +271,23 @@ impl File for LocalFileHandle {
 }
 
 fn io_error_to_file_system_error(error: std::io::Error) -> FileSystemError {
+    // Note: We lose path context here since std::io::Error doesn't include it
+    // Callers should use the new helper methods when they have path context
     match error.kind() {
-        std::io::ErrorKind::NotFound => FileSystemError::PathMissing,
-        std::io::ErrorKind::AlreadyExists => FileSystemError::PathExists,
-        std::io::ErrorKind::PermissionDenied => FileSystemError::PermissionDenied,
-        std::io::ErrorKind::InvalidInput => FileSystemError::InvalidPath(error.to_string()),
+        std::io::ErrorKind::NotFound => FileSystemError::PathMissing {
+            path: "<unknown>".to_string(),
+        },
+        std::io::ErrorKind::AlreadyExists => FileSystemError::PathExists {
+            path: "<unknown>".to_string(),
+        },
+        std::io::ErrorKind::PermissionDenied => FileSystemError::PermissionDenied {
+            path: "<unknown>".to_string(),
+            operation: "<unknown>".to_string(),
+        },
+        std::io::ErrorKind::InvalidInput => FileSystemError::InvalidPath {
+            path: "<unknown>".to_string(),
+            reason: error.to_string(),
+        },
         _ => FileSystemError::WrappedError(Box::new(error)),
     }
 }

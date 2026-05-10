@@ -16,7 +16,7 @@
 
 use crate::table::TableId;
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
-use crate::types::{IsolationLevel, ScanBounds, ValueBuf};
+use crate::types::{IsolationLevel, ObjectId, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
@@ -133,12 +133,12 @@ pub struct Transaction {
 
     // For Serializable isolation: track all keys read to detect read-write conflicts
     // Only populated when isolation == Serializable
-    read_set: HashSet<(TableId, Vec<u8>)>,
+    read_set: HashSet<(ObjectId, Vec<u8>)>,
 
     // Track all writes for commit/rollback
-    // (TableId, Key) -> Option<Value> mapping of all mutations in this transaction
+    // (ObjectId, Key) -> Option<Value> mapping of all mutations in this transaction
     // None represents a delete (tombstone), Some(value) represents a put
-    write_set: HashMap<(TableId, Vec<u8>), Option<Vec<u8>>>,
+    write_set: HashMap<(ObjectId, Vec<u8>), Option<Vec<u8>>>,
 
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
@@ -167,24 +167,24 @@ impl Transaction {
     ///
     /// Called by get() to track reads for Serializable isolation.
     /// Only tracks reads when isolation level is Serializable.
-    pub fn record_read(&mut self, table_id: TableId, key: Vec<u8>) {
+    pub fn record_read(&mut self, object_id: ObjectId, key: Vec<u8>) {
         if self.isolation == IsolationLevel::Serializable {
-            self.read_set.insert((table_id, key));
+            self.read_set.insert((object_id, key));
         }
     }
 
     /// Record a write operation for commit/rollback.
     ///
     /// Called by put() to track writes for commit/rollback.
-    pub fn record_write(&mut self, table_id: TableId, key: Vec<u8>, value: Vec<u8>) {
-        self.write_set.insert((table_id, key), Some(value));
+    pub fn record_write(&mut self, object_id: ObjectId, key: Vec<u8>, value: Vec<u8>) {
+        self.write_set.insert((object_id, key), Some(value));
     }
 
     /// Record a delete operation for commit/rollback.
     ///
     /// Called by delete() to track deletes for commit/rollback.
-    pub fn record_delete(&mut self, table_id: TableId, key: Vec<u8>) {
-        self.write_set.insert((table_id, key), None);
+    pub fn record_delete(&mut self, object_id: ObjectId, key: Vec<u8>) {
+        self.write_set.insert((object_id, key), None);
     }
 
     /// Prepare the transaction for commit (two-phase commit).
@@ -235,8 +235,11 @@ impl Transaction {
             return Err(TransactionError::InvalidState(self.txn_id));
         }
 
+        // Convert TableId to ObjectId for internal storage
+        let object_id = table.as_object_id();
+
         // Check write set first for uncommitted changes
-        let write_key = (table, key.to_vec());
+        let write_key = (object_id, key.to_vec());
         if let Some(value_opt) = self.write_set.get(&write_key) {
             // Found in write set - return the value or None if deleted
             return Ok(value_opt.as_ref().map(|v| ValueBuf(v.clone())));
@@ -264,14 +267,17 @@ impl Transaction {
             return Err(TransactionError::InvalidState(self.txn_id));
         }
 
+        // Convert TableId to ObjectId for internal storage
+        let object_id = table.as_object_id();
+
         // Check for write-write conflicts and acquire lock
         let mut detector = self.conflict_detector.lock().unwrap();
-        detector.check_write_conflict(table, key, self.txn_id)?;
-        detector.acquire_write_lock(table, key.to_vec(), self.txn_id);
+        detector.check_write_conflict(object_id, key, self.txn_id)?;
+        detector.acquire_write_lock(object_id, key.to_vec(), self.txn_id);
         drop(detector);
 
         // Record the write in the write set
-        self.record_write(table, key.to_vec(), value.to_vec());
+        self.record_write(object_id, key.to_vec(), value.to_vec());
         Ok(())
     }
 
@@ -285,19 +291,22 @@ impl Transaction {
             return Err(TransactionError::InvalidState(self.txn_id));
         }
 
+        // Convert TableId to ObjectId for internal storage
+        let object_id = table.as_object_id();
+
         // Check for write-write conflicts and acquire lock
         let mut detector = self.conflict_detector.lock().unwrap();
-        detector.check_write_conflict(table, key, self.txn_id)?;
-        detector.acquire_write_lock(table, key.to_vec(), self.txn_id);
+        detector.check_write_conflict(object_id, key, self.txn_id)?;
+        detector.acquire_write_lock(object_id, key.to_vec(), self.txn_id);
         drop(detector);
 
-        let write_key = (table, key.to_vec());
+        let write_key = (object_id, key.to_vec());
         
         // Check if key exists in write set
         let existed = self.write_set.contains_key(&write_key);
         
         // Record the deletion
-        self.record_delete(table, key.to_vec());
+        self.record_delete(object_id, key.to_vec());
         
         // TODO: In full implementation, also check if key exists in underlying table
         // For now, return true if it was in the write set
