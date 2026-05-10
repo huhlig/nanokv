@@ -166,46 +166,170 @@ impl Transaction {
 
     /// Get the transaction ID.
     pub fn id(&self) -> TransactionId {
-        todo!("Return the transaction ID")
+        self.txn_id
     }
 
     /// Get the isolation level of this transaction.
     pub fn isolation_level(&self) -> IsolationLevel {
-        todo!("Return the isolation level")
+        self.isolation
     }
 
     /// Get the snapshot LSN at which this transaction reads.
     pub fn snapshot_lsn(&self) -> LogSequenceNumber {
-        todo!("Return the snapshot LSN")
+        self.snapshot_lsn
     }
 
     /// Get a value from a table.
+    ///
+    /// This method first checks the transaction's write set for uncommitted changes,
+    /// then would delegate to the underlying table engine for committed data.
+    ///
+    /// # Implementation Note
+    ///
+    /// Currently returns values from the write set only. Full implementation requires
+    /// integration with table engines to read committed data at the snapshot LSN.
     pub fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
-        todo!("Perform point lookup in the specified table")
+        // Check if transaction is still active
+        if !self.is_active() {
+            return Err(TransactionError::InvalidState(self.txn_id));
+        }
+
+        // Check write set first for uncommitted changes
+        let write_key = (table, key.to_vec());
+        if let Some(value_opt) = self.write_set.get(&write_key) {
+            // Found in write set - return the value or None if deleted
+            return Ok(value_opt.as_ref().map(|v| ValueBuf(v.clone())));
+        }
+
+        // Record read for serializable isolation
+        if self.isolation == IsolationLevel::Serializable {
+            // Note: We cast away const here because record_read needs &mut self
+            // In a full implementation, this would use interior mutability (RefCell/Mutex)
+            // For now, we skip recording reads in get() - they should be recorded by the caller
+        }
+
+        // TODO: Delegate to table engine to read committed data at snapshot_lsn
+        // For now, return None to indicate key not found in write set
+        Ok(None)
     }
 
     /// Put a key-value pair into a table.
+    ///
+    /// Records the write in the transaction's write set. The change is not visible
+    /// to other transactions until commit.
     pub fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
-        todo!("Insert or update a key-value pair in the specified table")
+        // Check if transaction is still active
+        if !self.is_active() {
+            return Err(TransactionError::InvalidState(self.txn_id));
+        }
+
+        // Record the write in the write set
+        self.record_write(table, key.to_vec(), value.to_vec());
+        Ok(())
     }
 
     /// Delete a key from a table.
+    ///
+    /// Records the deletion in the transaction's write set. Returns true if the key
+    /// existed (either in the write set or would exist in the underlying table).
     pub fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool> {
-        todo!("Delete a key from the specified table, return true if it existed")
+        // Check if transaction is still active
+        if !self.is_active() {
+            return Err(TransactionError::InvalidState(self.txn_id));
+        }
+
+        let write_key = (table, key.to_vec());
+        
+        // Check if key exists in write set
+        let existed = self.write_set.contains_key(&write_key);
+        
+        // Record the deletion
+        self.record_delete(table, key.to_vec());
+        
+        // TODO: In full implementation, also check if key exists in underlying table
+        // For now, return true if it was in the write set
+        Ok(existed)
     }
 
     /// Delete a range of keys from a table.
+    ///
+    /// # Implementation Note
+    ///
+    /// Currently not implemented. Full implementation requires:
+    /// 1. Scanning the table at snapshot_lsn to find matching keys
+    /// 2. Recording each deletion in the write set
+    /// 3. Handling the interaction between range bounds and existing writes
     pub fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
-        todo!("Delete all keys in the specified range, return count of deleted keys")
+        // Check if transaction is still active
+        if !self.is_active() {
+            return Err(TransactionError::InvalidState(self.txn_id));
+        }
+
+        // TODO: Implement range delete
+        // This requires:
+        // 1. Access to table engine to scan for keys in range
+        // 2. Recording each deletion in write set
+        // 3. Counting deleted keys
+        let _ = (table, bounds);
+        Err(TransactionError::Other(
+            "range_delete not yet implemented - requires table engine integration".to_string(),
+        ))
     }
 
     /// Commit the transaction.
-    pub fn commit(self) -> TransactionResult<CommitInfo> {
-        todo!("Commit all changes made in this transaction")
+    ///
+    /// Transitions to Committed state and returns commit information.
+    ///
+    /// # Implementation Note
+    ///
+    /// Currently only validates state and returns mock commit info. Full implementation
+    /// requires:
+    /// 1. Conflict detection with other transactions
+    /// 2. Writing changes to WAL
+    /// 3. Applying write set to table engines
+    /// 4. Releasing locks
+    pub fn commit(mut self) -> TransactionResult<CommitInfo> {
+        // Validate state - must be Active or Preparing
+        if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
+            return Err(TransactionError::InvalidState(self.txn_id));
+        }
+
+        // Transition to Committed state
+        self.state = TransactionState::Committed;
+
+        // TODO: Full implementation needs to:
+        // 1. Acquire write locks for all keys in write_set
+        // 2. Perform conflict detection (check for write-write conflicts)
+        // 3. Write commit record to WAL
+        // 4. Apply write_set to table engines
+        // 5. Release locks
+        
+        // For now, return mock commit info
+        // In real implementation, commit_lsn would come from WAL
+        Ok(CommitInfo {
+            tx_id: self.txn_id,
+            commit_lsn: self.snapshot_lsn, // Mock: use snapshot LSN
+            durable_lsn: None, // Not yet durable
+        })
     }
 
     /// Rollback the transaction.
-    pub fn rollback(self) -> TransactionResult<()> {
-        todo!("Rollback all changes made in this transaction")
+    ///
+    /// Transitions to Aborted state and discards all changes.
+    pub fn rollback(mut self) -> TransactionResult<()> {
+        // Can rollback from Active or Preparing state
+        if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
+            return Err(TransactionError::InvalidState(self.txn_id));
+        }
+
+        // Transition to Aborted state
+        self.state = TransactionState::Aborted;
+
+        // Write set is automatically dropped when self is consumed
+        // TODO: In full implementation, also need to:
+        // 1. Release any locks held
+        // 2. Write abort record to WAL (optional, for diagnostics)
+        
+        Ok(())
     }
 }

@@ -122,22 +122,98 @@ impl Default for ConflictDetector {
 /// we add an edge to the wait-for graph. If a cycle is detected,
 /// we abort one of the transactions to break the deadlock.
 ///
-/// Note: This is a placeholder for future deadlock detection implementation.
+/// Uses a simple directed graph representation where an edge from A to B
+/// means transaction A is waiting for transaction B to release a lock.
 pub struct DeadlockDetector {
-    // wait_for_graph: HashMap<TransactionId, Vec<TransactionId>>,
+    /// Maps each waiting transaction to the set of transactions it's waiting for
+    wait_for_graph: HashMap<TransactionId, Vec<TransactionId>>,
 }
 
 impl DeadlockDetector {
+    /// Create a new deadlock detector with an empty wait-for graph.
     pub fn new() -> Self {
-        todo!("Implement DeadlockDetector::new")
+        Self {
+            wait_for_graph: HashMap::new(),
+        }
     }
+
+    /// Add a wait-for edge: waiter is waiting for holder.
+    ///
+    /// This records that `waiter` is blocked waiting for a lock held by `holder`.
     pub fn add_wait(&mut self, waiter: TransactionId, holder: TransactionId) {
-        todo!("Implement DeadlockDetector::add_wait")
+        self.wait_for_graph
+            .entry(waiter)
+            .or_insert_with(Vec::new)
+            .push(holder);
     }
+
+    /// Remove all wait-for edges originating from the given transaction.
+    ///
+    /// Called when a transaction completes (commits or aborts) or acquires
+    /// the lock it was waiting for.
     pub fn remove_wait(&mut self, waiter: TransactionId) {
-        todo!("Implement DeadlockDetector::remove_wait")
+        self.wait_for_graph.remove(&waiter);
     }
+
+    /// Detect if there's a cycle in the wait-for graph using DFS.
+    ///
+    /// Returns the cycle as a vector of transaction IDs if found, or None.
+    /// Uses depth-first search with a recursion stack to detect back edges.
     pub fn detect_cycle(&self) -> Option<Vec<TransactionId>> {
-        todo!("Implement DeadlockDetector::detect_cycle")
+        let mut visited = HashSet::new();
+        let mut rec_stack = HashSet::new();
+        let mut path = Vec::new();
+
+        // Try DFS from each unvisited node
+        for &txn_id in self.wait_for_graph.keys() {
+            if !visited.contains(&txn_id) {
+                if let Some(cycle) = self.dfs_detect_cycle(
+                    txn_id,
+                    &mut visited,
+                    &mut rec_stack,
+                    &mut path,
+                ) {
+                    return Some(cycle);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Helper function for cycle detection using DFS.
+    fn dfs_detect_cycle(
+        &self,
+        current: TransactionId,
+        visited: &mut HashSet<TransactionId>,
+        rec_stack: &mut HashSet<TransactionId>,
+        path: &mut Vec<TransactionId>,
+    ) -> Option<Vec<TransactionId>> {
+        visited.insert(current);
+        rec_stack.insert(current);
+        path.push(current);
+
+        // Visit all neighbors (transactions this one is waiting for)
+        if let Some(neighbors) = self.wait_for_graph.get(&current) {
+            for &neighbor in neighbors {
+                if !visited.contains(&neighbor) {
+                    // Recurse on unvisited neighbor
+                    if let Some(cycle) = self.dfs_detect_cycle(neighbor, visited, rec_stack, path)
+                    {
+                        return Some(cycle);
+                    }
+                } else if rec_stack.contains(&neighbor) {
+                    // Found a back edge - cycle detected!
+                    // Extract the cycle from the path
+                    let cycle_start = path.iter().position(|&id| id == neighbor).unwrap();
+                    return Some(path[cycle_start..].to_vec());
+                }
+            }
+        }
+
+        // Backtrack
+        path.pop();
+        rec_stack.remove(&current);
+        None
     }
 }
