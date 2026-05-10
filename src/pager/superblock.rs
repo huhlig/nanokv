@@ -139,25 +139,29 @@ impl Superblock {
     /// Deserialize the superblock from bytes
     pub fn from_bytes(bytes: &[u8]) -> PagerResult<Self> {
         if bytes.len() < Self::SIZE {
-            return Err(PagerError::InvalidSuperblock(
-                "Insufficient bytes for superblock".to_string(),
+            return Err(PagerError::invalid_superblock(
+                "size",
+                format!("{}", Self::SIZE),
+                format!("{}", bytes.len()),
             ));
         }
 
         let magic = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         if magic != Self::MAGIC {
-            return Err(PagerError::InvalidSuperblock(format!(
-                "Invalid magic number: 0x{:X}",
-                magic
-            )));
+            return Err(PagerError::invalid_superblock(
+                "magic",
+                format!("0x{:X}", Self::MAGIC),
+                format!("0x{:X}", magic),
+            ));
         }
 
         let version = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         if version != Self::VERSION {
-            return Err(PagerError::InvalidSuperblock(format!(
-                "Unsupported version: {}",
-                version
-            )));
+            return Err(PagerError::invalid_superblock(
+                "version",
+                format!("{}", Self::VERSION),
+                format!("{}", version),
+            ));
         }
 
         let total_pages = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
@@ -260,7 +264,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            PagerError::InvalidSuperblock(_)
+            PagerError::InvalidSuperblock { .. }
         ));
     }
 

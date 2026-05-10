@@ -160,25 +160,32 @@ impl FileHeader {
     /// Deserialize the file header from bytes
     pub fn from_bytes(bytes: &[u8]) -> PagerResult<Self> {
         if bytes.len() < Self::SIZE {
-            return Err(PagerError::InvalidFileHeader(
-                "Insufficient bytes for file header".to_string(),
+            return Err(PagerError::invalid_file_header(
+                u32::from_le_bytes(MAGIC),
+                0,
+                "Insufficient bytes for file header",
             ));
         }
 
         // Verify magic number
+        let found_magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let expected_magic = u32::from_le_bytes(MAGIC);
         if bytes[0..4] != MAGIC {
-            return Err(PagerError::InvalidFileHeader(
-                "Invalid magic number".to_string(),
+            return Err(PagerError::invalid_file_header(
+                expected_magic,
+                found_magic,
+                "Invalid magic number",
             ));
         }
 
         // Parse version
         let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
         if version != VERSION {
-            return Err(PagerError::InvalidFileHeader(format!(
-                "Unsupported version: {}",
-                version
-            )));
+            return Err(PagerError::invalid_file_header(
+                expected_magic,
+                found_magic,
+                format!("Unsupported version: {}", version),
+            ));
         }
 
         // Parse page size
@@ -188,12 +195,20 @@ impl FileHeader {
 
         // Parse compression type
         let compression = CompressionType::from_u8(bytes[12]).ok_or_else(|| {
-            PagerError::InvalidFileHeader(format!("Invalid compression type: {}", bytes[12]))
+            PagerError::invalid_file_header(
+                expected_magic,
+                found_magic,
+                format!("Invalid compression type: {}", bytes[12]),
+            )
         })?;
 
         // Parse encryption type
         let encryption = EncryptionType::from_u8(bytes[13]).ok_or_else(|| {
-            PagerError::InvalidFileHeader(format!("Invalid encryption type: {}", bytes[13]))
+            PagerError::invalid_file_header(
+                expected_magic,
+                found_magic,
+                format!("Invalid encryption type: {}", bytes[13]),
+            )
         })?;
 
         // Parse counts
@@ -272,7 +287,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            PagerError::InvalidFileHeader(_)
+            PagerError::InvalidFileHeader { .. }
         ));
     }
 

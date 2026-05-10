@@ -272,7 +272,11 @@ impl Page {
             }
             CompressionType::Zstd => {
                 let compressed = zstd::encode_all(Cursor::new(&self.data), 3)
-                    .map_err(|e| PagerError::CompressionError(e.to_string()))?;
+                    .map_err(|e| PagerError::compression_error(
+                        header.page_id,
+                        CompressionType::Zstd,
+                        e.to_string(),
+                    ))?;
                 header.compressed_size = compressed.len() as u32;
                 compressed
             }
@@ -296,7 +300,11 @@ impl Page {
                 // Encrypt the data
                 let encrypted = cipher
                     .encrypt(nonce, compressed_data.as_ref())
-                    .map_err(|e| PagerError::EncryptionError(e.to_string()))?;
+                    .map_err(|e| PagerError::encryption_error(
+                        header.page_id,
+                        EncryptionType::Aes256Gcm,
+                        e.to_string(),
+                    ))?;
 
                 // Prepend nonce to encrypted data
                 let mut result = Vec::with_capacity(12 + encrypted.len());
@@ -392,8 +400,10 @@ impl Page {
 
                 // Extract nonce (first 12 bytes)
                 if encrypted_data.len() < 12 {
-                    return Err(PagerError::DecryptionError(
-                        "Insufficient data for nonce".to_string(),
+                    return Err(PagerError::decryption_error(
+                        header.page_id,
+                        EncryptionType::Aes256Gcm,
+                        "Insufficient data for nonce",
                     ));
                 }
                 let nonce = Nonce::from_slice(&encrypted_data[0..12]);
@@ -405,7 +415,11 @@ impl Page {
                 // Decrypt the data
                 cipher
                     .decrypt(nonce, ciphertext)
-                    .map_err(|e| PagerError::DecryptionError(e.to_string()))?
+                    .map_err(|e| PagerError::decryption_error(
+                        header.page_id,
+                        EncryptionType::Aes256Gcm,
+                        e.to_string(),
+                    ))?
             }
         };
 
@@ -413,18 +427,30 @@ impl Page {
         let data = match header.compression {
             CompressionType::None => compressed_data,
             CompressionType::Lz4 => lz4_flex::decompress_size_prepended(&compressed_data)
-                .map_err(|e| PagerError::DecompressionError(e.to_string()))?,
+                .map_err(|e| PagerError::decompression_error(
+                    header.page_id,
+                    CompressionType::Lz4,
+                    e.to_string(),
+                ))?,
             CompressionType::Zstd => zstd::decode_all(Cursor::new(&compressed_data))
-                .map_err(|e| PagerError::DecompressionError(e.to_string()))?,
+                .map_err(|e| PagerError::decompression_error(
+                    header.page_id,
+                    CompressionType::Zstd,
+                    e.to_string(),
+                ))?,
         };
 
         // Verify decompressed size matches header
         if data.len() != header.uncompressed_size as usize {
-            return Err(PagerError::DecompressionError(format!(
-                "Decompressed size {} does not match expected size {}",
-                data.len(),
-                header.uncompressed_size
-            )));
+            return Err(PagerError::decompression_error(
+                header.page_id,
+                header.compression,
+                format!(
+                    "Decompressed size {} does not match expected size {}",
+                    data.len(),
+                    header.uncompressed_size
+                ),
+            ));
         }
 
         Ok(Self { header, data })
@@ -621,7 +647,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            PagerError::DecryptionError(_)
+            PagerError::DecryptionError { .. }
         ));
     }
 

@@ -16,6 +16,7 @@
 
 //! Pager error types
 
+use crate::pager::config::{CompressionType, EncryptionType};
 use crate::pager::PageId;
 use crate::vfs::FileSystemError;
 use thiserror::Error;
@@ -46,29 +47,53 @@ pub enum PagerError {
     #[error("Invalid page size: {0}")]
     InvalidPageSize(u32),
 
-    /// Invalid file header
-    #[error("Invalid file header: {0}")]
-    InvalidFileHeader(String),
+    /// Invalid file header with structured context
+    #[error("Invalid file header: expected magic {expected_magic:#x}, found {found_magic:#x} - {details}")]
+    InvalidFileHeader {
+        expected_magic: u32,
+        found_magic: u32,
+        details: String,
+    },
 
-    /// Invalid superblock
-    #[error("Invalid superblock: {0}")]
-    InvalidSuperblock(String),
+    /// Invalid superblock with structured context
+    #[error("Invalid superblock field '{field}': expected {expected}, found {found}")]
+    InvalidSuperblock {
+        field: String,
+        expected: String,
+        found: String,
+    },
 
-    /// Compression error
-    #[error("Compression error: {0}")]
-    CompressionError(String),
+    /// Compression error with page and type context
+    #[error("Compression error for page {page_id} using {compression_type:?}: {details}")]
+    CompressionError {
+        page_id: PageId,
+        compression_type: CompressionType,
+        details: String,
+    },
 
-    /// Decompression error
-    #[error("Decompression error: {0}")]
-    DecompressionError(String),
+    /// Decompression error with page and type context
+    #[error("Decompression error for page {page_id} using {compression_type:?}: {details}")]
+    DecompressionError {
+        page_id: PageId,
+        compression_type: CompressionType,
+        details: String,
+    },
 
-    /// Encryption error
-    #[error("Encryption error: {0}")]
-    EncryptionError(String),
+    /// Encryption error with page and type context
+    #[error("Encryption error for page {page_id} using {encryption_type:?}: {details}")]
+    EncryptionError {
+        page_id: PageId,
+        encryption_type: EncryptionType,
+        details: String,
+    },
 
-    /// Decryption error
-    #[error("Decryption error: {0}")]
-    DecryptionError(String),
+    /// Decryption error with page and type context
+    #[error("Decryption error for page {page_id} using {encryption_type:?}: {details}")]
+    DecryptionError {
+        page_id: PageId,
+        encryption_type: EncryptionType,
+        details: String,
+    },
 
     /// Missing encryption key
     #[error("Encryption key required but not provided")]
@@ -105,4 +130,84 @@ pub enum PagerError {
     /// Internal error
     #[error("Internal error: {0}")]
     InternalError(String),
+}
+
+impl PagerError {
+    /// Create a compression error with full context
+    pub fn compression_error(
+        page_id: PageId,
+        compression_type: CompressionType,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::CompressionError {
+            page_id,
+            compression_type,
+            details: details.into(),
+        }
+    }
+
+    /// Create a decompression error with full context
+    pub fn decompression_error(
+        page_id: PageId,
+        compression_type: CompressionType,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::DecompressionError {
+            page_id,
+            compression_type,
+            details: details.into(),
+        }
+    }
+
+    /// Create an encryption error with full context
+    pub fn encryption_error(
+        page_id: PageId,
+        encryption_type: EncryptionType,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::EncryptionError {
+            page_id,
+            encryption_type,
+            details: details.into(),
+        }
+    }
+
+    /// Create a decryption error with full context
+    pub fn decryption_error(
+        page_id: PageId,
+        encryption_type: EncryptionType,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::DecryptionError {
+            page_id,
+            encryption_type,
+            details: details.into(),
+        }
+    }
+
+    /// Create an invalid file header error with full context
+    pub fn invalid_file_header(
+        expected_magic: u32,
+        found_magic: u32,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::InvalidFileHeader {
+            expected_magic,
+            found_magic,
+            details: details.into(),
+        }
+    }
+
+    /// Create an invalid superblock error with full context
+    pub fn invalid_superblock(
+        field: impl Into<String>,
+        expected: impl Into<String>,
+        found: impl Into<String>,
+    ) -> Self {
+        Self::InvalidSuperblock {
+            field: field.into(),
+            expected: expected.into(),
+            found: found.into(),
+        }
+    }
 }
