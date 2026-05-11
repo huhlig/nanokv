@@ -1,9 +1,13 @@
 # ADR-007: Unified ObjectId System
 
-**Status**: Accepted  
-**Date**: 2026-05-10  
-**Deciders**: Hans W. Uhlig, Development Team  
+**Status**: Superseded by [ADR-012](./012-unified-table-architecture.md)
+**Date**: 2026-05-10
+**Deciders**: Hans W. Uhlig, Development Team
 **Technical Story**: Transaction layer improvements (nanokv-i5l, nanokv-6nx)
+
+> **Note**: This ADR has been superseded by [ADR-012: Unified Table Architecture](./012-unified-table-architecture.md).
+> The core concept of using `ObjectId` for all storage objects remains, but the implementation has evolved
+> to remove the `TableId` and `IndexId` wrapper types entirely, using `ObjectId` directly throughout the codebase.
 
 ## Context
 

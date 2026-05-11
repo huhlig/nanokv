@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-012: Unified Table Architecture](./012-unified-table-architecture.md)
+
+> **Note**: This ADR has been superseded by [ADR-012](./012-unified-table-architecture.md).
+> The core concept of treating indexes as specialty tables remains, but the implementation has been
+> unified into a single trait hierarchy with capability-based specialization. See ADR-012 for the
+> complete unified architecture.
 
 ## Context
 

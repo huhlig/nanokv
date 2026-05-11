@@ -12,11 +12,12 @@ This directory contains Architecture Decision Records (ADRs) documenting key des
 | [004](./004-multiple-storage-engines.md) | Multiple Storage Engines | Accepted | 2026-05-10 |
 | [005](./005-write-ahead-logging.md) | Write-Ahead Logging for Durability | Proposed | 2026-05-10 |
 | [006](./006-sharded-concurrency.md) | Sharded Concurrency Model | Accepted | 2026-05-10 |
-| [007](./007-unified-object-id.md) | Unified ObjectId System | Accepted | 2026-05-10 |
+| [007](./007-unified-object-id.md) | Unified ObjectId System | Superseded | 2026-05-10 |
 | [008](./008-optional-compression-encryption.md) | Optional Compression and Encryption | Proposed | 2026-05-10 |
 | [009](./009-vfs-abstraction.md) | Virtual File System Abstraction | Proposed | 2026-05-10 |
 | [010](./010-lsm-bloom-filters.md) | Bloom Filters for LSM Trees | Proposed | 2026-05-10 |
-| [011](./011-indexes-as-specialty-tables.md) | Indexes as Specialty Tables | Accepted | 2026-05-10 |
+| [011](./011-indexes-as-specialty-tables.md) | Indexes as Specialty Tables | Superseded | 2026-05-10 |
+| [012](./012-unified-table-architecture.md) | Unified Table Architecture | Accepted | 2026-05-11 |
 
 ## ADR Format
 
