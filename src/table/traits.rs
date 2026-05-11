@@ -28,7 +28,7 @@ use crate::pager::PhysicalLocation;
 use crate::table::TableResult;
 use crate::txn::TransactionId;
 use crate::types::{
-    CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, ObjectId, ScanBounds, ValueBuf,
+    Bound, CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, ObjectId, ScanBounds, ValueBuf,
 };
 use crate::wal::LogSequenceNumber;
 use std::borrow::Cow;
@@ -608,4 +608,644 @@ pub struct RepairReport {
     pub actions_attempted: u64,
     pub actions_succeeded: u64,
     pub unrepaired_errors: Vec<ConsistencyError>,
+}
+
+
+// =============================================================================
+// Specialty table traits (formerly index traits)
+// =============================================================================
+
+/// Cursor over ordered specialty table entries.
+///
+/// Uses concrete `TableResult` error type for consistency with `TableCursor`,
+/// enabling uniform error handling at the transaction layer.
+pub trait SpecialtyTableCursor {
+    fn valid(&self) -> bool;
+
+    fn index_key(&self) -> Option<&[u8]>;
+
+    fn primary_key(&self) -> Option<&[u8]>;
+
+    fn next(&mut self) -> TableResult<()>;
+
+    fn prev(&mut self) -> TableResult<()>;
+
+    fn seek(&mut self, index_key: &[u8]) -> TableResult<()>;
+}
+
+/// Cursor over time-series data points.
+pub trait TimeSeriesCursor {
+    fn valid(&self) -> bool;
+
+    fn current(&self) -> Option<TimePointRef>;
+
+    fn next(&mut self) -> TableResult<()>;
+}
+
+/// Cursor over graph edges.
+pub trait EdgeCursor {
+    fn valid(&self) -> bool;
+
+    fn current(&self) -> Option<EdgeRef>;
+
+    fn next(&mut self) -> TableResult<()>;
+}
+
+/// Dense ordered specialty table: one or more entries per logical record.
+/// Renamed from DenseOrderedIndex to reflect unified table architecture.
+pub trait DenseOrdered {
+    type Cursor<'a>: SpecialtyTableCursor
+    where
+        Self: 'a;
+
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()>;
+
+    fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()>;
+
+    fn scan(&self, bounds: ScanBounds) -> TableResult<Self::Cursor<'_>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Sparse specialty table: maps summarized keys/statistics to candidate physical ranges.
+/// Renamed from SparseIndex to reflect unified table architecture.
+pub trait SparseOrdered {
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn add_marker(
+        &mut self,
+        marker_key: &[u8],
+        target: PhysicalLocation,
+    ) -> TableResult<()>;
+
+    /// Remove a marker by key and page ID.
+    ///
+    /// For LSM SST file removal, the caller typically knows the marker key and page ID
+    /// but not the exact byte range within the page. This signature is more practical
+    /// than requiring a full `PhysicalLocation`.
+    fn remove_marker(
+        &mut self,
+        marker_key: &[u8],
+        page_id: crate::pager::PageId,
+    ) -> TableResult<bool>;
+
+    fn find_candidate_ranges(
+        &self,
+        query: SparseQuery<'_>,
+    ) -> TableResult<Vec<PhysicalRange>>;
+
+    /// Convert physical ranges to scan bounds for ordered scan layer.
+    ///
+    /// This enables sparse tables to participate in query planning by translating
+    /// their physical range candidates into logical key ranges that can be used
+    /// with the ordered scan interface.
+    fn to_scan_bounds(&self, ranges: &[PhysicalRange]) -> TableResult<Vec<ScanBounds>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Approximate membership table such as a Bloom filter.
+/// Renamed from ApproximateMembershipIndex to reflect unified table architecture.
+pub trait ApproximateMembership {
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn insert_key(&mut self, key: &[u8]) -> TableResult<()>;
+
+    /// Returns false only when the key is definitely absent.
+    fn might_contain(&self, key: &[u8]) -> TableResult<bool>;
+
+    /// Returns the estimated false-positive rate when known.
+    fn false_positive_rate(&self) -> Option<f64>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Full-text search table with field-aware tokenization, posting lists, and scoring.
+/// Renamed from FullTextIndex to reflect unified table architecture.
+pub trait FullTextSearch {
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn index_document(
+        &mut self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+    ) -> TableResult<()>;
+
+    /// Update an existing document, replacing its indexed content.
+    ///
+    /// This is more efficient than delete-then-insert for posting list updates,
+    /// as it can reuse existing posting list entries where terms haven't changed.
+    fn update_document(
+        &mut self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+    ) -> TableResult<()>;
+
+    fn delete_document(&mut self, doc_id: &[u8]) -> TableResult<()>;
+
+    fn search(
+        &self,
+        query: TextQuery<'_>,
+        limit: usize,
+    ) -> TableResult<Vec<ScoredDocument>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Shared vector-search interface for HNSW, IVF, flat, and hybrid vector tables.
+/// Renamed from VectorIndex to reflect unified table architecture.
+pub trait VectorSearch {
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn dimensions(&self) -> usize;
+
+    fn metric(&self) -> VectorMetric;
+
+    fn insert_vector(&mut self, id: &[u8], vector: &[f32]) -> TableResult<()>;
+
+    fn delete_vector(&mut self, id: &[u8]) -> TableResult<()>;
+
+    fn search_vector<'a>(
+        &self,
+        query: &[f32],
+        options: VectorSearchOptions<'a>,
+    ) -> TableResult<Vec<VectorHit>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// HNSW-specific controls.
+pub trait HnswVector: VectorSearch {
+    fn set_ef_construction(&mut self, ef: usize);
+
+    fn set_max_connections(&mut self, m: usize);
+}
+
+/// IVF-specific controls.
+pub trait IvfVector: VectorSearch {
+    fn train(&mut self, samples: &[&[f32]]) -> TableResult<()>;
+
+    fn centroid_count(&self) -> usize;
+}
+
+/// Graph adjacency table optimized for incoming/outgoing edge traversal.
+/// Renamed from GraphAdjacencyIndex to reflect unified table architecture.
+pub trait GraphAdjacency {
+    type EdgeCursor<'a>: EdgeCursor
+    where
+        Self: 'a;
+
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn add_edge(
+        &mut self,
+        source: &[u8],
+        label: &[u8],
+        target: &[u8],
+        edge_id: &[u8],
+    ) -> TableResult<()>;
+
+    fn remove_edge(
+        &mut self,
+        source: &[u8],
+        label: &[u8],
+        target: &[u8],
+        edge_id: &[u8],
+    ) -> TableResult<()>;
+
+    fn outgoing(
+        &self,
+        source: &[u8],
+        label: Option<&[u8]>,
+    ) -> TableResult<Self::EdgeCursor<'_>>;
+
+    fn incoming(
+        &self,
+        target: &[u8],
+        label: Option<&[u8]>,
+    ) -> TableResult<Self::EdgeCursor<'_>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Time-series table optimized for append, range, retention, and latest-before queries.
+/// Renamed from TimeSeriesIndex to reflect unified table architecture.
+pub trait TimeSeries {
+    type TimeSeriesCursor<'a>: TimeSeriesCursor
+    where
+        Self: 'a;
+
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn append_point(
+        &mut self,
+        series_key: &[u8],
+        timestamp: i64,
+        value_key: &[u8],
+    ) -> TableResult<()>;
+
+    fn scan_series(
+        &self,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
+    ) -> TableResult<Self::TimeSeriesCursor<'_>>;
+
+    fn latest_before(
+        &self,
+        series_key: &[u8],
+        timestamp: i64,
+    ) -> TableResult<Option<TimePointRef>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Geospatial table abstraction for point and region queries.
+/// Renamed from GeoSpatialIndex to reflect unified table architecture.
+pub trait GeoSpatial {
+    fn table_id(&self) -> TableId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    fn insert_geometry(&mut self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()>;
+
+    fn delete_geometry(&mut self, id: &[u8]) -> TableResult<()>;
+
+    fn intersects(&self, query: GeometryRef<'_>, limit: usize) -> TableResult<Vec<GeoHit>>;
+
+    fn nearest(&self, point: GeoPoint, limit: usize) -> TableResult<Vec<GeoHit>>;
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
+}
+
+/// Incremental rebuild lifecycle for specialty tables that may become stale.
+pub trait Rebuildable {
+    fn table_id(&self) -> TableId;
+
+    fn mark_stale(&mut self) -> TableResult<()>;
+
+    fn is_stale(&self) -> bool;
+
+    fn rebuild(&mut self, source: &dyn SpecialtyTableSource) -> TableResult<()>;
+
+    fn rebuild_incremental(
+        &mut self,
+        source: &dyn SpecialtyTableSource,
+        budget: RebuildBudget,
+    ) -> TableResult<RebuildProgress>;
+}
+
+// =============================================================================
+// Query planning and cost estimation for specialty tables
+// =============================================================================
+
+/// Common interface for specialty tables that can participate in query planning.
+pub trait QueryablePredicate {
+    fn table_id(&self) -> TableId;
+
+    fn estimate(&self, predicate: Predicate<'_>) -> TableResult<CostEstimate>;
+
+    fn query_candidates(
+        &self,
+        predicate: Predicate<'_>,
+        budget: QueryBudget,
+    ) -> TableResult<CandidateSet>;
+}
+
+/// Predicate understood by the generic query-planning layer.
+#[derive(Clone, Debug)]
+pub enum Predicate<'a> {
+    Eq {
+        field: std::borrow::Cow<'a, str>,
+        value: std::borrow::Cow<'a, [u8]>,
+    },
+    Range {
+        field: std::borrow::Cow<'a, str>,
+        start: crate::types::Bound<std::borrow::Cow<'a, [u8]>>,
+        end: crate::types::Bound<std::borrow::Cow<'a, [u8]>>,
+    },
+    Prefix {
+        field: std::borrow::Cow<'a, str>,
+        prefix: std::borrow::Cow<'a, [u8]>,
+    },
+    Text {
+        field: Option<std::borrow::Cow<'a, str>>,
+        query: std::borrow::Cow<'a, str>,
+    },
+    VectorKnn {
+        field: std::borrow::Cow<'a, str>,
+        vector: std::borrow::Cow<'a, [f32]>,
+        k: usize,
+    },
+    GeoIntersects {
+        field: std::borrow::Cow<'a, str>,
+        geometry: GeometryRef<'a>,
+    },
+    /// Check if a field value is NULL.
+    IsNull {
+        field: std::borrow::Cow<'a, str>,
+    },
+    /// Check if a field value is NOT NULL.
+    IsNotNull {
+        field: std::borrow::Cow<'a, str>,
+    },
+    /// Check if a field value is in a set of values.
+    In {
+        field: std::borrow::Cow<'a, str>,
+        values: Vec<std::borrow::Cow<'a, [u8]>>,
+    },
+    /// Check if a field value is between two bounds (inclusive).
+    Between {
+        field: std::borrow::Cow<'a, str>,
+        low: std::borrow::Cow<'a, [u8]>,
+        high: std::borrow::Cow<'a, [u8]>,
+    },
+    And(Vec<Predicate<'a>>),
+    Or(Vec<Predicate<'a>>),
+    Not(Box<Predicate<'a>>),
+}
+
+/// Cost/selectivity estimate for query planning.
+#[derive(Clone, Debug, Default)]
+pub struct CostEstimate {
+    pub estimated_rows: Option<u64>,
+    pub selectivity: Option<f64>,
+    pub io_cost: Option<f64>,
+    pub cpu_cost: Option<f64>,
+    pub memory_cost_bytes: Option<u64>,
+    pub exact: bool,
+    pub ordered: bool,
+}
+
+/// Candidate primary-key set produced by a specialty table.
+#[derive(Clone, Debug)]
+pub enum CandidateSet {
+    Exact(Vec<KeyBuf>),
+    Approximate(Vec<KeyBuf>),
+    PhysicalRanges(Vec<PhysicalRange>),
+    Empty,
+    Unknown,
+}
+
+/// Query budget for approximate or incremental specialty table queries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueryBudget {
+    pub max_results: Option<usize>,
+    pub max_pages: Option<u64>,
+    pub max_millis: Option<u64>,
+}
+
+// =============================================================================
+// Supporting types for specialty tables
+// =============================================================================
+
+/// Source abstraction used to rebuild specialty tables.
+///
+/// Returns an iterator over (primary_key, value) pairs, enabling pausable
+/// iteration for incremental rebuilds with budget constraints.
+///
+/// # Error Handling
+///
+/// The `SpecialtyTableSourceError` enum preserves the original error type information,
+/// allowing rebuild logic to distinguish between different error categories:
+///
+/// - `TableScan`: Errors from the underlying table scan operation
+/// - `Io`: I/O errors (transient failures, disk full, etc.)
+/// - `InvalidData`: Corrupt or malformed data encountered during scan
+/// - `Cancelled`: Scan was interrupted or cancelled
+/// - `Other`: Other source-specific errors
+///
+/// This enables proper error handling strategies such as:
+/// - Retrying transient I/O failures
+/// - Marking specialty tables as stale on corruption
+/// - Distinguishing recoverable from fatal errors
+pub trait SpecialtyTableSource {
+    fn scan_rows(
+        &self,
+        bounds: ScanBounds,
+    ) -> TableResult<
+        Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>), SpecialtyTableSourceError>> + '_>,
+    >;
+}
+
+/// Errors that can occur when scanning table data for specialty table rebuilds.
+///
+/// This enum preserves the original error type information, enabling rebuild
+/// logic to distinguish between transient I/O failures, corruption, and other
+/// error categories for proper error handling and retry strategies.
+#[derive(Debug, thiserror::Error)]
+pub enum SpecialtyTableSourceError {
+    /// Table scan operation failed
+    #[error("Table scan failed: {0}")]
+    TableScan(#[from] crate::table::TableError),
+
+    /// I/O error during scan
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Invalid data encountered during scan
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+
+    /// Scan was cancelled or interrupted
+    #[error("Scan cancelled: {0}")]
+    Cancelled(String),
+
+    /// Other source error
+    #[error("Source error: {0}")]
+    Other(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct SparseQuery<'a> {
+    pub key_range: Option<(&'a [u8], &'a [u8])>,
+    pub min_max_filter: Option<(&'a [u8], &'a [u8])>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextField<'a> {
+    pub name: &'a str,
+    pub text: &'a str,
+    pub boost: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextQuery<'a> {
+    pub query: &'a str,
+    pub default_field: Option<&'a str>,
+    pub require_positions: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScoredDocument {
+    pub doc_id: KeyBuf,
+    pub score: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorMetric {
+    Cosine,
+    Dot,
+    Euclidean,
+    Manhattan,
+}
+
+#[derive(Clone, Debug)]
+pub struct VectorSearchOptions<'a> {
+    pub limit: usize,
+    pub ef_search: Option<usize>,
+    pub probes: Option<usize>,
+    pub filter: Option<Predicate<'a>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct VectorHit {
+    pub id: KeyBuf,
+    /// Distance metric value (lower is closer for most metrics).
+    /// Uses f32 for consistency with vector data representation.
+    pub distance: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgeRef {
+    pub edge_id: KeyBuf,
+    pub source: KeyBuf,
+    pub label: KeyBuf,
+    pub target: KeyBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimePointRef {
+    pub series_key: KeyBuf,
+    pub timestamp: i64,
+    pub value_key: KeyBuf,
+}
+
+/// Geographic point with double-precision coordinates.
+///
+/// Uses f64 (not f32) for geographic coordinates because:
+/// - Standard geographic coordinate systems (WGS84, etc.) are defined with double precision
+/// - f32 provides only ~7 decimal digits, which is ~11m precision at the equator
+/// - f64 provides ~15 decimal digits, which is ~1mm precision - essential for accurate GIS
+/// - Geospatial standards (GeoJSON, WKT, etc.) use double precision
+/// - The precision loss from f32 accumulates in distance calculations and transformations
+///
+/// In contrast, VectorSearch uses f32 because:
+/// - Vector embeddings are approximate by nature (trained with noise/quantization)
+/// - Memory efficiency is critical for large vector collections
+/// - Distance calculations are relative, not absolute measurements
+/// - Most ML frameworks produce f32 embeddings
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeoPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Debug)]
+pub enum GeometryRef<'a> {
+    Point(GeoPoint),
+    BoundingBox { min: GeoPoint, max: GeoPoint },
+    Wkb(&'a [u8]),
+}
+
+#[derive(Clone, Debug)]
+pub struct GeoHit {
+    pub id: KeyBuf,
+    /// Distance in meters (or coordinate system units).
+    /// Uses f32 for consistency with VectorHit and memory efficiency.
+    /// Optional because some queries (intersects) don't compute distance.
+    pub distance: Option<f32>,
+}
+
+/// Declared specialty table capabilities.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpecialtyTableCapabilities {
+    pub exact: bool,
+    pub approximate: bool,
+    pub ordered: bool,
+    pub sparse: bool,
+    pub supports_delete: bool,
+    pub supports_range_query: bool,
+    pub supports_prefix_query: bool,
+    pub supports_scoring: bool,
+    pub supports_incremental_rebuild: bool,
+    pub may_be_stale: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SpecialtyTableStats {
+    pub entry_count: Option<u64>,
+    pub size_bytes: Option<u64>,
+    pub distinct_keys: Option<u64>,
+    pub stale_entries: Option<u64>,
+    pub last_updated_lsn: Option<LogSequenceNumber>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RebuildBudget {
+    pub max_rows: Option<u64>,
+    pub max_pages: Option<u64>,
+    pub max_millis: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RebuildProgress {
+    pub complete: bool,
+    pub rows_scanned: u64,
+    pub rows_indexed: u64,
+    pub resume_key: Option<KeyBuf>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalRange {
+    pub start: PhysicalLocation,
+    pub end: PhysicalLocation,
 }

@@ -61,15 +61,70 @@ mod error;
 mod traits;
 
 pub use self::error::{IndexError, IndexResult, IndexSourceError};
-pub use self::traits::{
-    ApproximateMembershipIndex, CandidateSet, CostEstimate, DenseOrderedIndex, EdgeRef,
-    FullTextIndex, GeoHit, GeoPoint, GeoSpatialIndex, GeometryRef, GraphAdjacencyIndex, HnswIndex,
-    Index, IndexCapabilities, IndexCursor, IndexId, IndexInfo, IndexOptions, IndexSource,
-    IndexStats, IvfIndex, PhysicalRange, Predicate, QueryBudget, QueryableIndex, RebuildBudget,
-    RebuildProgress, RebuildableIndex, ScoredDocument, SparseIndex, SparseQuery, TextField,
-    TextQuery, TimePointRef, TimeSeriesIndex, VectorHit, VectorIndex, VectorMetric,
-    VectorSearchOptions,
-};
 
 // Re-export unified types from table module
 pub use crate::table::{IndexConsistency, IndexField, IndexKind};
+
+// Re-export renamed specialty table traits from table module
+// These are the new canonical names
+pub use crate::table::{
+    ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
+    FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,
+    IvfVector, PhysicalRange, Predicate, QueryBudget, QueryablePredicate, Rebuildable,
+    RebuildBudget, RebuildProgress, ScoredDocument, SparseOrdered, SparseQuery,
+    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableSource,
+    SpecialtyTableSourceError, SpecialtyTableStats, TextField, TextQuery, TimePointRef,
+    TimeSeries, TimeSeriesCursor, VectorHit, VectorMetric, VectorSearch, VectorSearchOptions,
+};
+
+// Backward compatibility: re-export old trait names as deprecated type aliases
+#[deprecated(since = "0.1.0", note = "Use DenseOrdered from crate::table instead")]
+pub use crate::table::DenseOrdered as DenseOrderedIndex;
+
+#[deprecated(since = "0.1.0", note = "Use SparseOrdered from crate::table instead")]
+pub use crate::table::SparseOrdered as SparseIndex;
+
+#[deprecated(since = "0.1.0", note = "Use ApproximateMembership from crate::table instead")]
+pub use crate::table::ApproximateMembership as ApproximateMembershipIndex;
+
+#[deprecated(since = "0.1.0", note = "Use FullTextSearch from crate::table instead")]
+pub use crate::table::FullTextSearch as FullTextIndex;
+
+#[deprecated(since = "0.1.0", note = "Use VectorSearch from crate::table instead")]
+pub use crate::table::VectorSearch as VectorIndex;
+
+#[deprecated(since = "0.1.0", note = "Use HnswVector from crate::table instead")]
+pub use crate::table::HnswVector as HnswIndex;
+
+#[deprecated(since = "0.1.0", note = "Use IvfVector from crate::table instead")]
+pub use crate::table::IvfVector as IvfIndex;
+
+#[deprecated(since = "0.1.0", note = "Use GraphAdjacency from crate::table instead")]
+pub use crate::table::GraphAdjacency as GraphAdjacencyIndex;
+
+#[deprecated(since = "0.1.0", note = "Use TimeSeries from crate::table instead")]
+pub use crate::table::TimeSeries as TimeSeriesIndex;
+
+#[deprecated(since = "0.1.0", note = "Use GeoSpatial from crate::table instead")]
+pub use crate::table::GeoSpatial as GeoSpatialIndex;
+
+#[deprecated(since = "0.1.0", note = "Use QueryablePredicate from crate::table instead")]
+pub use crate::table::QueryablePredicate as QueryableIndex;
+
+#[deprecated(since = "0.1.0", note = "Use Rebuildable from crate::table instead")]
+pub use crate::table::Rebuildable as RebuildableIndex;
+
+#[deprecated(since = "0.1.0", note = "Use SpecialtyTableCursor from crate::table instead")]
+pub use crate::table::SpecialtyTableCursor as IndexCursor;
+
+#[deprecated(since = "0.1.0", note = "Use SpecialtyTableCapabilities from crate::table instead")]
+pub use crate::table::SpecialtyTableCapabilities as IndexCapabilities;
+
+#[deprecated(since = "0.1.0", note = "Use SpecialtyTableStats from crate::table instead")]
+pub use crate::table::SpecialtyTableStats as IndexStats;
+
+#[deprecated(since = "0.1.0", note = "Use SpecialtyTableSource from crate::table instead")]
+pub use crate::table::SpecialtyTableSource as IndexSource;
+
+// Keep the old traits module for backward compatibility with deprecated items
+pub use self::traits::{IndexId, IndexInfo, IndexOptions};

@@ -25,6 +25,7 @@ pub use self::lsm::{
     LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
 };
 pub use self::traits::{
+    // Core table traits
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
     ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
     Histogram, HistogramBucket, IndexConsistency, IndexField, IndexKind, KeyStatistics,
@@ -33,4 +34,12 @@ pub use self::traits::{
     TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableId, TableInfo, TableKind,
     TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions, VacuumReport,
     ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
+    // Specialty table traits (formerly index traits)
+    ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
+    FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,
+    IvfVector, PhysicalRange, Predicate, QueryBudget, QueryablePredicate, Rebuildable,
+    RebuildBudget, RebuildProgress, ScoredDocument, SparseOrdered, SparseQuery,
+    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableSource,
+    SpecialtyTableSourceError, SpecialtyTableStats, TextField, TextQuery, TimePointRef,
+    TimeSeries, TimeSeriesCursor, VectorHit, VectorMetric, VectorSearch, VectorSearchOptions,
 };
