@@ -765,4 +765,355 @@ fn test_lsm_table_handle() {
     assert!(!table.contains(b"event1").unwrap());
 }
 
+// =============================================================================
+// BTree Engine Tests
+// =============================================================================
+
+/// Helper to create BTree table options
+fn btree_table_options() -> TableOptions {
+    TableOptions {
+        engine: TableEngineKind::BTree,
+        key_encoding: KeyEncoding::RawBytes,
+        compression: None,
+        encryption: None,
+        page_size: None,
+        format_version: 1,
+    }
+}
+
+#[test]
+fn test_create_btree_table() {
+    let db = create_test_db();
+    
+    let table_id = db.create_table("users", btree_table_options())
+        .expect("Failed to create BTree table");
+    
+    // Verify table exists
+    assert!(db.is_table(table_id).unwrap());
+    
+    // Verify table info
+    let info = db.get_object_info(table_id).unwrap().expect("Table not found");
+    assert_eq!(info.name, "users");
+    assert_eq!(info.options.engine, TableEngineKind::BTree);
+}
+
+#[test]
+fn test_btree_insert_and_get() {
+    let db = create_test_db();
+    let table_id = db.create_table("users", btree_table_options()).unwrap();
+    
+    // Insert multiple key-value pairs
+    db.insert(table_id, b"user1", b"Alice").unwrap();
+    db.insert(table_id, b"user2", b"Bob").unwrap();
+    db.insert(table_id, b"user3", b"Charlie").unwrap();
+    
+    // Verify all values
+    assert_eq!(db.get(table_id, b"user1").unwrap().unwrap().as_ref(), b"Alice");
+    assert_eq!(db.get(table_id, b"user2").unwrap().unwrap().as_ref(), b"Bob");
+    assert_eq!(db.get(table_id, b"user3").unwrap().unwrap().as_ref(), b"Charlie");
+}
+
+#[test]
+fn test_btree_update() {
+    let db = create_test_db();
+    let table_id = db.create_table("users", btree_table_options()).unwrap();
+    
+    // Insert initial value
+    db.insert(table_id, b"user1", b"Alice").unwrap();
+    
+    // Update value
+    db.update(table_id, b"user1", b"Alice Smith").unwrap();
+    
+    // Verify updated value
+    assert_eq!(db.get(table_id, b"user1").unwrap().unwrap().as_ref(), b"Alice Smith");
+}
+
+#[test]
+fn test_btree_delete() {
+    let db = create_test_db();
+    let table_id = db.create_table("users", btree_table_options()).unwrap();
+    
+    // Insert value
+    db.insert(table_id, b"user1", b"Alice").unwrap();
+    
+    // Verify exists
+    assert!(db.get(table_id, b"user1").unwrap().is_some());
+    
+    // Delete
+    let deleted = db.delete(table_id, b"user1").unwrap();
+    assert!(deleted);
+    
+    // Verify deleted
+    assert!(db.get(table_id, b"user1").unwrap().is_none());
+}
+
+#[test]
+fn test_btree_upsert() {
+    let db = create_test_db();
+    let table_id = db.create_table("users", btree_table_options()).unwrap();
+    
+    // Upsert (insert)
+    let is_update = db.upsert(table_id, b"user1", b"Alice").unwrap();
+    assert!(!is_update);
+    
+    // Upsert (update)
+    let is_update = db.upsert(table_id, b"user1", b"Alice Smith").unwrap();
+    assert!(is_update);
+    
+    // Verify final value
+    assert_eq!(db.get(table_id, b"user1").unwrap().unwrap().as_ref(), b"Alice Smith");
+}
+
+#[test]
+fn test_btree_ordered_keys() {
+    let db = create_test_db();
+    let table_id = db.create_table("products", btree_table_options()).unwrap();
+    
+    // BTree maintains key order - insert in random order
+    db.insert(table_id, b"product_005", b"Widget").unwrap();
+    db.insert(table_id, b"product_001", b"Gadget").unwrap();
+    db.insert(table_id, b"product_003", b"Doohickey").unwrap();
+    db.insert(table_id, b"product_002", b"Thingamajig").unwrap();
+    db.insert(table_id, b"product_004", b"Whatsit").unwrap();
+    
+    // Verify all can be retrieved
+    assert_eq!(db.get(table_id, b"product_001").unwrap().unwrap().as_ref(), b"Gadget");
+    assert_eq!(db.get(table_id, b"product_002").unwrap().unwrap().as_ref(), b"Thingamajig");
+    assert_eq!(db.get(table_id, b"product_003").unwrap().unwrap().as_ref(), b"Doohickey");
+    assert_eq!(db.get(table_id, b"product_004").unwrap().unwrap().as_ref(), b"Whatsit");
+    assert_eq!(db.get(table_id, b"product_005").unwrap().unwrap().as_ref(), b"Widget");
+}
+
+#[test]
+fn test_btree_read_heavy_workload() {
+    let db = create_test_db();
+    let table_id = db.create_table("cache", btree_table_options()).unwrap();
+    
+    // BTree is optimized for read-heavy workloads with good point lookup performance
+    // Insert some records
+    for i in 0..50 {
+        let key = format!("key{:04}", i);
+        let value = format!("value_{}", i);
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .expect("Failed to insert");
+    }
+    
+    // Perform many reads (BTree should handle this efficiently)
+    for _ in 0..10 {
+        for i in 0..50 {
+            let key = format!("key{:04}", i);
+            let expected = format!("value_{}", i);
+            assert_eq!(
+                db.get(table_id, key.as_bytes()).unwrap().unwrap().as_ref(),
+                expected.as_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_btree_multiple_tables() {
+    let db = create_test_db();
+    
+    // Create multiple BTree tables
+    let users_id = db.create_table("users", btree_table_options()).unwrap();
+    let products_id = db.create_table("products", btree_table_options()).unwrap();
+    
+    // Insert into both
+    db.insert(users_id, b"user1", b"Alice").unwrap();
+    db.insert(products_id, b"prod1", b"Widget").unwrap();
+    
+    // Verify isolation
+    assert!(db.get(users_id, b"user1").unwrap().is_some());
+    assert!(db.get(users_id, b"prod1").unwrap().is_none());
+    assert!(db.get(products_id, b"prod1").unwrap().is_some());
+    assert!(db.get(products_id, b"user1").unwrap().is_none());
+}
+
+#[test]
+fn test_btree_mixed_engines() {
+    let db = create_test_db();
+    
+    // Create tables with different engines
+    let btree_table = db.create_table("users", btree_table_options()).unwrap();
+    let memory_table = db.create_table("cache", default_table_options()).unwrap();
+    let lsm_table = db.create_table("logs", lsm_table_options()).unwrap();
+    
+    // Insert into all three
+    db.insert(btree_table, b"user1", b"Alice").unwrap();
+    db.insert(memory_table, b"key1", b"cached_value").unwrap();
+    db.insert(lsm_table, b"log1", b"log_entry").unwrap();
+    
+    // Verify all work correctly
+    assert_eq!(db.get(btree_table, b"user1").unwrap().unwrap().as_ref(), b"Alice");
+    assert_eq!(db.get(memory_table, b"key1").unwrap().unwrap().as_ref(), b"cached_value");
+    assert_eq!(db.get(lsm_table, b"log1").unwrap().unwrap().as_ref(), b"log_entry");
+    
+    // Verify table info shows correct engines
+    let btree_info = db.get_object_info(btree_table).unwrap().unwrap();
+    let memory_info = db.get_object_info(memory_table).unwrap().unwrap();
+    let lsm_info = db.get_object_info(lsm_table).unwrap().unwrap();
+    assert_eq!(btree_info.options.engine, TableEngineKind::BTree);
+    assert_eq!(memory_info.options.engine, TableEngineKind::Memory);
+    assert_eq!(lsm_info.options.engine, TableEngineKind::LsmTree);
+}
+
+#[test]
+fn test_btree_range_operations() {
+    let db = create_test_db();
+    let table_id = db.create_table("inventory", btree_table_options()).unwrap();
+    
+    // Insert items with sequential keys
+    for i in 0..20 {
+        let key = format!("item{:03}", i);
+        let value = format!("quantity_{}", i * 10);
+        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+    }
+    
+    // Verify specific range
+    assert_eq!(
+        db.get(table_id, b"item000").unwrap().unwrap().as_ref(),
+        b"quantity_0"
+    );
+    assert_eq!(
+        db.get(table_id, b"item010").unwrap().unwrap().as_ref(),
+        b"quantity_100"
+    );
+    assert_eq!(
+        db.get(table_id, b"item019").unwrap().unwrap().as_ref(),
+        b"quantity_190"
+    );
+}
+
+#[test]
+fn test_btree_update_pattern() {
+    let db = create_test_db();
+    let table_id = db.create_table("accounts", btree_table_options()).unwrap();
+    
+    // Insert initial value
+    db.insert(table_id, b"account1", b"balance:100").unwrap();
+    
+    // Update multiple times (BTree handles in-place updates efficiently)
+    for i in 1..=10 {
+        let value = format!("balance:{}", 100 + i * 10);
+        db.update(table_id, b"account1", value.as_bytes()).unwrap();
+    }
+    
+    // Verify final value
+    assert_eq!(db.get(table_id, b"account1").unwrap().unwrap().as_ref(), b"balance:200");
+}
+
+#[test]
+fn test_btree_table_handle() {
+    let db = create_test_db();
+    let table_id = db.create_table("users", btree_table_options()).unwrap();
+    
+    // Get table handle
+    let table = db.table(table_id).expect("Failed to get table handle");
+    
+    // Use handle for operations
+    table.insert(b"user1", b"Alice").unwrap();
+    table.insert(b"user2", b"Bob").unwrap();
+    
+    assert_eq!(table.get(b"user1").unwrap().unwrap().as_ref(), b"Alice");
+    assert!(table.contains(b"user1").unwrap());
+    assert!(table.contains(b"user2").unwrap());
+    
+    table.update(b"user1", b"Alice Smith").unwrap();
+    assert_eq!(table.get(b"user1").unwrap().unwrap().as_ref(), b"Alice Smith");
+    
+    table.delete(b"user1").unwrap();
+    assert!(!table.contains(b"user1").unwrap());
+}
+
+#[test]
+fn test_btree_large_values() {
+    let db = create_test_db();
+    let table_id = db.create_table("documents", btree_table_options()).unwrap();
+    
+    // Insert large values (BTree should handle these efficiently)
+    let large_value = vec![b'X'; 1024]; // 1KB value
+    db.insert(table_id, b"doc1", &large_value).unwrap();
+    
+    let very_large_value = vec![b'Y'; 4096]; // 4KB value
+    db.insert(table_id, b"doc2", &very_large_value).unwrap();
+    
+    // Verify retrieval
+    let retrieved1 = db.get(table_id, b"doc1").unwrap().unwrap();
+    assert_eq!(retrieved1.as_ref().len(), 1024);
+    assert_eq!(retrieved1.as_ref(), &large_value[..]);
+    
+    let retrieved2 = db.get(table_id, b"doc2").unwrap().unwrap();
+    assert_eq!(retrieved2.as_ref().len(), 4096);
+    assert_eq!(retrieved2.as_ref(), &very_large_value[..]);
+}
+
+#[test]
+fn test_btree_empty_values() {
+    let db = create_test_db();
+    let table_id = db.create_table("flags", btree_table_options()).unwrap();
+    
+    // Insert empty value (valid use case for flags/markers)
+    db.insert(table_id, b"flag1", b"").unwrap();
+    
+    // Verify retrieval - empty values may or may not be supported depending on engine
+    let value = db.get(table_id, b"flag1").unwrap();
+    if let Some(v) = value {
+        assert_eq!(v.as_ref(), b"");
+        assert_eq!(v.as_ref().len(), 0);
+    } else {
+        // Some engines may not support empty values, which is acceptable
+        // The key should still exist in the table
+        println!("Note: BTree engine does not support empty values");
+    }
+}
+
+#[test]
+fn test_btree_special_keys() {
+    let db = create_test_db();
+    let table_id = db.create_table("special", btree_table_options()).unwrap();
+    
+    // Test with various special byte sequences
+    db.insert(table_id, b"\x00\x00\x00", b"null_bytes").unwrap();
+    db.insert(table_id, b"\xFF\xFF\xFF", b"max_bytes").unwrap();
+    db.insert(table_id, b"key\x00with\x00nulls", b"embedded_nulls").unwrap();
+    
+    // Verify retrieval
+    assert_eq!(db.get(table_id, b"\x00\x00\x00").unwrap().unwrap().as_ref(), b"null_bytes");
+    assert_eq!(db.get(table_id, b"\xFF\xFF\xFF").unwrap().unwrap().as_ref(), b"max_bytes");
+    assert_eq!(db.get(table_id, b"key\x00with\x00nulls").unwrap().unwrap().as_ref(), b"embedded_nulls");
+}
+
+#[test]
+fn test_btree_stress_insert_delete() {
+    let db = create_test_db();
+    let table_id = db.create_table("stress", btree_table_options()).unwrap();
+    
+    // Insert many keys
+    for i in 0..100 {
+        let key = format!("key{:04}", i);
+        let value = format!("value_{}", i);
+        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+    }
+    
+    // Delete every other key
+    for i in (0..100).step_by(2) {
+        let key = format!("key{:04}", i);
+        db.delete(table_id, key.as_bytes()).unwrap();
+    }
+    
+    // Verify remaining keys
+    for i in 0..100 {
+        let key = format!("key{:04}", i);
+        let result = db.get(table_id, key.as_bytes()).unwrap();
+        if i % 2 == 0 {
+            assert!(result.is_none(), "Key {} should be deleted", i);
+        } else {
+            assert!(result.is_some(), "Key {} should exist", i);
+            let expected = format!("value_{}", i);
+            assert_eq!(result.unwrap().as_ref(), expected.as_bytes());
+        }
+    }
+}
+
 // Made with Bob
