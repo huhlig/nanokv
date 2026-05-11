@@ -31,9 +31,10 @@
 use crate::pager::{Page, PageId, PageType, Pager};
 use crate::snap::Snapshot;
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
+    BatchOps, BatchReport, DenseOrdered, Flushable, MutableTable, OrderedScan, PointLookup,
+    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
     TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
-    TableStatistics, TableWriter, WriteBatch,
+    TableStatistics, TableWriter, VerificationReport, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
@@ -1813,3 +1814,197 @@ mod tests {
 }
 
 // Made with Bob
+
+
+// =============================================================================
+// DenseOrdered Specialty Table Implementation
+// =============================================================================
+
+/// Specialty cursor for index operations on paged B-Tree.
+/// 
+/// For secondary indexes, the "index_key" is the indexed field value,
+/// and the "primary_key" is the pointer back to the main table record.
+pub struct PagedBTreeSpecialtyCursor<'a, FS: FileSystem> {
+    inner: PagedBTreeCursor<'a, FS>,
+}
+
+impl<'a, FS: FileSystem> SpecialtyTableCursor for PagedBTreeSpecialtyCursor<'a, FS> {
+    fn valid(&self) -> bool {
+        self.inner.valid()
+    }
+
+    fn index_key(&self) -> Option<&[u8]> {
+        self.inner.key()
+    }
+
+    fn primary_key(&self) -> Option<&[u8]> {
+        self.inner.value()
+    }
+
+    fn next(&mut self) -> TableResult<()> {
+        self.inner.next()
+    }
+
+    fn prev(&mut self) -> TableResult<()> {
+        self.inner.prev()
+    }
+
+    fn seek(&mut self, index_key: &[u8]) -> TableResult<()> {
+        self.inner.seek(index_key)
+    }
+}
+
+impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
+    type Cursor<'a> = PagedBTreeSpecialtyCursor<'a, FS> where Self: 'a;
+
+    fn table_id(&self) -> ObjectId {
+        self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        SpecialtyTableCapabilities {
+            exact: true,
+            approximate: false,
+            ordered: true,
+            sparse: false,
+            supports_delete: true,
+            supports_range_query: true,
+            supports_prefix_query: true,
+            supports_scoring: false,
+            supports_incremental_rebuild: false,
+            may_be_stale: false,
+        }
+    }
+
+    fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+        // For a secondary index, we store: index_key -> primary_key
+        // This allows lookups by the indexed field to find the primary key
+        
+        // Use the internal insert method with a default transaction ID and LSN
+        let tx_id = TransactionId::from(0);
+        let commit_lsn = LogSequenceNumber::from(0);
+        self.insert_internal(
+            index_key.to_vec(),
+            primary_key.to_vec(),
+            tx_id,
+            commit_lsn,
+        )
+    }
+
+    fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+        // For secondary indexes, we need to delete the specific index_key -> primary_key mapping
+        // First, verify that the entry exists and points to the expected primary key
+        
+        let (leaf_page_id, pos) = self.search(index_key)?;
+        let mut leaf_node = self.read_node(leaf_page_id)?;
+        
+        if let BTreeNode::Leaf { ref mut entries, .. } = leaf_node {
+            if pos < entries.len() && entries[pos].key == index_key {
+                // Check if the value matches the expected primary key
+                let snapshot = Snapshot::new(
+                    crate::snap::SnapshotId::from(0),
+                    String::new(),
+                    LogSequenceNumber::from(u64::MAX),
+                    0,
+                    0,
+                    Vec::new(),
+                );
+                
+                if let Some(stored_primary_key) = entries[pos].chain.find_visible_version(&snapshot) {
+                    if stored_primary_key == primary_key {
+                        // Remove the entry
+                        entries.remove(pos);
+                        self.write_node(leaf_page_id, &leaf_node)?;
+                        counter!("btree.index_delete").increment(1);
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    fn scan(&self, bounds: ScanBounds) -> TableResult<Self::Cursor<'_>> {
+        let inner = PagedBTreeCursor::new(
+            self,
+            bounds,
+            LogSequenceNumber::from(u64::MAX), // Use max LSN to see all versions
+        );
+        Ok(PagedBTreeSpecialtyCursor { inner })
+    }
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats> {
+        // Traverse the tree to count entries
+        let root_page_id = self.get_root_page_id();
+        let entry_count = self.count_entries(root_page_id)?;
+        
+        Ok(SpecialtyTableStats {
+            entry_count: Some(entry_count),
+            size_bytes: None, // Would need to track page usage
+            distinct_keys: Some(entry_count), // For B-Tree, each entry is distinct
+            stale_entries: Some(0),
+            last_updated_lsn: None,
+        })
+    }
+
+    fn verify(&self) -> TableResult<VerificationReport> {
+        // Basic verification: check tree structure
+        let root_page_id = self.get_root_page_id();
+        let mut report = VerificationReport {
+            checked_items: 0,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+        
+        // Verify the tree structure recursively
+        self.verify_node(root_page_id, &mut report)?;
+        
+        Ok(report)
+    }
+}
+
+impl<FS: FileSystem> PagedBTree<FS> {
+    /// Count total entries in the tree (helper for stats).
+    fn count_entries(&self, page_id: PageId) -> TableResult<u64> {
+        let node = self.read_node(page_id)?;
+        
+        match node {
+            BTreeNode::Internal { entries, rightmost_child } => {
+                let mut count = 0;
+                for entry in &entries {
+                    count += self.count_entries(entry.child_page_id)?;
+                }
+                count += self.count_entries(rightmost_child)?;
+                Ok(count)
+            }
+            BTreeNode::Leaf { entries, .. } => {
+                Ok(entries.len() as u64)
+            }
+        }
+    }
+    
+    /// Verify node structure recursively (helper for verify).
+    fn verify_node(&self, page_id: PageId, report: &mut VerificationReport) -> TableResult<()> {
+        let node = self.read_node(page_id)?;
+        report.checked_items += 1;
+        
+        match node {
+            BTreeNode::Internal { entries, rightmost_child } => {
+                // Verify internal node structure
+                for entry in &entries {
+                    self.verify_node(entry.child_page_id, report)?;
+                }
+                self.verify_node(rightmost_child, report)?;
+            }
+            BTreeNode::Leaf { .. } => {
+                // Leaf node - nothing more to verify
+            }
+        }
+        
+        Ok(())
+    }
+}

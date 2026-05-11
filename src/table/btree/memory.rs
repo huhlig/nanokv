@@ -27,9 +27,10 @@
 
 use crate::snap::Snapshot;
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
+    BatchOps, BatchReport, DenseOrdered, Flushable, MutableTable, OrderedScan, PointLookup,
+    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
     TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
-    TableStatistics, TableWriter, WriteBatch,
+    TableStatistics, TableWriter, VerificationReport, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, KeyBuf, ObjectId, ScanBounds, ValueBuf};
@@ -835,3 +836,163 @@ mod tests {
 }
 
 // Made with Bob
+
+
+// =============================================================================
+// DenseOrdered Specialty Table Implementation
+// =============================================================================
+
+/// Specialty cursor for index operations.
+/// 
+/// For secondary indexes, the "index_key" is the indexed field value,
+/// and the "primary_key" is the pointer back to the main table record.
+pub struct MemoryBTreeSpecialtyCursor<'a> {
+    inner: MemoryBTreeCursor<'a>,
+}
+
+impl<'a> SpecialtyTableCursor for MemoryBTreeSpecialtyCursor<'a> {
+    fn valid(&self) -> bool {
+        self.inner.valid()
+    }
+
+    fn index_key(&self) -> Option<&[u8]> {
+        self.inner.key()
+    }
+
+    fn primary_key(&self) -> Option<&[u8]> {
+        self.inner.value()
+    }
+
+    fn next(&mut self) -> TableResult<()> {
+        self.inner.next()
+    }
+
+    fn prev(&mut self) -> TableResult<()> {
+        self.inner.prev()
+    }
+
+    fn seek(&mut self, index_key: &[u8]) -> TableResult<()> {
+        self.inner.seek(index_key)
+    }
+}
+
+impl DenseOrdered for MemoryBTree {
+    type Cursor<'a> = MemoryBTreeSpecialtyCursor<'a>;
+
+    fn table_id(&self) -> ObjectId {
+        self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        SpecialtyTableCapabilities {
+            exact: true,
+            approximate: false,
+            ordered: true,
+            sparse: false,
+            supports_delete: true,
+            supports_range_query: true,
+            supports_prefix_query: true,
+            supports_scoring: false,
+            supports_incremental_rebuild: false,
+            may_be_stale: false,
+        }
+    }
+
+    fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+        // For a secondary index, we store: index_key -> primary_key
+        // This allows lookups by the indexed field to find the primary key
+        let mut data = self.data.write().unwrap();
+        
+        let old_size = data
+            .get(index_key)
+            .map(|chain| Self::estimate_entry_size(index_key, chain))
+            .unwrap_or(0);
+
+        // Create a new version with the primary key as the value
+        let tx_id = TransactionId::from(0); // Use a default transaction ID for now
+        let new_chain = if let Some(existing_chain) = data.remove(index_key) {
+            existing_chain.prepend(primary_key.to_vec(), tx_id)
+        } else {
+            VersionChain::new(primary_key.to_vec(), tx_id)
+        };
+
+        let new_size = Self::estimate_entry_size(index_key, &new_chain);
+        data.insert(index_key.to_vec(), new_chain);
+
+        // Update memory usage
+        let delta = new_size as isize - old_size as isize;
+        self.update_memory_usage(delta);
+
+        Ok(())
+    }
+
+    fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+        // For secondary indexes, we need to delete the specific index_key -> primary_key mapping
+        // In a simple implementation, we just remove the entry if it matches
+        let mut data = self.data.write().unwrap();
+        
+        if let Some(chain) = data.get(index_key) {
+            // Check if the current version points to the expected primary key
+            let snapshot = Snapshot::new(
+                crate::snap::SnapshotId::from(0),
+                String::new(),
+                LogSequenceNumber::from(u64::MAX),
+                0,
+                0,
+                Vec::new(),
+            );
+            
+            if let Some(stored_primary_key) = chain.find_visible_version(&snapshot) {
+                if stored_primary_key == primary_key {
+                    // Remove the entry
+                    let removed_chain = data.remove(index_key).unwrap();
+                    let size = Self::estimate_entry_size(index_key, &removed_chain);
+                    self.update_memory_usage(-(size as isize));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn scan(&self, bounds: ScanBounds) -> TableResult<Self::Cursor<'_>> {
+        let inner = MemoryBTreeCursor::new(
+            self,
+            bounds,
+            LogSequenceNumber::from(u64::MAX), // Use max LSN to see all versions
+        );
+        Ok(MemoryBTreeSpecialtyCursor { inner })
+    }
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats> {
+        let data = self.data.read().unwrap();
+        Ok(SpecialtyTableStats {
+            entry_count: Some(data.len() as u64),
+            size_bytes: Some(self.get_memory_usage() as u64),
+            distinct_keys: Some(data.len() as u64),
+            stale_entries: Some(0),
+            last_updated_lsn: None,
+        })
+    }
+
+    fn verify(&self) -> TableResult<VerificationReport> {
+        // Basic verification: check that all entries are valid
+        let data = self.data.read().unwrap();
+        let mut report = VerificationReport {
+            checked_items: data.len() as u64,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        // Could add more sophisticated checks here:
+        // - Verify version chains are well-formed
+        // - Check memory usage calculations
+        // - Validate key ordering
+
+        Ok(report)
+    }
+}

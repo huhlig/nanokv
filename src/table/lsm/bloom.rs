@@ -23,6 +23,11 @@
 //! This implementation uses multiple hash functions derived from a single hash
 //! using the double hashing technique for efficiency.
 
+use crate::table::{
+    ApproximateMembership, SpecialtyTableCapabilities, SpecialtyTableStats, TableResult,
+    VerificationReport,
+};
+use crate::types::ObjectId;
 
 /// Bloom filter for efficient membership testing.
 ///
@@ -243,6 +248,101 @@ impl BloomFilterBuilder {
     /// Build the bloom filter.
     pub fn build(self) -> BloomFilter {
         BloomFilter::new(self.num_items, self.bits_per_key, self.num_hash_functions)
+    }
+}
+
+// =============================================================================
+// ApproximateMembership Specialty Table Implementation
+// =============================================================================
+
+impl ApproximateMembership for BloomFilter {
+    fn table_id(&self) -> ObjectId {
+        // Bloom filters are typically embedded in other structures (like SSTables)
+        // rather than standalone tables, so we use a placeholder ID
+        ObjectId::from(0)
+    }
+
+    fn name(&self) -> &str {
+        "bloom_filter"
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        SpecialtyTableCapabilities {
+            exact: false,
+            approximate: true,
+            ordered: false,
+            sparse: false,
+            supports_delete: false, // Bloom filters don't support deletion
+            supports_range_query: false,
+            supports_prefix_query: false,
+            supports_scoring: false,
+            supports_incremental_rebuild: false,
+            may_be_stale: false,
+        }
+    }
+
+    fn insert_key(&mut self, key: &[u8]) -> TableResult<()> {
+        self.insert(key);
+        Ok(())
+    }
+
+    fn might_contain(&self, key: &[u8]) -> TableResult<bool> {
+        Ok(self.contains(key))
+    }
+
+    fn false_positive_rate(&self) -> Option<f64> {
+        Some(BloomFilter::false_positive_rate(self))
+    }
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats> {
+        Ok(SpecialtyTableStats {
+            entry_count: Some(self.num_items as u64),
+            size_bytes: Some(self.bits.len() as u64),
+            distinct_keys: Some(self.num_items as u64),
+            stale_entries: Some(0),
+            last_updated_lsn: None,
+        })
+    }
+
+    fn verify(&self) -> TableResult<VerificationReport> {
+        // Basic verification: check that the filter is well-formed
+        let mut report = VerificationReport {
+            checked_items: 1,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        // Verify bit array size matches expected
+        let expected_bytes = (self.num_bits + 7) / 8;
+        if self.bits.len() != expected_bytes {
+            report.errors.push(crate::table::ConsistencyError {
+                error_type: crate::table::ConsistencyErrorType::InvalidPointer,
+                location: "bloom_filter".to_string(),
+                description: format!(
+                    "Bit array size mismatch: expected {} bytes, got {}",
+                    expected_bytes,
+                    self.bits.len()
+                ),
+                severity: crate::table::Severity::Error,
+            });
+        }
+
+        // Warn if false positive rate is high
+        if self.num_items > 0 {
+            let fpr = self.false_positive_rate();
+            if fpr > 0.1 {
+                // > 10% FPR
+                report.warnings.push(crate::table::ConsistencyWarning {
+                    location: "bloom_filter".to_string(),
+                    description: format!(
+                        "High false positive rate: {:.2}% (consider increasing bits_per_key)",
+                        fpr * 100.0
+                    ),
+                });
+            }
+        }
+
+        Ok(report)
     }
 }
 
