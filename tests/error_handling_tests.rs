@@ -30,7 +30,8 @@ use nanokv::pager::{
     CompressionType, EncryptionType, Page, PageId, PageSize, PageType, Pager, PagerConfig,
     PagerError,
 };
-use nanokv::table::{TableError, TableId};
+use nanokv::types::ObjectId;
+use nanokv::table::{TableError};
 use nanokv::txn::{ConflictDetector, CursorError, TransactionError, TransactionId};
 use nanokv::vfs::{File, FileSystem, FileSystemError, MemoryFileSystem};
 use nanokv::wal::{
@@ -143,7 +144,7 @@ fn test_wal_corrupted_record_during_recovery() {
     writer
         .write_operation(
             TransactionId::from(1),
-            TableId::from(1),
+            ObjectId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -187,7 +188,7 @@ fn test_wal_incomplete_transaction_recovery() {
     writer
         .write_operation(
             TransactionId::from(1),
-            TableId::from(1),
+            ObjectId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -278,7 +279,7 @@ fn test_wal_invalid_transaction_state_sequence() {
     // Try to write operation after commit (invalid state)
     let result = writer.write_operation(
         TransactionId::from(1),
-        TableId::from(1),
+        ObjectId::from(1),
         WriteOpType::Put,
         b"key1".to_vec(),
         b"value1".to_vec(),
@@ -463,7 +464,7 @@ fn test_error_propagation_io_to_multiple_layers() {
 #[test]
 fn test_write_write_conflict_error_details() {
     let error = TransactionError::write_write_conflict(
-        TableId::from(1),
+        ObjectId::from(1),
         b"user:123".to_vec(),
         TransactionId::from(42),
         TransactionId::from(99),
@@ -479,7 +480,7 @@ fn test_write_write_conflict_error_details() {
 #[test]
 fn test_read_write_conflict_error_details() {
     let error = TransactionError::read_write_conflict(
-        TableId::from(2),
+        ObjectId::from(2),
         b"product:456".to_vec(),
         TransactionId::from(10),
         TransactionId::from(20),
@@ -592,7 +593,7 @@ fn test_recovery_from_write_conflict() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = TableId::from(1);
+    let table = ObjectId::from(1);
 
     // Transaction 1 locks a key
     detector.acquire_write_lock(table, b"key1".to_vec(), txn1);
@@ -778,9 +779,9 @@ fn test_table_memtable_errors() {
 
 #[test]
 fn test_index_key_not_found_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(42);
+    
+    let index_id = ObjectId::from(42);
     let key = b"missing_key".to_vec();
     let error = IndexError::key_not_found(index_id, key.clone());
     let error_str = error.to_string();
@@ -791,9 +792,9 @@ fn test_index_key_not_found_error() {
 
 #[test]
 fn test_index_duplicate_key_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(100);
+    
+    let index_id = ObjectId::from(100);
     let key = b"duplicate_key".to_vec();
     let error = IndexError::duplicate_key(index_id, key.clone());
     let error_str = error.to_string();
@@ -804,9 +805,9 @@ fn test_index_duplicate_key_error() {
 
 #[test]
 fn test_index_invalid_key_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(5);
+    
+    let index_id = ObjectId::from(5);
     let error = IndexError::invalid_key(index_id, "Key encoding mismatch");
     let error_str = error.to_string();
     
@@ -817,9 +818,9 @@ fn test_index_invalid_key_error() {
 
 #[test]
 fn test_index_stale_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(7);
+    
+    let index_id = ObjectId::from(7);
     let error = IndexError::stale(index_id, "Index out of sync with table");
     let error_str = error.to_string();
     
@@ -830,9 +831,9 @@ fn test_index_stale_error() {
 
 #[test]
 fn test_index_corrupted_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(15);
+    
+    let index_id = ObjectId::from(15);
     let error = IndexError::corrupted(
         index_id,
         "B-tree node",
@@ -850,9 +851,9 @@ fn test_index_corrupted_error() {
 
 #[test]
 fn test_index_operation_failed_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(20);
+    
+    let index_id = ObjectId::from(20);
     let error = IndexError::operation_failed(index_id, "insert", "Page allocation failed");
     let error_str = error.to_string();
     
@@ -864,9 +865,9 @@ fn test_index_operation_failed_error() {
 
 #[test]
 fn test_index_capacity_exceeded_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(30);
+    
+    let index_id = ObjectId::from(30);
     let error = IndexError::capacity_exceeded(index_id, "Maximum index size reached");
     let error_str = error.to_string();
     
@@ -877,9 +878,9 @@ fn test_index_capacity_exceeded_error() {
 
 #[test]
 fn test_index_unsupported_operation_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(50);
+    
+    let index_id = ObjectId::from(50);
     let error = IndexError::unsupported_operation(index_id, "Bloom", "range_scan");
     let error_str = error.to_string();
     
@@ -891,10 +892,10 @@ fn test_index_unsupported_operation_error() {
 
 #[test]
 fn test_index_io_error() {
-    use nanokv::index::IndexId;
+    
     use std::io;
     
-    let index_id = IndexId::from(60);
+    let index_id = ObjectId::from(60);
     let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "Access denied");
     let error = IndexError::io(index_id, io_error);
     let error_str = error.to_string();
@@ -905,9 +906,9 @@ fn test_index_io_error() {
 
 #[test]
 fn test_index_table_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(70);
+    
+    let index_id = ObjectId::from(70);
     let table_error = TableError::corruption("table", "data", "Table data corrupted");
     let error = IndexError::table(index_id, table_error);
     let error_str = error.to_string();
@@ -918,9 +919,9 @@ fn test_index_table_error() {
 
 #[test]
 fn test_index_internal_error() {
-    use nanokv::index::IndexId;
     
-    let index_id = IndexId::from(80);
+    
+    let index_id = ObjectId::from(80);
     let error = IndexError::internal(index_id, "Unexpected state transition");
     let error_str = error.to_string();
     

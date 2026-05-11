@@ -19,7 +19,7 @@
 //! These tests verify the transaction state machine, read/write set tracking,
 //! isolation levels, and commit/rollback behavior.
 
-use nanokv::table::TableId;
+use nanokv::types::ObjectId;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::IsolationLevel;
 use nanokv::wal::LogSequenceNumber;
@@ -56,7 +56,7 @@ fn test_transaction_put() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     let key = b"key1";
     let value = b"value1";
     
@@ -78,7 +78,7 @@ fn test_transaction_delete() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     let key = b"key1";
     let value = b"value1";
     
@@ -103,7 +103,7 @@ fn test_transaction_delete_nonexistent() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     let key = b"nonexistent";
     
     // Delete of non-existent key should return false
@@ -120,7 +120,7 @@ fn test_transaction_get_from_write_set() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Put multiple values
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -152,7 +152,7 @@ fn test_transaction_update() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     let key = b"key1";
     
     // Put initial value
@@ -180,7 +180,7 @@ fn test_transaction_commit() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
     
     // Commit should succeed
@@ -199,7 +199,7 @@ fn test_transaction_rollback() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
     
     // Rollback should succeed
@@ -237,7 +237,7 @@ fn test_operations_after_commit_fail() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
     
     // Commit the transaction
@@ -257,9 +257,9 @@ fn test_transaction_multiple_tables() {
         create_conflict_detector(),
     );
     
-    let table1 = TableId::from(1);
-    let table2 = TableId::from(2);
-    let table3 = TableId::from(3);
+    let table1 = ObjectId::from(1);
+    let table2 = ObjectId::from(2);
+    let table3 = ObjectId::from(3);
     
     // Write to multiple tables
     tx.put(table1, b"key1", b"value1").unwrap();
@@ -314,7 +314,7 @@ fn test_transaction_read_tracking_serializable() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Record reads manually (in real implementation, this would be done by get())
     tx.record_read(table_id, b"key1".to_vec());
@@ -335,7 +335,7 @@ fn test_transaction_read_tracking_read_committed() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Record reads - should be no-op for ReadCommitted
     tx.record_read(table_id, b"key1".to_vec());
@@ -355,7 +355,7 @@ fn test_transaction_large_write_set() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Write 1000 key-value pairs
     for i in 0..1000 {
@@ -389,7 +389,7 @@ fn test_transaction_mixed_operations() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Mix of puts, updates, and deletes
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -424,7 +424,7 @@ fn test_transaction_prepare_phase() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
     
     // Prepare should succeed
@@ -489,7 +489,7 @@ fn test_transaction_record_write() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Record writes directly
     tx.record_write(table_id, b"key1".to_vec(), b"value1".to_vec());
@@ -512,7 +512,7 @@ fn test_transaction_record_delete() {
         create_conflict_detector(),
     );
     
-    let table_id = TableId::from(1);
+    let table_id = ObjectId::from(1);
     
     // Put then delete
     tx.record_write(table_id, b"key1".to_vec(), b"value1".to_vec());

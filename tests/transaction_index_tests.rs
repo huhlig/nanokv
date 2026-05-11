@@ -14,15 +14,13 @@
 // limitations under the License.
 //
 
-//! Tests for transaction layer index operations.
+//! Tests for transaction layer unified object operations.
 //!
-//! These tests verify that the transaction layer correctly handles index operations
-//! as explicit operations on specialty tables, without automatic index maintenance.
+//! These tests verify that the transaction layer correctly handles both tables
+//! and indexes uniformly using ObjectId, without automatic index maintenance.
 
-use nanokv::index::IndexId;
-use nanokv::table::TableId;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
-use nanokv::types::IsolationLevel;
+use nanokv::types::{IsolationLevel, ObjectId};
 use nanokv::wal::LogSequenceNumber;
 use std::sync::{Arc, Mutex};
 
@@ -37,16 +35,16 @@ fn test_index_put_and_get() {
         conflict_detector,
     );
 
-    // Create an index ID
-    let index_id = IndexId::from(1000);
+    // Create an index ObjectId (indexes are just specialty tables)
+    let index_id = ObjectId::from(1000);
 
-    // Put a value into the index
+    // Put a value into the index using unified API
     let key = b"index_key_1";
     let value = b"index_value_1";
-    txn.index_put(index_id, key, value).unwrap();
+    txn.put(index_id, key, value).unwrap();
 
-    // Get the value back from the index
-    let result = txn.index_get(index_id, key).unwrap();
+    // Get the value back from the index using unified API
+    let result = txn.get(index_id, key).unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().as_ref(), value);
 }
@@ -62,23 +60,23 @@ fn test_index_delete() {
         conflict_detector,
     );
 
-    // Create an index ID
-    let index_id = IndexId::from(2000);
+    // Create an index ObjectId
+    let index_id = ObjectId::from(2000);
 
     // Put a value into the index
     let key = b"index_key_2";
     let value = b"index_value_2";
-    txn.index_put(index_id, key, value).unwrap();
+    txn.put(index_id, key, value).unwrap();
 
     // Verify it exists
-    assert!(txn.index_get(index_id, key).unwrap().is_some());
+    assert!(txn.get(index_id, key).unwrap().is_some());
 
-    // Delete the key
-    let existed = txn.index_delete(index_id, key).unwrap();
+    // Delete the key using unified API
+    let existed = txn.delete(index_id, key).unwrap();
     assert!(existed);
 
     // Verify it's gone
-    assert!(txn.index_get(index_id, key).unwrap().is_none());
+    assert!(txn.get(index_id, key).unwrap().is_none());
 }
 
 #[test]
@@ -92,32 +90,32 @@ fn test_index_and_table_operations_independent() {
         conflict_detector,
     );
 
-    // Create table and index IDs
-    let table_id = TableId::from(100);
-    let index_id = IndexId::from(3000);
+    // Create table and index ObjectIds (both use same type now)
+    let table_id = ObjectId::from(100);
+    let index_id = ObjectId::from(3000);
 
     // Use the same key for both table and index
     let key = b"shared_key";
     let table_value = b"table_value";
     let index_value = b"index_value";
 
-    // Put into table
+    // Put into table using unified API
     txn.put(table_id, key, table_value).unwrap();
 
-    // Put into index (explicit operation, not automatic)
-    txn.index_put(index_id, key, index_value).unwrap();
+    // Put into index (explicit operation, not automatic) using unified API
+    txn.put(index_id, key, index_value).unwrap();
 
-    // Verify both exist independently
+    // Verify both exist independently using unified API
     let table_result = txn.get(table_id, key).unwrap();
     assert_eq!(table_result.unwrap().as_ref(), table_value);
 
-    let index_result = txn.index_get(index_id, key).unwrap();
+    let index_result = txn.get(index_id, key).unwrap();
     assert_eq!(index_result.unwrap().as_ref(), index_value);
 
     // Delete from table doesn't affect index
     txn.delete(table_id, key).unwrap();
     assert!(txn.get(table_id, key).unwrap().is_none());
-    assert!(txn.index_get(index_id, key).unwrap().is_some());
+    assert!(txn.get(index_id, key).unwrap().is_some());
 }
 
 #[test]
@@ -140,15 +138,15 @@ fn test_index_write_conflict_detection() {
         conflict_detector.clone(),
     );
 
-    // Create an index ID
-    let index_id = IndexId::from(4000);
+    // Create an index ObjectId
+    let index_id = ObjectId::from(4000);
     let key = b"conflict_key";
 
-    // First transaction writes to index
-    txn1.index_put(index_id, key, b"value1").unwrap();
+    // First transaction writes to index using unified API
+    txn1.put(index_id, key, b"value1").unwrap();
 
     // Second transaction tries to write to same index key - should conflict
-    let result = txn2.index_put(index_id, key, b"value2");
+    let result = txn2.put(index_id, key, b"value2");
     assert!(result.is_err());
 }
 
@@ -163,21 +161,21 @@ fn test_index_operations_in_write_set() {
         conflict_detector,
     );
 
-    // Create table and index IDs
-    let table_id = TableId::from(200);
-    let index_id = IndexId::from(5000);
+    // Create table and index ObjectIds
+    let table_id = ObjectId::from(200);
+    let index_id = ObjectId::from(5000);
 
-    // Perform multiple operations
+    // Perform multiple operations using unified API
     txn.put(table_id, b"table_key_1", b"table_value_1").unwrap();
-    txn.index_put(index_id, b"index_key_1", b"index_value_1").unwrap();
+    txn.put(index_id, b"index_key_1", b"index_value_1").unwrap();
     txn.put(table_id, b"table_key_2", b"table_value_2").unwrap();
-    txn.index_put(index_id, b"index_key_2", b"index_value_2").unwrap();
+    txn.put(index_id, b"index_key_2", b"index_value_2").unwrap();
 
-    // All operations should be visible within the transaction
+    // All operations should be visible within the transaction using unified API
     assert!(txn.get(table_id, b"table_key_1").unwrap().is_some());
     assert!(txn.get(table_id, b"table_key_2").unwrap().is_some());
-    assert!(txn.index_get(index_id, b"index_key_1").unwrap().is_some());
-    assert!(txn.index_get(index_id, b"index_key_2").unwrap().is_some());
+    assert!(txn.get(index_id, b"index_key_1").unwrap().is_some());
+    assert!(txn.get(index_id, b"index_key_2").unwrap().is_some());
 }
 
 #[test]
@@ -191,19 +189,19 @@ fn test_no_automatic_index_maintenance() {
         conflict_detector,
     );
 
-    let table_id = TableId::from(300);
-    let index_id = IndexId::from(6000);
+    let table_id = ObjectId::from(300);
+    let index_id = ObjectId::from(6000);
 
-    // Put a value into the table
+    // Put a value into the table using unified API
     txn.put(table_id, b"key", b"value").unwrap();
 
     // The index is NOT automatically updated
     // This is the caller's responsibility
-    assert!(txn.index_get(index_id, b"key").unwrap().is_none());
+    assert!(txn.get(index_id, b"key").unwrap().is_none());
 
-    // Caller must explicitly maintain the index
-    txn.index_put(index_id, b"key", b"value").unwrap();
-    assert!(txn.index_get(index_id, b"key").unwrap().is_some());
+    // Caller must explicitly maintain the index using unified API
+    txn.put(index_id, b"key", b"value").unwrap();
+    assert!(txn.get(index_id, b"key").unwrap().is_some());
 }
 
 // Made with Bob
