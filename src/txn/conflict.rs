@@ -66,10 +66,11 @@ impl ConflictDetector {
         let lock_key = (object_id, key.to_vec());
         if let Some(&other_txn) = self.write_locks.get(&lock_key) {
             if other_txn != txn_id {
-                return Err(TransactionError::WriteWriteConflict(
+                return Err(TransactionError::write_write_conflict(
                     object_id,
                     key.to_vec(),
                     other_txn,
+                    txn_id,
                 ));
             }
         }
@@ -102,7 +103,12 @@ impl ConflictDetector {
         for (object_id, key) in read_set {
             if let Some(&other_txn) = self.write_locks.get(&(*object_id, key.clone())) {
                 if other_txn != txn_id {
-                    return Err(TransactionError::ReadWriteConflict(*object_id, key.clone()));
+                    return Err(TransactionError::read_write_conflict(
+                        *object_id,
+                        key.clone(),
+                        txn_id,
+                        other_txn,
+                    ));
                 }
             }
         }

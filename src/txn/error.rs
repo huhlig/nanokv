@@ -31,17 +31,37 @@ pub enum TransactionError {
         attempted_operation: String,
     },
 
-    #[error("Write-write conflict: object {0}, key {1:?} already locked by transaction {2}")]
-    WriteWriteConflict(ObjectId, Vec<u8>, TransactionId),
+    /// Write-write conflict: two transactions trying to write the same key
+    #[error("Write-write conflict on object {object_id}, key {key:?}: already locked by transaction {holder_txn_id}, requested by transaction {requester_txn_id}")]
+    WriteWriteConflict {
+        object_id: ObjectId,
+        key: Vec<u8>,
+        holder_txn_id: TransactionId,
+        requester_txn_id: TransactionId,
+    },
 
-    #[error("Read-write conflict: object {0}, key {1:?} was modified after read")]
-    ReadWriteConflict(ObjectId, Vec<u8>),
+    /// Read-write conflict: a transaction read a key that was later modified
+    #[error("Read-write conflict on object {object_id}, key {key:?}: read by transaction {reader_txn_id}, modified by transaction {writer_txn_id}")]
+    ReadWriteConflict {
+        object_id: ObjectId,
+        key: Vec<u8>,
+        reader_txn_id: TransactionId,
+        writer_txn_id: TransactionId,
+    },
 
-    #[error("Serialization conflict detected")]
-    SerializationConflict,
+    /// Serialization conflict in serializable isolation level
+    #[error("Serialization conflict detected for transaction {transaction_id}: {details}")]
+    SerializationConflict {
+        transaction_id: TransactionId,
+        details: String,
+    },
 
-    #[error("Transaction {0} not found")]
-    TransactionNotFound(TransactionId),
+    /// Transaction not found in the system
+    #[error("Transaction {transaction_id} not found: {context}")]
+    TransactionNotFound {
+        transaction_id: TransactionId,
+        context: String,
+    },
 
     /// Deadlock detected with cycle information
     #[error("Deadlock detected involving transaction {transaction_id}: {cycle_description}")]
@@ -70,6 +90,58 @@ impl TransactionError {
         }
     }
 
+    /// Create a write-write conflict error with full context
+    pub fn write_write_conflict(
+        object_id: ObjectId,
+        key: Vec<u8>,
+        holder_txn_id: TransactionId,
+        requester_txn_id: TransactionId,
+    ) -> Self {
+        Self::WriteWriteConflict {
+            object_id,
+            key,
+            holder_txn_id,
+            requester_txn_id,
+        }
+    }
+
+    /// Create a read-write conflict error with full context
+    pub fn read_write_conflict(
+        object_id: ObjectId,
+        key: Vec<u8>,
+        reader_txn_id: TransactionId,
+        writer_txn_id: TransactionId,
+    ) -> Self {
+        Self::ReadWriteConflict {
+            object_id,
+            key,
+            reader_txn_id,
+            writer_txn_id,
+        }
+    }
+
+    /// Create a serialization conflict error with full context
+    pub fn serialization_conflict(
+        transaction_id: TransactionId,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::SerializationConflict {
+            transaction_id,
+            details: details.into(),
+        }
+    }
+
+    /// Create a transaction not found error with full context
+    pub fn transaction_not_found(
+        transaction_id: TransactionId,
+        context: impl Into<String>,
+    ) -> Self {
+        Self::TransactionNotFound {
+            transaction_id,
+            context: context.into(),
+        }
+    }
+
     /// Create a deadlock error with full context
     pub fn deadlock(
         transaction_id: TransactionId,
@@ -90,6 +162,44 @@ pub type CursorResult<T> = Result<T, CursorError>;
 /// Cursor error type.
 #[derive(Debug, thiserror::Error)]
 pub enum CursorError {
+    /// Cursor is in an invalid state for the operation
+    #[error("Cursor invalid state: {state} for operation '{operation}'")]
+    InvalidState {
+        state: String,
+        operation: String,
+    },
+
+    /// Cursor position is invalid
+    #[error("Cursor invalid position: {details}")]
+    InvalidPosition {
+        details: String,
+    },
+
+    /// Transaction error occurred during cursor operation
+    #[error("Transaction error in cursor: {0}")]
+    Transaction(#[from] TransactionError),
+
+    /// Other cursor error
     #[error("Cursor error: {0}")]
     Other(String),
+}
+
+impl CursorError {
+    /// Create an invalid state error with full context
+    pub fn invalid_state(
+        state: impl Into<String>,
+        operation: impl Into<String>,
+    ) -> Self {
+        Self::InvalidState {
+            state: state.into(),
+            operation: operation.into(),
+        }
+    }
+
+    /// Create an invalid position error with full context
+    pub fn invalid_position(details: impl Into<String>) -> Self {
+        Self::InvalidPosition {
+            details: details.into(),
+        }
+    }
 }

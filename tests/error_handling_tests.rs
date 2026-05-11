@@ -66,10 +66,18 @@ fn test_missing_encryption_key_on_open() {
 #[test]
 fn test_encryption_error_types() {
     // Test that encryption-related error types exist and format correctly
-    let error = PagerError::EncryptionError("Failed to encrypt page".to_string());
+    let error = PagerError::encryption_error(
+        PageId::from(1),
+        EncryptionType::Aes256Gcm,
+        "Failed to encrypt page",
+    );
     assert!(error.to_string().contains("Encryption error"));
 
-    let error = PagerError::DecryptionError("Failed to decrypt page".to_string());
+    let error = PagerError::decryption_error(
+        PageId::from(2),
+        EncryptionType::Aes256Gcm,
+        "Failed to decrypt page",
+    );
     assert!(error.to_string().contains("Decryption error"));
 
     let error = PagerError::MissingEncryptionKey;
@@ -85,7 +93,11 @@ fn test_encryption_key_validation() {
     let error = PagerError::ConfigError("Invalid encryption key size".to_string());
     assert!(error.to_string().contains("Configuration error"));
 
-    let error2 = PagerError::EncryptionError("Key size mismatch".to_string());
+    let error2 = PagerError::encryption_error(
+        PageId::from(3),
+        EncryptionType::Aes256Gcm,
+        "Key size mismatch",
+    );
     assert!(error2.to_string().contains("Encryption error"));
 }
 
@@ -388,7 +400,10 @@ fn test_error_propagation_table_to_nanokv() {
 
 #[test]
 fn test_error_propagation_transaction_to_nanokv() {
-    let txn_error = TransactionError::SerializationConflict;
+    let txn_error = TransactionError::serialization_conflict(
+        TransactionId::from(1),
+        "Test serialization conflict",
+    );
     let nanokv_error: NanoKvError = txn_error.into();
 
     assert!(nanokv_error.is_transaction());
@@ -435,30 +450,41 @@ fn test_error_propagation_io_to_multiple_layers() {
 
 #[test]
 fn test_write_write_conflict_error_details() {
-    let error = TransactionError::WriteWriteConflict(
+    let error = TransactionError::write_write_conflict(
         TableId::from(1).as_object_id(),
         b"user:123".to_vec(),
         TransactionId::from(42),
+        TransactionId::from(99),
     );
 
     let error_str = error.to_string();
     assert!(error_str.contains("Write-write conflict"));
-    // The error format uses Debug for ObjectId and TransactionId
     assert!(error_str.contains("already locked"));
+    assert!(error_str.contains("holder_txn_id"));
+    assert!(error_str.contains("requester_txn_id"));
 }
 
 #[test]
 fn test_read_write_conflict_error_details() {
-    let error = TransactionError::ReadWriteConflict(TableId::from(2).as_object_id(), b"product:456".to_vec());
+    let error = TransactionError::read_write_conflict(
+        TableId::from(2).as_object_id(),
+        b"product:456".to_vec(),
+        TransactionId::from(10),
+        TransactionId::from(20),
+    );
 
     let error_str = error.to_string();
     assert!(error_str.contains("Read-write conflict"));
-    assert!(error_str.contains("was modified after read"));
+    assert!(error_str.contains("modified"));
 }
 
 #[test]
 fn test_deadlock_error_details() {
-    let error = TransactionError::Deadlock(TransactionId::from(99));
+    let error = TransactionError::deadlock(
+        TransactionId::from(99),
+        vec![TransactionId::from(100), TransactionId::from(101)],
+        "Transaction 99 -> 100 -> 101 -> 99",
+    );
 
     let error_str = error.to_string();
     assert!(error_str.contains("Deadlock"));
@@ -467,20 +493,33 @@ fn test_deadlock_error_details() {
 
 #[test]
 fn test_serialization_conflict_error() {
-    let error = TransactionError::SerializationConflict;
-    assert_eq!(error.to_string(), "Serialization conflict detected");
+    let error = TransactionError::serialization_conflict(
+        TransactionId::from(50),
+        "Phantom read detected",
+    );
+    let error_str = error.to_string();
+    assert!(error_str.contains("Serialization conflict"));
+    assert!(error_str.contains("transaction"));
 }
 
 #[test]
 fn test_transaction_not_found_error() {
-    let error = TransactionError::TransactionNotFound(TransactionId::from(123));
+    let error = TransactionError::transaction_not_found(
+        TransactionId::from(123),
+        "attempted to commit",
+    );
     let error_str = error.to_string();
     assert!(error_str.contains("not found"));
+    assert!(error_str.contains("123"));
 }
 
 #[test]
 fn test_invalid_transaction_state_error() {
-    let error = TransactionError::InvalidState(TransactionId::from(456));
+    let error = TransactionError::invalid_state(
+        TransactionId::from(456),
+        "committed",
+        "write operation",
+    );
     let error_str = error.to_string();
     assert!(error_str.contains("invalid state"));
 }

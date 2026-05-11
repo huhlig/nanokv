@@ -193,8 +193,11 @@ impl SStableFooter {
     /// Deserialize footer from bytes.
     pub fn from_bytes(bytes: &[u8]) -> TableResult<Self> {
         if bytes.len() < Self::SIZE {
-            return Err(crate::table::TableError::Corruption(
-                "Footer too small".to_string(),
+            use crate::table::TableError;
+            return Err(TableError::corruption(
+                "SSTableFooter::from_bytes",
+                "truncated_footer",
+                "Footer too small",
             ));
         }
 
@@ -204,8 +207,11 @@ impl SStableFooter {
         let magic = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
         if magic != Self::MAGIC {
-            return Err(crate::table::TableError::Corruption(
-                "Invalid footer magic".to_string(),
+            use crate::table::TableError;
+            return Err(TableError::corruption(
+                "SSTableFooter::from_bytes",
+                "invalid_magic",
+                "Invalid footer magic",
             ));
         }
 
@@ -446,8 +452,11 @@ impl DataBlock {
     /// Validates the checksum and decompresses if necessary.
     pub fn from_bytes(bytes: &[u8]) -> TableResult<Self> {
         if bytes.len() < Self::HEADER_SIZE {
-            return Err(crate::table::TableError::Corruption(
-                "Data block too small".to_string(),
+            use crate::table::TableError;
+            return Err(TableError::corruption(
+                "DataBlock::from_bytes",
+                "truncated_block",
+                "Data block too small",
             ));
         }
 
@@ -473,15 +482,23 @@ impl DataBlock {
         let computed_checksum: [u8; 32] = hasher.finalize().into();
         
         if checksum != computed_checksum {
-            return Err(crate::table::TableError::Corruption(
-                "Data block checksum mismatch".to_string(),
+            use crate::table::TableError;
+            return Err(TableError::corruption(
+                "DataBlock::from_bytes",
+                "checksum_mismatch",
+                "Data block checksum mismatch",
             ));
         }
 
         // Decompress if necessary
         let data = if compressed_flag == 1 {
+            use crate::table::TableError;
             lz4_flex::decompress_size_prepended(data_bytes).map_err(|e| {
-                crate::table::TableError::Corruption(format!("Failed to decompress data block: {}", e))
+                TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "decompression_error",
+                    format!("Failed to decompress data block: {}", e),
+                )
             })?
         } else {
             data_bytes.to_vec()
@@ -493,8 +510,11 @@ impl DataBlock {
 
         for _ in 0..num_entries {
             if offset + 4 > data.len() {
-                return Err(crate::table::TableError::Corruption(
-                    "Truncated data block entry".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "truncated_entry",
+                    "Truncated data block entry",
                 ));
             }
 
@@ -503,8 +523,11 @@ impl DataBlock {
             offset += 4;
 
             if offset + key_len > data.len() {
-                return Err(crate::table::TableError::Corruption(
-                    "Truncated key in data block".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "truncated_key",
+                    "Truncated key in data block",
                 ));
             }
 
@@ -513,8 +536,11 @@ impl DataBlock {
 
             // Read version chain
             if offset + 4 > data.len() {
-                return Err(crate::table::TableError::Corruption(
-                    "Truncated version chain length".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "truncated_chain_length",
+                    "Truncated version chain length",
                 ));
             }
 
@@ -522,8 +548,11 @@ impl DataBlock {
             offset += 4;
 
             if offset + chain_len > data.len() {
-                return Err(crate::table::TableError::Corruption(
-                    "Truncated version chain data".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "truncated_chain_data",
+                    "Truncated version chain data",
                 ));
             }
 
@@ -531,10 +560,12 @@ impl DataBlock {
             offset += chain_len;
 
             let chain: VersionChain = bincode::deserialize(chain_bytes).map_err(|e| {
-                crate::table::TableError::Corruption(format!(
-                    "Failed to deserialize version chain: {}",
-                    e
-                ))
+                use crate::table::TableError;
+                TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "deserialization_error",
+                    format!("Failed to deserialize version chain: {}", e),
+                )
             })?;
 
             entries.push((key, chain));
@@ -543,8 +574,11 @@ impl DataBlock {
         // Verify entries are sorted
         for i in 1..entries.len() {
             if entries[i - 1].0 >= entries[i].0 {
-                return Err(crate::table::TableError::Corruption(
-                    "Data block entries not sorted".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "DataBlock::from_bytes",
+                    "unsorted_entries",
+                    "Data block entries not sorted",
                 ));
             }
         }
@@ -922,8 +956,11 @@ impl<FS: FileSystem> SStableReader<FS> {
         // Try to find footer by checking each page
         loop {
             if attempts >= MAX_ATTEMPTS {
-                return Err(crate::table::TableError::Corruption(
-                    "Could not find SSTable footer after max attempts".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "SSTableReader::open",
+                    "footer_not_found",
+                    "Could not find SSTable footer after max attempts",
                 ));
             }
             
@@ -951,14 +988,22 @@ impl<FS: FileSystem> SStableReader<FS> {
             
             // Check if next page exists
             if pager.read_page(current_page_id).is_err() {
-                return Err(crate::table::TableError::Corruption(
-                    "Could not find valid SSTable footer".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "SSTableReader::open",
+                    "footer_not_found",
+                    "Could not find valid SSTable footer",
                 ));
             }
         }
         
         let footer = footer_opt.ok_or_else(|| {
-            crate::table::TableError::Corruption("No valid footer found".to_string())
+            use crate::table::TableError;
+            TableError::corruption(
+                "SSTableReader::open",
+                "footer_not_found",
+                "No valid footer found",
+            )
         })?;
         
         let metadata = footer.metadata.clone();
@@ -995,8 +1040,11 @@ impl<FS: FileSystem> SStableReader<FS> {
             
             // Read bloom filter header (num_hash_functions as u32, num_bits as u32)
             if bloom_data.len() < 8 {
-                return Err(crate::table::TableError::Corruption(
-                    "Bloom filter data too short".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "SSTableReader::open",
+                    "truncated_bloom_filter",
+                    "Bloom filter data too short",
                 ));
             }
             
@@ -1054,8 +1102,11 @@ impl<FS: FileSystem> SStableReader<FS> {
             let data = page.data();
             
             if page_offset >= data.len() {
-                return Err(crate::table::TableError::Corruption(
-                    "Offset beyond page data".to_string(),
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "SSTableReader::open",
+                    "invalid_offset",
+                    "Offset beyond page data",
                 ));
             }
             
@@ -1114,9 +1165,14 @@ impl<FS: FileSystem> SStableReader<FS> {
         };
         
         let index_entry = self.index_block.get(index_entry_idx)
-            .ok_or_else(|| crate::table::TableError::Corruption(
-                "Index entry not found after search".to_string()
-            ))?;
+            .ok_or_else(|| {
+                use crate::table::TableError;
+                TableError::corruption(
+                    "SSTableReader::get",
+                    "index_entry_not_found",
+                    "Index entry not found after search",
+                )
+            })?;
 
         // Step 3: Read the data block from the page
         // The index entry tells us which page and offset within that page
@@ -1155,9 +1211,12 @@ impl<FS: FileSystem> SStableReader<FS> {
         };
         
         if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end {
-            return Err(crate::table::TableError::Corruption(
+            use crate::table::TableError;
+            return Err(TableError::corruption(
+                "SSTableReader::get",
+                "invalid_block_bounds",
                 format!("Invalid data block bounds: start={}, end={}, page_len={}",
-                    block_start, block_end, page_data.len())
+                    block_start, block_end, page_data.len()),
             ));
         }
         
@@ -1732,7 +1791,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::table::TableError::Corruption(_)
+            crate::table::TableError::Corruption { .. }
         ));
     }
 

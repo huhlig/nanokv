@@ -373,9 +373,14 @@ impl<FS: FileSystem> SStableIterator<FS> {
     /// Load a data block by index.
     fn load_block(&mut self, block_idx: usize) -> TableResult<()> {
         let index_entry = self.reader.index_block().get(block_idx)
-            .ok_or_else(|| crate::table::TableError::Corruption(
-                format!("Invalid block index: {}", block_idx)
-            ))?;
+            .ok_or_else(|| {
+                use crate::table::TableError;
+                TableError::corruption(
+                    "SSTableIterator::load_block",
+                    "invalid_block_index",
+                    format!("Invalid block index: {}", block_idx),
+                )
+            })?;
 
         // Read the data block from the page
         let page = self.reader.pager().read_page(index_entry.page_id)?;
@@ -406,9 +411,12 @@ impl<FS: FileSystem> SStableIterator<FS> {
         };
 
         if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end {
-            return Err(crate::table::TableError::Corruption(
+            use crate::table::TableError;
+            return Err(TableError::corruption(
+                "SSTableIterator::load_block",
+                "invalid_block_bounds",
                 format!("Invalid data block bounds: start={}, end={}, page_len={}",
-                    block_start, block_end, page_data.len())
+                    block_start, block_end, page_data.len()),
             ));
         }
 

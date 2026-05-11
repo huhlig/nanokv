@@ -425,29 +425,38 @@ impl From<&Version> for VersionDisk {
 impl VersionDisk {
     fn into_version(self, num_levels: usize) -> TableResult<Version> {
         if self.levels.len() != num_levels {
-            return Err(TableError::Corruption(format!(
-                "Manifest level count mismatch: expected {}, got {}",
-                num_levels,
-                self.levels.len()
-            )));
+            return Err(TableError::corruption(
+                "VersionDisk::into_version",
+                "level_count_mismatch",
+                format!(
+                    "Manifest level count mismatch: expected {}, got {}",
+                    num_levels,
+                    self.levels.len()
+                ),
+            ));
         }
 
         let mut files_by_id = HashMap::new();
         for (level_idx, level_files) in self.levels.iter().enumerate() {
             for metadata in level_files {
                 if metadata.level as usize != level_idx {
-                    return Err(TableError::Corruption(format!(
-                        "Manifest file {} stored in wrong level: metadata={}, container={}",
-                        metadata.id,
-                        metadata.level,
-                        level_idx
-                    )));
+                    return Err(TableError::corruption(
+                        "VersionDisk::into_version",
+                        "wrong_level",
+                        format!(
+                            "Manifest file {} stored in wrong level: metadata={}, container={}",
+                            metadata.id,
+                            metadata.level,
+                            level_idx
+                        ),
+                    ));
                 }
                 if files_by_id.insert(metadata.id, metadata.clone()).is_some() {
-                    return Err(TableError::Corruption(format!(
-                        "Duplicate SSTable ID {} in manifest",
-                        metadata.id
-                    )));
+                    return Err(TableError::corruption(
+                        "VersionDisk::into_version",
+                        "duplicate_id",
+                        format!("Duplicate SSTable ID {} in manifest", metadata.id),
+                    ));
                 }
             }
         }
@@ -507,10 +516,18 @@ impl ManifestPageHeader {
 
     fn decode(bytes: &[u8], expected_num_levels: usize) -> TableResult<(usize, Vec<PageId>, usize)> {
         if bytes.len() < Self::FIXED_SIZE {
-            return Err(TableError::Corruption("Manifest page header truncated".to_string()));
+            return Err(TableError::corruption(
+                "ManifestPageHeader::decode",
+                "truncated_header",
+                "Manifest page header truncated",
+            ));
         }
         if bytes[0..8] != Self::MAGIC {
-            return Err(TableError::Corruption("Invalid manifest page magic".to_string()));
+            return Err(TableError::corruption(
+                "ManifestPageHeader::decode",
+                "invalid_magic",
+                "Invalid manifest page magic",
+            ));
         }
 
         let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
@@ -520,22 +537,34 @@ impl ManifestPageHeader {
 
         let num_levels = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
         if num_levels != expected_num_levels {
-            return Err(TableError::Corruption(format!(
-                "Manifest num_levels mismatch: expected {}, got {}",
-                expected_num_levels,
-                num_levels
-            )));
+            return Err(TableError::corruption(
+                "ManifestPageHeader::decode",
+                "num_levels_mismatch",
+                format!(
+                    "Manifest num_levels mismatch: expected {}, got {}",
+                    expected_num_levels,
+                    num_levels
+                ),
+            ));
         }
 
         let payload_len = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
         let page_count = u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize;
         if page_count == 0 {
-            return Err(TableError::Corruption("Manifest page count cannot be zero".to_string()));
+            return Err(TableError::corruption(
+                "ManifestPageHeader::decode",
+                "zero_page_count",
+                "Manifest page count cannot be zero",
+            ));
         }
 
         let header_size = Self::size_for_page_count(page_count);
         if bytes.len() < header_size {
-            return Err(TableError::Corruption("Manifest page header missing page IDs".to_string()));
+            return Err(TableError::corruption(
+                "ManifestPageHeader::decode",
+                "missing_page_ids",
+                "Manifest page header missing page IDs",
+            ));
         }
 
         let mut page_ids = Vec::with_capacity(page_count);
@@ -625,11 +654,15 @@ impl<FS: FileSystem> Manifest<FS> {
     ) -> TableResult<Version> {
         let first_page = pager.read_page(root_page_id)?;
         if first_page.page_type() != PageType::LsmMeta {
-            return Err(TableError::Corruption(format!(
-                "Manifest root page {} has wrong type {:?}",
-                root_page_id,
-                first_page.page_type()
-            )));
+            return Err(TableError::corruption(
+                "Manifest::recover_from_pages",
+                "wrong_page_type",
+                format!(
+                    "Manifest root page {} has wrong type {:?}",
+                    root_page_id,
+                    first_page.page_type()
+                ),
+            ));
         }
 
         let first_data = first_page.data();
@@ -642,11 +675,15 @@ impl<FS: FileSystem> Manifest<FS> {
         for page_id in page_ids.iter().skip(1) {
             let page = pager.read_page(*page_id)?;
             if page.page_type() != PageType::LsmMeta {
-                return Err(TableError::Corruption(format!(
-                    "Manifest continuation page {} has wrong type {:?}",
-                    page_id,
-                    page.page_type()
-                )));
+                return Err(TableError::corruption(
+                    "Manifest::recover_from_pages",
+                    "wrong_page_type",
+                    format!(
+                        "Manifest continuation page {} has wrong type {:?}",
+                        page_id,
+                        page.page_type()
+                    ),
+                ));
             }
             let remaining = payload_len.saturating_sub(payload.len());
             if remaining == 0 {
@@ -659,15 +696,23 @@ impl<FS: FileSystem> Manifest<FS> {
         payload.truncate(payload_len);
 
         if payload.len() != payload_len {
-            return Err(TableError::Corruption(format!(
-                "Manifest payload truncated: expected {} bytes, got {}",
-                payload_len,
-                payload.len()
-            )));
+            return Err(TableError::corruption(
+                "Manifest::recover_from_pages",
+                "truncated_payload",
+                format!(
+                    "Manifest payload truncated: expected {} bytes, got {}",
+                    payload_len,
+                    payload.len()
+                ),
+            ));
         }
 
         let snapshot: ManifestSnapshot = bincode::deserialize(&payload).map_err(|e| {
-            TableError::Corruption(format!("Failed to deserialize manifest snapshot: {}", e))
+            TableError::corruption(
+                "Manifest::recover_from_pages",
+                "deserialization_error",
+                format!("Failed to deserialize manifest snapshot: {}", e),
+            )
         })?;
 
         snapshot.version.into_version(num_levels)

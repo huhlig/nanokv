@@ -53,10 +53,11 @@ fn test_write_write_conflict_same_key() {
     assert!(result.is_err());
 
     match result {
-        Err(TransactionError::WriteWriteConflict(t, k, holder)) => {
-            assert_eq!(t, table.as_object_id());
-            assert_eq!(k, b"a");
-            assert_eq!(holder, txn1);
+        Err(TransactionError::WriteWriteConflict { object_id, key, holder_txn_id, requester_txn_id }) => {
+            assert_eq!(object_id, table.as_object_id());
+            assert_eq!(key, b"a");
+            assert_eq!(holder_txn_id, txn1);
+            assert_eq!(requester_txn_id, txn2);
         }
         _ => panic!("Expected WriteWriteConflict error"),
     }
@@ -164,9 +165,11 @@ fn test_read_write_conflict_detection() {
     assert!(result.is_err());
 
     match result {
-        Err(TransactionError::ReadWriteConflict(t, k)) => {
-            assert_eq!(t, table.as_object_id());
-            assert_eq!(k, b"a");
+        Err(TransactionError::ReadWriteConflict { object_id, key, reader_txn_id, writer_txn_id }) => {
+            assert_eq!(object_id, table.as_object_id());
+            assert_eq!(key, b"a");
+            assert_eq!(reader_txn_id, txn2);
+            assert_eq!(writer_txn_id, txn1);
         }
         _ => panic!("Expected ReadWriteConflict error"),
     }

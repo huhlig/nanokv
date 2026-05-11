@@ -97,8 +97,8 @@ fn test_corrupted_magic_number() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidFileHeader(msg) => {
-                assert!(msg.contains("Invalid magic number"));
+            PagerError::InvalidFileHeader { details, .. } => {
+                assert!(details.contains("Invalid magic number"));
             }
             e => panic!("Expected InvalidFileHeader error, got: {:?}", e),
         }
@@ -119,8 +119,8 @@ fn test_corrupted_version_number() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidFileHeader(msg) => {
-                assert!(msg.contains("Unsupported version"));
+            PagerError::InvalidFileHeader { details, .. } => {
+                assert!(details.contains("Unsupported version"));
             }
             e => panic!("Expected InvalidFileHeader error, got: {:?}", e),
         }
@@ -161,8 +161,8 @@ fn test_corrupted_compression_type() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidFileHeader(msg) => {
-                assert!(msg.contains("Invalid compression type"));
+            PagerError::InvalidFileHeader { details, .. } => {
+                assert!(details.contains("Invalid compression type"));
             }
             e => panic!("Expected InvalidFileHeader error, got: {:?}", e),
         }
@@ -183,8 +183,8 @@ fn test_corrupted_encryption_type() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidFileHeader(msg) => {
-                assert!(msg.contains("Invalid encryption type"));
+            PagerError::InvalidFileHeader { details, .. } => {
+                assert!(details.contains("Invalid encryption type"));
             }
             e => panic!("Expected InvalidFileHeader error, got: {:?}", e),
         }
@@ -214,7 +214,7 @@ fn test_corrupted_superblock_magic() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidSuperblock(_) | PagerError::ChecksumMismatch(_) => {}
+            PagerError::InvalidSuperblock { .. } | PagerError::ChecksumMismatch(_) => {}
             e => panic!(
                 "Expected InvalidSuperblock or ChecksumMismatch error, got: {:?}",
                 e
@@ -240,7 +240,7 @@ fn test_corrupted_superblock_version() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidSuperblock(_) | PagerError::ChecksumMismatch(_) => {}
+            PagerError::InvalidSuperblock { .. } | PagerError::ChecksumMismatch(_) => {}
             e => panic!(
                 "Expected InvalidSuperblock or ChecksumMismatch error, got: {:?}",
                 e
@@ -423,7 +423,7 @@ fn test_corrupted_compressed_page() {
     // Should fail with ChecksumMismatch or DecompressionError
     assert!(result.is_err());
     match result.unwrap_err() {
-        PagerError::ChecksumMismatch(_) | PagerError::DecompressionError(_) => {}
+        PagerError::ChecksumMismatch(_) | PagerError::DecompressionError { .. } => {}
         e => panic!(
             "Expected ChecksumMismatch or DecompressionError, got: {:?}",
             e
@@ -470,7 +470,7 @@ fn test_corrupted_encrypted_page() {
         match e {
             PagerError::MissingEncryptionKey
             | PagerError::ChecksumMismatch(_)
-            | PagerError::DecryptionError(_) => {}
+            | PagerError::DecryptionError { .. } => {}
             e => panic!(
                 "Expected MissingEncryptionKey, ChecksumMismatch or DecryptionError, got: {:?}",
                 e
@@ -783,7 +783,7 @@ fn test_all_zeros_file() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            PagerError::InvalidFileHeader(_) => {}
+            PagerError::InvalidFileHeader { .. } => {}
             e => panic!("Expected InvalidFileHeader, got: {:?}", e),
         }
     }

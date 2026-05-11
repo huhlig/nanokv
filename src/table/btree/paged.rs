@@ -189,8 +189,10 @@ impl BTreeNode {
     /// Deserialize the node from bytes.
     fn from_bytes(bytes: &[u8]) -> TableResult<Self> {
         if bytes.is_empty() {
-            return Err(crate::table::TableError::Corruption(
-                "Empty node data".to_string(),
+            return Err(crate::table::TableError::corruption(
+                "BTreeNode::from_bytes",
+                "empty_data",
+                "Empty node data",
             ));
         }
 
@@ -201,8 +203,10 @@ impl BTreeNode {
             0 => {
                 // Internal node
                 if bytes.len() < offset + 4 {
-                    return Err(crate::table::TableError::Corruption(
-                        "Insufficient data for entry count".to_string(),
+                    return Err(crate::table::TableError::corruption(
+                        "BTreeNode::from_bytes",
+                        "truncated_data",
+                        "Insufficient data for entry count",
                     ));
                 }
                 let entry_count =
@@ -210,8 +214,10 @@ impl BTreeNode {
                 offset += 4;
 
                 if bytes.len() < offset + 8 {
-                    return Err(crate::table::TableError::Corruption(
-                        "Insufficient data for rightmost child".to_string(),
+                    return Err(crate::table::TableError::corruption(
+                        "BTreeNode::from_bytes",
+                        "truncated_data",
+                        "Insufficient data for rightmost child",
                     ));
                 }
                 let rightmost_child =
@@ -221,8 +227,10 @@ impl BTreeNode {
                 let mut entries = Vec::with_capacity(entry_count);
                 for _ in 0..entry_count {
                     if bytes.len() < offset + 4 {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for key length".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for key length",
                         ));
                     }
                     let key_len =
@@ -230,16 +238,20 @@ impl BTreeNode {
                     offset += 4;
 
                     if bytes.len() < offset + key_len {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for key".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for key",
                         ));
                     }
                     let key = bytes[offset..offset + key_len].to_vec();
                     offset += key_len;
 
                     if bytes.len() < offset + 8 {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for child page ID".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for child page ID",
                         ));
                     }
                     let child_page_id =
@@ -257,8 +269,10 @@ impl BTreeNode {
             1 => {
                 // Leaf node
                 if bytes.len() < offset + 4 {
-                    return Err(crate::table::TableError::Corruption(
-                        "Insufficient data for entry count".to_string(),
+                    return Err(crate::table::TableError::corruption(
+                        "BTreeNode::from_bytes",
+                        "truncated_data",
+                        "Insufficient data for entry count",
                     ));
                 }
                 let entry_count =
@@ -266,8 +280,10 @@ impl BTreeNode {
                 offset += 4;
 
                 if bytes.len() < offset + 8 {
-                    return Err(crate::table::TableError::Corruption(
-                        "Insufficient data for next leaf".to_string(),
+                    return Err(crate::table::TableError::corruption(
+                        "BTreeNode::from_bytes",
+                        "truncated_data",
+                        "Insufficient data for next leaf",
                     ));
                 }
                 let next_leaf =
@@ -277,8 +293,10 @@ impl BTreeNode {
                 let mut entries = Vec::with_capacity(entry_count);
                 for _ in 0..entry_count {
                     if bytes.len() < offset + 4 {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for key length".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for key length",
                         ));
                     }
                     let key_len =
@@ -286,16 +304,20 @@ impl BTreeNode {
                     offset += 4;
 
                     if bytes.len() < offset + key_len {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for key".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for key",
                         ));
                     }
                     let key = bytes[offset..offset + key_len].to_vec();
                     offset += key_len;
 
                     if bytes.len() < offset + 4 {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for chain length".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for chain length",
                         ));
                     }
                     let chain_len =
@@ -303,12 +325,18 @@ impl BTreeNode {
                     offset += 4;
 
                     if bytes.len() < offset + chain_len {
-                        return Err(crate::table::TableError::Corruption(
-                            "Insufficient data for version chain".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "truncated_data",
+                            "Insufficient data for version chain",
                         ));
                     }
                     let chain: VersionChain = bincode::deserialize(&bytes[offset..offset + chain_len])
-                        .map_err(|e| crate::table::TableError::Corruption(format!("Failed to deserialize version chain: {}", e)))?;
+                        .map_err(|e| crate::table::TableError::corruption(
+                            "BTreeNode::from_bytes",
+                            "deserialization_error",
+                            format!("Failed to deserialize version chain: {}", e),
+                        ))?;
                     offset += chain_len;
 
                     entries.push(LeafEntry { key, chain });
@@ -316,10 +344,11 @@ impl BTreeNode {
 
                 Ok(BTreeNode::Leaf { entries, next_leaf })
             }
-            _ => Err(crate::table::TableError::Corruption(format!(
-                "Invalid node type: {}",
-                node_type
-            ))),
+            _ => Err(crate::table::TableError::corruption(
+                "BTreeNode::from_bytes",
+                "invalid_node_type",
+                format!("Invalid node type: {}", node_type),
+            )),
         }
     }
 }
@@ -935,8 +964,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
             Some(info) => info,
             None => {
                 // No parent means we're at root, which should have been handled already
-                return Err(crate::table::TableError::Corruption(
-                    "No parent found for non-root split".to_string(),
+                return Err(crate::table::TableError::corruption(
+                    "PagedBTree::split_child",
+                    "missing_parent",
+                    "No parent found for non-root split",
                 ));
             }
         };
@@ -1030,7 +1061,9 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         }
                     }
                     None => {
-                        return Err(crate::table::TableError::Corruption(
+                        return Err(crate::table::TableError::corruption(
+                            "PagedBTree::merge_or_redistribute",
+                            "missing_child",
                             format!("Could not find left_child {:?} in parent {:?}", left_child, parent_page_id),
                         ));
                     }
@@ -1363,8 +1396,10 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
                 BTreeNode::Internal { entries, .. } => {
                     // Follow leftmost child
                     if entries.is_empty() {
-                        return Err(crate::table::TableError::Corruption(
-                            "Empty internal node".to_string(),
+                        return Err(crate::table::TableError::corruption(
+                            "PagedBTree::delete_internal",
+                            "empty_node",
+                            "Empty internal node",
                         ));
                     }
                     current_page_id = entries[0].child_page_id;
@@ -1474,8 +1509,10 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
                     return Ok(());
                 }
             } else {
-                return Err(crate::table::TableError::Corruption(
-                    "Expected leaf node".to_string(),
+                return Err(crate::table::TableError::corruption(
+                    "PagedBTreeCursor::next",
+                    "wrong_node_type",
+                    "Expected leaf node",
                 ));
             }
         }
