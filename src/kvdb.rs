@@ -169,13 +169,24 @@ impl Database {
         // Find and remove the table
         let table_name = catalog
             .iter()
-            .find(|(_, info)| info.id == table)
+            .find(|(_, info)| info.id == table && matches!(info.options.kind, TableKind::Regular))
             .map(|(name, _)| name.clone());
         
         if let Some(name) = table_name {
             catalog.remove(&name);
             
-            // TODO: Also remove dependent indexes from index_catalog
+            // Remove all dependent indexes from the unified catalog
+            let index_names: Vec<String> = catalog
+                .iter()
+                .filter(|(_, info)| {
+                    matches!(info.options.kind, TableKind::Index { parent_table, .. } if parent_table == table)
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            
+            for index_name in index_names {
+                catalog.remove(&index_name);
+            }
             
             Ok(())
         } else {
@@ -191,8 +202,46 @@ impl Database {
         Ok(catalog.get(name).map(|info| info.id))
     }
 
-    /// Return catalog-visible tables.
+    /// Get table or index info by ObjectId.
+    pub fn get_object_info(&self, id: ObjectId) -> Result<Option<TableInfo>, DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog.values().find(|info| info.id == id).cloned())
+    }
+
+    /// Get table or index info by name.
+    pub fn get_object_info_by_name(&self, name: &str) -> Result<Option<TableInfo>, DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog.get(name).cloned())
+    }
+
+    /// Check if an ObjectId refers to a regular table.
+    pub fn is_table(&self, id: ObjectId) -> Result<bool, DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog.values().any(|info| {
+            info.id == id && matches!(info.options.kind, TableKind::Regular)
+        }))
+    }
+
+    /// Check if an ObjectId refers to an index.
+    pub fn is_index(&self, id: ObjectId) -> Result<bool, DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog.values().any(|info| {
+            info.id == id && matches!(info.options.kind, TableKind::Index { .. })
+        }))
+    }
+
+    /// Return catalog-visible tables (excludes indexes).
     pub fn list_tables(&self) -> Result<Vec<TableInfo>, DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
+        Ok(catalog
+            .values()
+            .filter(|info| matches!(info.options.kind, TableKind::Regular))
+            .cloned()
+            .collect())
+    }
+
+    /// Return all catalog objects (both tables and indexes).
+    pub fn list_all_objects(&self) -> Result<Vec<TableInfo>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().cloned().collect())
     }
