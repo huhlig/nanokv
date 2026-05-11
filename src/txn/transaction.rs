@@ -573,6 +573,10 @@ impl<FS: FileSystem> Transaction<FS> {
                         
                         Flushable::flush(&mut writer)
                             .map_err(|e| TransactionError::Other(format!("Memory BTree flush failed: {}", e)))?;
+                        
+                        // Mark versions as committed so they become visible to readers
+                        writer.commit_versions(commit_lsn)
+                            .map_err(|e| TransactionError::Other(format!("Memory BTree commit_versions failed: {}", e)))?;
                     }
                     TableEngineInstance::MemoryBlob(blob) => {
                         let mut writer = Table::writer(blob.as_ref(), self.txn_id, self.snapshot_lsn)

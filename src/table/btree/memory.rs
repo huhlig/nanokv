@@ -394,6 +394,26 @@ impl<'a> Flushable for MemoryBTreeWriter<'a> {
 }
 
 impl<'a> MemoryBTreeWriter<'a> {
+    /// Mark all versions created by this transaction as committed.
+    ///
+    /// This must be called after flush() to make the changes visible to readers.
+    /// The commit_lsn is obtained from the WAL after writing the COMMIT record.
+    pub fn commit_versions(&self, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+        let mut data = self.table.data.write().unwrap();
+        
+        // Iterate through all keys and mark versions created by this transaction as committed
+        for chain in data.values_mut() {
+            // Only mark the head version if it was created by this transaction
+            if chain.created_by == self.tx_id && chain.commit_lsn.is_none() {
+                chain.commit(commit_lsn);
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+impl<'a> MemoryBTreeWriter<'a> {
     fn estimate_entry_size(key: &[u8], chain: &VersionChain) -> usize {
         MemoryBTree::estimate_entry_size(key, chain)
     }
