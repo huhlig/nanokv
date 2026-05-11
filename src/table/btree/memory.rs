@@ -914,11 +914,15 @@ impl DenseOrdered for MemoryBTree {
 
         // Create a new version with the primary key as the value
         let tx_id = TransactionId::from(0); // Use a default transaction ID for now
-        let new_chain = if let Some(existing_chain) = data.remove(index_key) {
+        let mut new_chain = if let Some(existing_chain) = data.remove(index_key) {
             existing_chain.prepend(primary_key.to_vec(), tx_id)
         } else {
             VersionChain::new(primary_key.to_vec(), tx_id)
         };
+
+        // Immediately commit the version for index operations
+        // Indexes don't participate in MVCC transactions
+        new_chain.commit(LogSequenceNumber::from(1));
 
         let new_size = Self::estimate_entry_size(index_key, &new_chain);
         data.insert(index_key.to_vec(), new_chain);

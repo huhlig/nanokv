@@ -1354,7 +1354,7 @@ pub struct PagedBTreeCursor<'a, FS: FileSystem> {
 
 impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
     fn new(table: &'a PagedBTree<FS>, bounds: ScanBounds, snapshot_lsn: LogSequenceNumber) -> Self {
-        Self {
+        let mut cursor = Self {
             table,
             snapshot_lsn,
             bounds,
@@ -1364,7 +1364,10 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
             current_value: None,
             exhausted: false,
             initialized: false,
-        }
+        };
+        // Position at first valid entry (consistent with MemoryBTree)
+        let _ = cursor.first();
+        cursor
     }
 
     fn is_in_bounds(&self, key: &[u8]) -> bool {
@@ -1884,9 +1887,10 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
         // For a secondary index, we store: index_key -> primary_key
         // This allows lookups by the indexed field to find the primary key
         
-        // Use the internal insert method with a default transaction ID and LSN
+        // Use the internal insert method with a default transaction ID
+        // and commit LSN of 1 (immediately committed for index operations)
         let tx_id = TransactionId::from(0);
-        let commit_lsn = LogSequenceNumber::from(0);
+        let commit_lsn = LogSequenceNumber::from(1);
         self.insert_internal(
             index_key.to_vec(),
             primary_key.to_vec(),
