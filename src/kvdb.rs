@@ -36,8 +36,10 @@
 //! - Database layer maintains semantic distinction and handles index maintenance
 //! - Index updates are explicit and visible in transaction write sets
 
+use crate::pager::{PageId, Pager, PagerConfig};
 use crate::snap::{Snapshot, SnapshotId};
 use crate::table::{TableInfo, TableOptions, IndexMetadata, IndexField, IndexConsistency, TableEngineKind};
+use crate::table_registry::TableEngineRegistry;
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ObjectId, ValueBuf, ScanBounds};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
@@ -72,18 +74,31 @@ pub struct Database<FS: FileSystem> {
     /// Write-ahead log for durability
     wal: Arc<WalWriter<FS>>,
     
-    /// Table engine storage (ObjectId -> in-memory representation)
-    /// In a full implementation, this would be a registry of different engine types
-    /// For now, we use a simple HashMap to store table data
+    /// Pager for disk I/O
+    pager: Arc<Pager<FS>>,
+    
+    /// Table engine registry
+    engine_registry: Arc<TableEngineRegistry<FS>>,
+    
+    /// Legacy table storage (for backward compatibility during migration)
+    /// TODO: Remove once all operations use engine registry
     table_storage: Arc<RwLock<HashMap<ObjectId, HashMap<Vec<u8>, Vec<u8>>>>>,
 }
 
 impl<FS: FileSystem> Database<FS> {
-    /// Create a new database instance with the given filesystem and WAL path.
-    pub fn new(fs: &FS, wal_path: &str) -> Result<Self, DatabaseError> {
+    /// Create a new database instance with the given filesystem, WAL path, and database path.
+    pub fn new(fs: &FS, wal_path: &str, db_path: &str) -> Result<Self, DatabaseError> {
         let wal_config = WalWriterConfig::default();
         let wal = WalWriter::create(fs, wal_path, wal_config)
             .map_err(|e| DatabaseError::wal_failed(format!("Failed to create WAL: {}", e)))?;
+        
+        // Create pager for database file with default config
+        let pager_config = PagerConfig::default();
+        let pager = Pager::create(fs, db_path, pager_config)
+            .map_err(|e| DatabaseError::pager_failed(format!("Failed to create pager: {}", e)))?;
+        let pager = Arc::new(pager);
+        
+        let engine_registry = Arc::new(TableEngineRegistry::new(pager.clone()));
         
         Ok(Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
@@ -91,12 +106,14 @@ impl<FS: FileSystem> Database<FS> {
             current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
             wal: Arc::new(wal),
+            pager,
+            engine_registry,
             table_storage: Arc::new(RwLock::new(HashMap::new())),
         })
     }
     
     /// Open an existing database instance.
-    pub fn open(fs: &FS, wal_path: &str) -> Result<Self, DatabaseError> {
+    pub fn open(fs: &FS, wal_path: &str, db_path: &str) -> Result<Self, DatabaseError> {
         let wal_config = WalWriterConfig::default();
         let wal = WalWriter::open(fs, wal_path, wal_config)
             .map_err(|e| DatabaseError::wal_failed(format!("Failed to open WAL: {}", e)))?;
@@ -104,12 +121,21 @@ impl<FS: FileSystem> Database<FS> {
         // Get current LSN from WAL
         let current_lsn = wal.current_lsn();
         
+        // Open pager for database file
+        let pager = Pager::open(fs, db_path)
+            .map_err(|e| DatabaseError::pager_failed(format!("Failed to open pager: {}", e)))?;
+        let pager = Arc::new(pager);
+        
+        let engine_registry = Arc::new(TableEngineRegistry::new(pager.clone()));
+        
         Ok(Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(Mutex::new(1)),
             current_lsn: Arc::new(RwLock::new(current_lsn)),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
             wal: Arc::new(wal),
+            pager,
+            engine_registry,
             table_storage: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -857,6 +883,8 @@ pub enum DatabaseErrorKind {
     TransactionFailed,
     /// WAL operation failed
     WalFailed,
+    /// Pager operation failed
+    PagerFailed,
     /// Invalid operation or state
     InvalidOperation,
     /// Other error
@@ -937,6 +965,13 @@ impl DatabaseError {
         Self {
             kind: DatabaseErrorKind::WalFailed,
             message: format!("WAL operation failed: {}", details),
+        }
+    }
+
+    pub fn pager_failed(details: String) -> Self {
+        Self {
+            kind: DatabaseErrorKind::PagerFailed,
+            message: format!("Pager operation failed: {}", details),
         }
     }
 

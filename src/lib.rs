@@ -22,6 +22,7 @@ pub mod pager;
 mod rest;
 pub mod snap;
 pub mod table;
+pub mod table_registry;
 pub mod txn;
 pub mod types;
 pub mod vfs;
