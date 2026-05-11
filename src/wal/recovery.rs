@@ -190,10 +190,11 @@ impl WalRecovery {
     ) -> WalResult<()> {
         // Check if transaction exists
         if !self.transactions.contains_key(&txn_id) {
-            return Err(WalError::RecoveryError(format!(
-                "Write for unknown transaction {}",
-                txn_id
-            )));
+            return Err(WalError::RecoveryError {
+                lsn: LogSequenceNumber::from(0), // LSN not available in this context
+                operation: "Write".to_string(),
+                details: format!("Write for unknown transaction {}", txn_id),
+            });
         }
 
         // Add write to transaction
@@ -212,10 +213,11 @@ impl WalRecovery {
     fn process_commit(&mut self, txn_id: TransactionId) -> WalResult<()> {
         // Check if transaction exists
         if !self.transactions.contains_key(&txn_id) {
-            return Err(WalError::RecoveryError(format!(
-                "Commit for unknown transaction {}",
-                txn_id
-            )));
+            return Err(WalError::RecoveryError {
+                lsn: LogSequenceNumber::from(0), // LSN not available in this context
+                operation: "Commit".to_string(),
+                details: format!("Commit for unknown transaction {}", txn_id),
+            });
         }
 
         // Mark transaction as committed
@@ -228,10 +230,11 @@ impl WalRecovery {
     fn process_rollback(&mut self, txn_id: TransactionId) -> WalResult<()> {
         // Check if transaction exists
         if !self.transactions.contains_key(&txn_id) {
-            return Err(WalError::RecoveryError(format!(
-                "Rollback for unknown transaction {}",
-                txn_id
-            )));
+            return Err(WalError::RecoveryError {
+                lsn: LogSequenceNumber::from(0), // LSN not available in this context
+                operation: "Rollback".to_string(),
+                details: format!("Rollback for unknown transaction {}", txn_id),
+            });
         }
 
         // Mark transaction as rolled back and discard writes

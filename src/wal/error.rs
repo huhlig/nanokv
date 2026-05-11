@@ -32,66 +32,245 @@ pub enum WalError {
     VfsError(#[from] FileSystemError),
 
     /// Invalid WAL record
-    #[error("Invalid WAL record: {0}")]
-    InvalidRecord(String),
+    #[error("Invalid WAL record at LSN {lsn}: {details}")]
+    InvalidRecord {
+        lsn: LogSequenceNumber,
+        details: String,
+    },
 
     /// Checksum mismatch
-    #[error("Checksum mismatch at offset {0}")]
-    ChecksumMismatch(LogSequenceNumber),
+    #[error("Checksum mismatch at LSN {lsn}, offset {offset}: expected {expected:x}, found {found:x}")]
+    ChecksumMismatch {
+        lsn: LogSequenceNumber,
+        offset: u64,
+        expected: u32,
+        found: u32,
+    },
 
     /// Corrupted WAL file
-    #[error("Corrupted WAL file: {0}")]
-    CorruptedWal(String),
+    #[error("Corrupted WAL at offset {offset}: {corruption_type} - {details}")]
+    CorruptedWal {
+        offset: u64,
+        corruption_type: String,
+        details: String,
+    },
 
     /// Transaction not found
-    #[error("Transaction not found: {0}")]
-    TransactionNotFound(TransactionId),
+    #[error("Transaction not found: {txn_id}")]
+    TransactionNotFound { txn_id: TransactionId },
 
     /// Transaction already exists
-    #[error("Transaction already exists: {0}")]
-    TransactionAlreadyExists(TransactionId),
+    #[error("Transaction already exists: {txn_id}")]
+    TransactionAlreadyExists { txn_id: TransactionId },
 
     /// Invalid transaction state
-    #[error("Invalid transaction state: {0}")]
-    InvalidTransactionState(String),
+    #[error("Invalid transaction state for {txn_id}: {current_state}, attempted {operation}")]
+    InvalidTransactionState {
+        txn_id: TransactionId,
+        current_state: String,
+        operation: String,
+    },
 
     /// WAL is full
-    #[error("WAL is full (max size reached)")]
-    WalFull,
+    #[error("WAL is full: current size {current_size} bytes, max size {max_size} bytes")]
+    WalFull { current_size: u64, max_size: u64 },
 
     /// Recovery error
-    #[error("Recovery error: {0}")]
-    RecoveryError(String),
+    #[error("Recovery error at LSN {lsn}: {operation} - {details}")]
+    RecoveryError {
+        lsn: LogSequenceNumber,
+        operation: String,
+        details: String,
+    },
 
     /// Checkpoint error
-    #[error("Checkpoint error: {0}")]
-    CheckpointError(String),
+    #[error("Checkpoint error at LSN {lsn}: {details}")]
+    CheckpointError {
+        lsn: LogSequenceNumber,
+        details: String,
+    },
 
     /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
     /// Serialization error
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
+    #[error("Serialization error for {record_type} at LSN {lsn}: {details}")]
+    SerializationError {
+        lsn: LogSequenceNumber,
+        record_type: String,
+        details: String,
+    },
 
     /// Deserialization error
-    #[error("Deserialization error: {0}")]
-    DeserializationError(String),
+    #[error("Deserialization error at offset {offset}: {details}")]
+    DeserializationError { offset: u64, details: String },
 
     /// Encryption error
-    #[error("Encryption error: {0}")]
-    EncryptionError(String),
+    #[error("Encryption error for {encryption_type} at LSN {lsn}: {details}")]
+    EncryptionError {
+        lsn: LogSequenceNumber,
+        encryption_type: String,
+        details: String,
+    },
 
     /// Decryption error
-    #[error("Decryption error: {0}")]
-    DecryptionError(String),
+    #[error("Decryption error for {encryption_type} at offset {offset}: {details}")]
+    DecryptionError {
+        offset: u64,
+        encryption_type: String,
+        details: String,
+    },
 
     /// Missing encryption key
-    #[error("Missing encryption key")]
-    MissingEncryptionKey,
+    #[error("Missing encryption key for {encryption_type}")]
+    MissingEncryptionKey { encryption_type: String },
 
     /// Internal error
     #[error("Internal error: {0}")]
     InternalError(String),
+}
+
+impl WalError {
+    /// Create an invalid record error
+    pub fn invalid_record(lsn: LogSequenceNumber, details: impl Into<String>) -> Self {
+        Self::InvalidRecord {
+            lsn,
+            details: details.into(),
+        }
+    }
+
+    /// Create a checksum mismatch error
+    pub fn checksum_mismatch(
+        lsn: LogSequenceNumber,
+        offset: u64,
+        expected: u32,
+        found: u32,
+    ) -> Self {
+        Self::ChecksumMismatch {
+            lsn,
+            offset,
+            expected,
+            found,
+        }
+    }
+
+    /// Create a corrupted WAL error
+    pub fn corrupted_wal(
+        offset: u64,
+        corruption_type: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::CorruptedWal {
+            offset,
+            corruption_type: corruption_type.into(),
+            details: details.into(),
+        }
+    }
+
+    /// Create a transaction not found error
+    pub fn transaction_not_found(txn_id: TransactionId) -> Self {
+        Self::TransactionNotFound { txn_id }
+    }
+
+    /// Create a transaction already exists error
+    pub fn transaction_already_exists(txn_id: TransactionId) -> Self {
+        Self::TransactionAlreadyExists { txn_id }
+    }
+
+    /// Create an invalid transaction state error
+    pub fn invalid_transaction_state(
+        txn_id: TransactionId,
+        current_state: impl Into<String>,
+        operation: impl Into<String>,
+    ) -> Self {
+        Self::InvalidTransactionState {
+            txn_id,
+            current_state: current_state.into(),
+            operation: operation.into(),
+        }
+    }
+
+    /// Create a WAL full error
+    pub fn wal_full(current_size: u64, max_size: u64) -> Self {
+        Self::WalFull {
+            current_size,
+            max_size,
+        }
+    }
+
+    /// Create a recovery error
+    pub fn recovery_error(
+        lsn: LogSequenceNumber,
+        operation: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::RecoveryError {
+            lsn,
+            operation: operation.into(),
+            details: details.into(),
+        }
+    }
+
+    /// Create a checkpoint error
+    pub fn checkpoint_error(lsn: LogSequenceNumber, details: impl Into<String>) -> Self {
+        Self::CheckpointError {
+            lsn,
+            details: details.into(),
+        }
+    }
+
+    /// Create a serialization error
+    pub fn serialization_error(
+        lsn: LogSequenceNumber,
+        record_type: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::SerializationError {
+            lsn,
+            record_type: record_type.into(),
+            details: details.into(),
+        }
+    }
+
+    /// Create a deserialization error
+    pub fn deserialization_error(offset: u64, details: impl Into<String>) -> Self {
+        Self::DeserializationError {
+            offset,
+            details: details.into(),
+        }
+    }
+
+    /// Create an encryption error
+    pub fn encryption_error(
+        lsn: LogSequenceNumber,
+        encryption_type: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::EncryptionError {
+            lsn,
+            encryption_type: encryption_type.into(),
+            details: details.into(),
+        }
+    }
+
+    /// Create a decryption error
+    pub fn decryption_error(
+        offset: u64,
+        encryption_type: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::DecryptionError {
+            offset,
+            encryption_type: encryption_type.into(),
+            details: details.into(),
+        }
+    }
+
+    /// Create a missing encryption key error
+    pub fn missing_encryption_key(encryption_type: impl Into<String>) -> Self {
+        Self::MissingEncryptionKey {
+            encryption_type: encryption_type.into(),
+        }
+    }
 }

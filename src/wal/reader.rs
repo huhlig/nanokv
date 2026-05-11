@@ -63,10 +63,11 @@ impl<FS: FileSystem> WalReader<FS> {
 
         // Check magic number
         if &header_buf[0..4] != b"WALR" {
-            return Err(WalError::CorruptedWal(format!(
-                "Invalid magic at offset {}",
-                self.offset
-            )));
+            return Err(WalError::CorruptedWal {
+                offset: self.offset,
+                corruption_type: "Invalid magic".to_string(),
+                details: format!("Expected 'WALR', found {:?}", &header_buf[0..4]),
+            });
         }
 
         // Extract stored data length (at offset 27-31)
@@ -81,10 +82,14 @@ impl<FS: FileSystem> WalReader<FS> {
 
         if bytes_read < total_size {
             // Incomplete record
-            return Err(WalError::CorruptedWal(format!(
-                "Incomplete record at offset {}",
-                self.offset
-            )));
+            return Err(WalError::CorruptedWal {
+                offset: self.offset,
+                corruption_type: "Incomplete record".to_string(),
+                details: format!(
+                    "Expected {} bytes, found {} bytes",
+                    total_size, bytes_read
+                ),
+            });
         }
 
         // Deserialize the record
@@ -122,10 +127,10 @@ impl<FS: FileSystem> WalReader<FS> {
             }
         }
 
-        Err(WalError::InvalidRecord(format!(
-            "LSN {} not found",
-            target_lsn
-        )))
+        Err(WalError::InvalidRecord {
+            lsn: target_lsn,
+            details: "LSN not found in WAL".to_string(),
+        })
     }
 
     /// Get current read offset

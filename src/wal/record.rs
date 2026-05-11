@@ -81,10 +81,10 @@ impl RecordType {
             3 => Ok(RecordType::Commit),
             4 => Ok(RecordType::Rollback),
             5 => Ok(RecordType::Checkpoint),
-            _ => Err(WalError::InvalidRecord(format!(
-                "Invalid record type: {}",
-                value
-            ))),
+            _ => Err(WalError::InvalidRecord {
+                lsn: LogSequenceNumber::from(0),
+                details: format!("Invalid record type: {}", value),
+            }),
         }
     }
 
@@ -110,10 +110,10 @@ impl WriteOpType {
         match value {
             1 => Ok(WriteOpType::Put),
             2 => Ok(WriteOpType::Delete),
-            _ => Err(WalError::InvalidRecord(format!(
-                "Invalid write op type: {}",
-                value
-            ))),
+            _ => Err(WalError::InvalidRecord {
+                lsn: LogSequenceNumber::from(0),
+                details: format!("Invalid write op type: {}", value),
+            }),
         }
     }
 
@@ -277,7 +277,11 @@ impl WalRecord {
             CompressionType::None => data_bytes,
             CompressionType::Lz4 => lz4_flex::compress_prepend_size(&data_bytes),
             CompressionType::Zstd => zstd::encode_all(&data_bytes[..], 3).map_err(|e| {
-                WalError::SerializationError(format!("Zstd compression failed: {}", e))
+                WalError::SerializationError {
+                    lsn: self.lsn,
+                    record_type: format!("{:?}", self.data.record_type()),
+                    details: format!("Zstd compression failed: {}", e),
+                }
             })?,
         };
 
@@ -285,7 +289,9 @@ impl WalRecord {
         let final_data = match self.encryption {
             EncryptionType::None => compressed_data,
             EncryptionType::Aes256Gcm => {
-                let key = encryption_key.ok_or(WalError::MissingEncryptionKey)?;
+                let key = encryption_key.ok_or_else(|| WalError::MissingEncryptionKey {
+                    encryption_type: "AES-256-GCM".to_string(),
+                })?;
 
                 let mut nonce_bytes = [0u8; 12];
                 rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -294,7 +300,11 @@ impl WalRecord {
                 let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
                 let encrypted = cipher
                     .encrypt(nonce, compressed_data.as_ref())
-                    .map_err(|e| WalError::EncryptionError(e.to_string()))?;
+                    .map_err(|e| WalError::EncryptionError {
+                        lsn: self.lsn,
+                        encryption_type: "AES-256-GCM".to_string(),
+                        details: e.to_string(),
+                    })?;
 
                 let mut result = Vec::with_capacity(12 + encrypted.len());
                 result.extend_from_slice(&nonce_bytes);
@@ -333,14 +343,20 @@ impl WalRecord {
     pub fn from_bytes(bytes: &[u8], encryption_key: Option<&[u8; 32]>) -> WalResult<Self> {
         if bytes.len() < 67 {
             // Minimum size: magic(4) + lsn(8) + timestamp(8) + type(1) + compression(1) + encryption(1) + uncompressed(4) + stored(4) + checksum(32)
-            return Err(WalError::InvalidRecord("Record too short".to_string()));
+            return Err(WalError::InvalidRecord {
+                lsn: LogSequenceNumber::from(0),
+                details: format!("Record too short: {} bytes", bytes.len()),
+            });
         }
 
         let mut cursor = 0;
 
         // Check magic
         if &bytes[cursor..cursor + 4] != b"WALR" {
-            return Err(WalError::InvalidRecord("Invalid magic number".to_string()));
+            return Err(WalError::InvalidRecord {
+                lsn: LogSequenceNumber::from(0),
+                details: format!("Invalid magic number: {:?}", &bytes[0..4]),
+            });
         }
         cursor += 4;
 
@@ -348,7 +364,10 @@ impl WalRecord {
         let lsn = LogSequenceNumber::from(u64::from_le_bytes(
             bytes[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| WalError::DeserializationError("Invalid LSN".to_string()))?,
+                .map_err(|_| WalError::DeserializationError {
+                    offset: 4,
+                    details: "Invalid LSN bytes".to_string(),
+                })?,
         ));
         cursor += 8;
 
@@ -356,7 +375,10 @@ impl WalRecord {
         let timestamp = u64::from_le_bytes(
             bytes[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| WalError::DeserializationError("Invalid timestamp".to_string()))?,
+                .map_err(|_| WalError::DeserializationError {
+                    offset: 12,
+                    details: "Invalid timestamp bytes".to_string(),
+                })?,
         );
         cursor += 8;
 
@@ -366,19 +388,29 @@ impl WalRecord {
 
         // Compression type
         let compression = CompressionType::from_u8(bytes[cursor]).ok_or_else(|| {
-            WalError::DeserializationError("Invalid compression type".to_string())
+            WalError::DeserializationError {
+                offset: cursor as u64,
+                details: format!("Invalid compression type: {}", bytes[cursor]),
+            }
         })?;
         cursor += 1;
 
         // Encryption type
-        let encryption = EncryptionType::from_u8(bytes[cursor])
-            .ok_or_else(|| WalError::DeserializationError("Invalid encryption type".to_string()))?;
+        let encryption = EncryptionType::from_u8(bytes[cursor]).ok_or_else(|| {
+            WalError::DeserializationError {
+                offset: cursor as u64,
+                details: format!("Invalid encryption type: {}", bytes[cursor]),
+            }
+        })?;
         cursor += 1;
 
         // Uncompressed size
         let _uncompressed_size =
             u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().map_err(|_| {
-                WalError::DeserializationError("Invalid uncompressed size".to_string())
+                WalError::DeserializationError {
+                    offset: cursor as u64,
+                    details: "Invalid uncompressed size bytes".to_string(),
+                }
             })?) as usize;
         cursor += 4;
 
@@ -386,13 +418,23 @@ impl WalRecord {
         let stored_size = u32::from_le_bytes(
             bytes[cursor..cursor + 4]
                 .try_into()
-                .map_err(|_| WalError::DeserializationError("Invalid stored size".to_string()))?,
+                .map_err(|_| WalError::DeserializationError {
+                    offset: cursor as u64,
+                    details: "Invalid stored size bytes".to_string(),
+                })?,
         ) as usize;
         cursor += 4;
 
         // Verify we have enough bytes
         if bytes.len() < cursor + stored_size + 32 {
-            return Err(WalError::InvalidRecord("Incomplete record".to_string()));
+            return Err(WalError::InvalidRecord {
+                lsn,
+                details: format!(
+                    "Incomplete record: expected {} bytes, have {} bytes",
+                    cursor + stored_size + 32,
+                    bytes.len()
+                ),
+            });
         }
 
         // Verify checksum
@@ -403,7 +445,12 @@ impl WalRecord {
         let actual_checksum = hasher.finalize();
 
         if expected_checksum != actual_checksum.as_slice() {
-            return Err(WalError::ChecksumMismatch(lsn));
+            return Err(WalError::ChecksumMismatch {
+                lsn,
+                offset: 0,
+                expected: u32::from_le_bytes(expected_checksum[0..4].try_into().unwrap()),
+                found: u32::from_le_bytes(actual_checksum[0..4].try_into().unwrap()),
+            });
         }
 
         // Get stored data
@@ -413,12 +460,19 @@ impl WalRecord {
         let compressed_data = match encryption {
             EncryptionType::None => stored_data.to_vec(),
             EncryptionType::Aes256Gcm => {
-                let key = encryption_key.ok_or(WalError::MissingEncryptionKey)?;
+                let key = encryption_key.ok_or_else(|| WalError::MissingEncryptionKey {
+                    encryption_type: "AES-256-GCM".to_string(),
+                })?;
 
                 if stored_data.len() < 12 {
-                    return Err(WalError::DecryptionError(
-                        "Insufficient data for nonce".to_string(),
-                    ));
+                    return Err(WalError::DecryptionError {
+                        offset: cursor as u64,
+                        encryption_type: "AES-256-GCM".to_string(),
+                        details: format!(
+                            "Insufficient data for nonce: {} bytes",
+                            stored_data.len()
+                        ),
+                    });
                 }
 
                 let nonce = Nonce::from_slice(&stored_data[0..12]);
@@ -427,7 +481,11 @@ impl WalRecord {
 
                 cipher
                     .decrypt(nonce, ciphertext)
-                    .map_err(|e| WalError::DecryptionError(e.to_string()))?
+                    .map_err(|e| WalError::DecryptionError {
+                        offset: cursor as u64,
+                        encryption_type: "AES-256-GCM".to_string(),
+                        details: e.to_string(),
+                    })?
             }
         };
 
@@ -436,11 +494,17 @@ impl WalRecord {
             CompressionType::None => compressed_data,
             CompressionType::Lz4 => {
                 lz4_flex::decompress_size_prepended(&compressed_data).map_err(|e| {
-                    WalError::DeserializationError(format!("LZ4 decompression failed: {}", e))
+                    WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: format!("LZ4 decompression failed: {}", e),
+                    }
                 })?
             }
             CompressionType::Zstd => zstd::decode_all(&compressed_data[..]).map_err(|e| {
-                WalError::DeserializationError(format!("Zstd decompression failed: {}", e))
+                WalError::DeserializationError {
+                    offset: cursor as u64,
+                    details: format!("Zstd decompression failed: {}", e),
+                }
             })?,
         };
 
@@ -540,9 +604,10 @@ impl WalRecord {
         match record_type {
             RecordType::Begin => {
                 if bytes.len() < 8 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Begin record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: 0,
+                        details: format!("Invalid Begin record: {} bytes", bytes.len()),
+                    });
                 }
                 let txn_id = TransactionId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
@@ -552,9 +617,10 @@ impl WalRecord {
             RecordType::Write => {
                 // Transaction ID
                 if bytes.len() < cursor + 8 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Write record: missing transaction ID".to_string(),
+                    });
                 }
                 let txn_id = TransactionId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
@@ -563,9 +629,10 @@ impl WalRecord {
 
                 // Table ID (8 bytes)
                 if bytes.len() < cursor + 8 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Write record: missing table ID".to_string(),
+                    });
                 }
                 let table_id = TableId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
@@ -574,45 +641,50 @@ impl WalRecord {
 
                 // Operation type
                 if bytes.len() < cursor + 1 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Write record: missing operation type".to_string(),
+                    });
                 }
                 let op_type = WriteOpType::from_u8(bytes[cursor])?;
                 cursor += 1;
 
                 // Key
                 if bytes.len() < cursor + 4 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Write record: missing key length".to_string(),
+                    });
                 }
                 let key_len =
                     u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
                 cursor += 4;
 
                 if bytes.len() < cursor + key_len {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: format!("Invalid Write record: missing key data ({} bytes)", key_len),
+                    });
                 }
                 let key = bytes[cursor..cursor + key_len].to_vec();
                 cursor += key_len;
 
                 // Value
                 if bytes.len() < cursor + 4 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Write record: missing value length".to_string(),
+                    });
                 }
                 let value_len =
                     u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
                 cursor += 4;
 
                 if bytes.len() < cursor + value_len {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Write record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: format!("Invalid Write record: missing value data ({} bytes)", value_len),
+                    });
                 }
                 let value = bytes[cursor..cursor + value_len].to_vec();
 
@@ -626,9 +698,10 @@ impl WalRecord {
             }
             RecordType::Commit => {
                 if bytes.len() < 8 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Commit record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: 0,
+                        details: format!("Invalid Commit record: {} bytes", bytes.len()),
+                    });
                 }
                 let txn_id = TransactionId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
@@ -637,9 +710,10 @@ impl WalRecord {
             }
             RecordType::Rollback => {
                 if bytes.len() < 8 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Rollback record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: 0,
+                        details: format!("Invalid Rollback record: {} bytes", bytes.len()),
+                    });
                 }
                 let txn_id = TransactionId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
@@ -649,9 +723,10 @@ impl WalRecord {
             RecordType::Checkpoint => {
                 // LSN
                 if bytes.len() < cursor + 8 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Checkpoint record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Checkpoint record: missing LSN".to_string(),
+                    });
                 }
                 let lsn = LogSequenceNumber::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
@@ -660,9 +735,10 @@ impl WalRecord {
 
                 // Number of active transactions
                 if bytes.len() < cursor + 4 {
-                    return Err(WalError::DeserializationError(
-                        "Invalid Checkpoint record".to_string(),
-                    ));
+                    return Err(WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: "Invalid Checkpoint record: missing transaction count".to_string(),
+                    });
                 }
                 let num_txns =
                     u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
@@ -672,9 +748,10 @@ impl WalRecord {
                 let mut active_txns = Vec::with_capacity(num_txns);
                 for _ in 0..num_txns {
                     if bytes.len() < cursor + 8 {
-                        return Err(WalError::DeserializationError(
-                            "Invalid Checkpoint record".to_string(),
-                        ));
+                        return Err(WalError::DeserializationError {
+                            offset: cursor as u64,
+                            details: "Invalid Checkpoint record: missing transaction ID".to_string(),
+                        });
                     }
                     let txn_id = TransactionId::from(u64::from_le_bytes(
                         bytes[cursor..cursor + 8].try_into().unwrap(),

@@ -345,7 +345,9 @@ fn test_wal_full_error() {
 
 #[test]
 fn test_blob_too_large_error() {
+    let blob_ref = BlobRef::new(PageId::from(1), 0, 100);
     let error = BlobError::TooLarge {
+        blob_ref,
         size: 1024 * 1024 * 100, // 100 MB
         max: 1024 * 1024 * 10,   // 10 MB max
     };

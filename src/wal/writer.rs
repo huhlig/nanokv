@@ -255,7 +255,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         if state.active_txns.contains(&txn_id) {
             warn!("Transaction already exists");
             counter!("wal.error", "type" => "transaction_already_exists").increment(1);
-            return Err(WalError::TransactionAlreadyExists(txn_id));
+            return Err(WalError::TransactionAlreadyExists { txn_id });
         }
 
         // Create record
@@ -299,7 +299,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         if !state.active_txns.contains(&txn_id) {
             warn!("Transaction not found");
             counter!("wal.error", "type" => "transaction_not_found").increment(1);
-            return Err(WalError::TransactionNotFound(txn_id));
+            return Err(WalError::TransactionNotFound { txn_id });
         }
 
         // Create record
@@ -339,7 +339,7 @@ impl<FS: FileSystem> WalWriter<FS> {
             if !state.active_txns.contains(&txn_id) {
                 warn!("Transaction not found");
                 counter!("wal.error", "type" => "transaction_not_found").increment(1);
-                return Err(WalError::TransactionNotFound(txn_id));
+                return Err(WalError::TransactionNotFound { txn_id });
             }
 
             // Create record
@@ -384,7 +384,7 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Check if transaction exists
         if !state.active_txns.contains(&txn_id) {
-            return Err(WalError::TransactionNotFound(txn_id));
+            return Err(WalError::TransactionNotFound { txn_id });
         }
 
         // Create record
@@ -436,7 +436,10 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Check if WAL is full
         if state.current_offset + bytes.len() as u64 > self.config.max_wal_size {
-            return Err(WalError::WalFull);
+            return Err(WalError::WalFull {
+                current_size: state.current_offset + bytes.len() as u64,
+                max_size: self.config.max_wal_size,
+            });
         }
 
         // Add to buffer
@@ -640,7 +643,7 @@ mod tests {
 
         let result = writer.write_commit(TransactionId::from(999));
         assert!(
-            matches!(result, Err(WalError::TransactionNotFound(txn)) if txn == TransactionId::from(999))
+            matches!(result, Err(WalError::TransactionNotFound { txn_id }) if txn_id == TransactionId::from(999))
         );
     }
 
@@ -653,7 +656,7 @@ mod tests {
         writer.write_begin(TransactionId::from(1)).unwrap();
         let result = writer.write_begin(TransactionId::from(1));
         assert!(
-            matches!(result, Err(WalError::TransactionAlreadyExists(txn)) if txn == TransactionId::from(1))
+            matches!(result, Err(WalError::TransactionAlreadyExists { txn_id }) if txn_id == TransactionId::from(1))
         );
     }
 }
