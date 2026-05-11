@@ -27,9 +27,9 @@
 
 use crate::snap::Snapshot;
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, TableCapabilities,
-    TableCursor, TableEngine, TableEngineKind, TableId, TableReader, TableResult, TableStatistics,
-    TableWriter, WriteBatch,
+    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
+    TableCapabilities, TableCursor, TableEngineKind, TableId, TableReader, TableResult,
+    TableStatistics, TableWriter, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, KeyBuf, ScanBounds, ValueBuf};
@@ -101,7 +101,7 @@ impl MemoryBTree {
     }
 }
 
-impl TableEngine for MemoryBTree {
+impl Table for MemoryBTree {
     type Reader<'a> = MemoryBTreeReader<'a>;
     type Writer<'a> = MemoryBTreeWriter<'a>;
 

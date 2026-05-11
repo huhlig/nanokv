@@ -27,7 +27,7 @@
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
 use nanokv::table::{
-    Flushable, MutableTable, OrderedScan, PointLookup, TableCursor, TableEngine, TableId,
+    Flushable, MutableTable, OrderedScan, PointLookup, Table, TableCursor, TableId,
 };
 use nanokv::txn::TransactionId;
 use nanokv::types::ScanBounds;

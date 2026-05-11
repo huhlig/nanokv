@@ -31,9 +31,9 @@
 use crate::pager::{Page, PageId, PageType, Pager};
 use crate::snap::Snapshot;
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, TableCapabilities,
-    TableCursor, TableEngine, TableEngineKind, TableId, TableReader, TableResult, TableStatistics,
-    TableWriter, WriteBatch,
+    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
+    TableCapabilities, TableCursor, TableEngineKind, TableId, TableReader, TableResult,
+    TableStatistics, TableWriter, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, ScanBounds, ValueBuf};
@@ -1120,7 +1120,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 }
 
-impl<FS: FileSystem> TableEngine for PagedBTree<FS> {
+impl<FS: FileSystem> Table for PagedBTree<FS> {
     type Reader<'a> = PagedBTreeReader<'a, FS> where Self: 'a;
     type Writer<'a> = PagedBTreeWriter<'a, FS> where Self: 'a;
 

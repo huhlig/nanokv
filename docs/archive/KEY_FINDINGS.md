@@ -82,7 +82,7 @@ The analysis revealed a **solid foundation** with excellent infrastructure and w
 #### Core Database Traits
 - `KvDatabase` - Database lifecycle and catalog
 - `KvTransaction` - Snapshot isolation and ACID
-- `TableEngine` - Physical table implementations
+- `Table` - Physical table implementations (formerly `TableEngine`)
 
 #### Table Capability Traits
 - `PointLookup` - Single-key operations

@@ -31,9 +31,9 @@ pub use self::traits::{
     Histogram, HistogramBucket, IndexConsistency, IndexField, IndexKind, KeyStatistics,
     Maintainable, MemoryAware, Migratable, MutableTable, Mutation, OrderedKvTable, OrderedScan,
     PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, StatisticsProvider,
-    TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableId, TableInfo, TableKind,
-    TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions, VacuumReport,
-    ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
+    Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableId, TableInfo,
+    TableKind, TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
+    VacuumReport, ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
     // Specialty table traits (formerly index traits)
     ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
     FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,

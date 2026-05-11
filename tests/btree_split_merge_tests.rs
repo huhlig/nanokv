@@ -18,7 +18,7 @@
 
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
-use nanokv::table::{Flushable, MutableTable, PointLookup, TableEngine, TableId};
+use nanokv::table::{Flushable, MutableTable, PointLookup, Table, TableId};
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;

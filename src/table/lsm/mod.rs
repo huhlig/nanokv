@@ -72,14 +72,14 @@ pub use self::sstable::{
 
 
 // =============================================================================
-// LSM Tree TableEngine Implementation
+// LSM Tree Table Implementation
 // =============================================================================
 
 use crate::pager::{PageId, Pager};
 use crate::table::error::{TableError, TableResult};
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, TableCapabilities,
-    TableCursor, TableEngine, TableEngineKind, TableId, TableReader, TableStatistics,
+    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
+    TableCapabilities, TableCursor, TableEngineKind, TableId, TableReader, TableStatistics,
     TableWriter, WriteBatch,
 };
 use crate::txn::TransactionId;
@@ -438,7 +438,7 @@ impl<FS: FileSystem> LsmTree<FS> {
     }
 }
 
-impl<FS: FileSystem> TableEngine for LsmTree<FS> {
+impl<FS: FileSystem> Table for LsmTree<FS> {
     type Reader<'a> = LsmReader<'a, FS> where Self: 'a;
     type Writer<'a> = LsmWriter<'a, FS> where Self: 'a;
     

@@ -302,8 +302,12 @@ pub trait OrderedKvTable: PointLookup + OrderedScan + MutableTable + BatchOps + 
 impl<T> OrderedKvTable for T where T: PointLookup + OrderedScan + MutableTable + BatchOps + Flushable
 {}
 
-/// Physical table engine.
-pub trait TableEngine {
+/// Physical table implementation.
+///
+/// This is the base trait for all table implementations (BTree, LSM, etc.).
+/// Each table type implements this trait along with capability-specific traits
+/// (PointLookup, OrderedScan, MutableTable, etc.) to declare its features.
+pub trait Table {
     type Reader<'a>: TableReader
     where
         Self: 'a;
@@ -332,6 +336,12 @@ pub trait TableEngine {
 
     fn stats(&self) -> TableResult<TableStatistics>;
 }
+
+/// Backward compatibility alias.
+#[deprecated(since = "0.1.0", note = "Use `Table` instead")]
+pub trait TableEngine: Table {}
+
+impl<T: Table> TableEngine for T {}
 
 /// Read view over a table engine.
 pub trait TableReader: PointLookup + OrderedScan {
