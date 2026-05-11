@@ -19,26 +19,52 @@
 //! These tests verify the transaction state machine, read/write set tracking,
 //! isolation levels, and commit/rollback behavior.
 
+use nanokv::pager::{Pager, PagerConfig};
+use nanokv::table_registry::TableEngineRegistry;
 use nanokv::types::ObjectId;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::IsolationLevel;
-use nanokv::wal::LogSequenceNumber;
-use std::sync::{Arc, Mutex};
+use nanokv::vfs::MemoryFileSystem;
+use nanokv::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Helper to create a shared conflict detector for tests
 fn create_conflict_detector() -> Arc<Mutex<ConflictDetector>> {
     Arc::new(Mutex::new(ConflictDetector::new()))
 }
 
+/// Helper to create test dependencies for Transaction
+fn create_test_transaction(
+    txn_id: TransactionId,
+    snapshot_lsn: LogSequenceNumber,
+    isolation: IsolationLevel,
+) -> Transaction<MemoryFileSystem> {
+    let fs = MemoryFileSystem::new();
+    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
+    let wal = Arc::new(
+        WalWriter::create(&fs, "test.wal", WalWriterConfig::default()).unwrap()
+    );
+    let pager = Arc::new(
+        Pager::create(&fs, "test.db", PagerConfig::default()).unwrap()
+    );
+    let engine_registry = Arc::new(TableEngineRegistry::new(pager));
+    let current_lsn = Arc::new(RwLock::new(snapshot_lsn));
+    
+    Transaction::new(
+        txn_id,
+        snapshot_lsn,
+        isolation,
+        conflict_detector,
+        wal,
+        engine_registry,
+        current_lsn,
+    )
+}
+
 /// Test basic transaction creation and state
 #[test]
 fn test_transaction_creation() {
-    let tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     assert_eq!(tx.id(), TransactionId::from(1));
     assert_eq!(tx.snapshot_lsn(), LogSequenceNumber::from(100));
@@ -49,12 +75,7 @@ fn test_transaction_creation() {
 /// Test transaction put operation
 #[test]
 fn test_transaction_put() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     let key = b"key1";
@@ -71,12 +92,7 @@ fn test_transaction_put() {
 /// Test transaction delete operation
 #[test]
 fn test_transaction_delete() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     let key = b"key1";
@@ -96,12 +112,7 @@ fn test_transaction_delete() {
 /// Test transaction delete of non-existent key
 #[test]
 fn test_transaction_delete_nonexistent() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     let key = b"nonexistent";
@@ -113,12 +124,7 @@ fn test_transaction_delete_nonexistent() {
 /// Test transaction get from write set
 #[test]
 fn test_transaction_get_from_write_set() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     
@@ -145,12 +151,7 @@ fn test_transaction_get_from_write_set() {
 /// Test transaction update (overwrite existing value)
 #[test]
 fn test_transaction_update() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     let key = b"key1";
@@ -173,12 +174,7 @@ fn test_transaction_update() {
 /// Test transaction commit
 #[test]
 fn test_transaction_commit() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -192,12 +188,7 @@ fn test_transaction_commit() {
 /// Test transaction rollback
 #[test]
 fn test_transaction_rollback() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -209,12 +200,7 @@ fn test_transaction_rollback() {
 /// Test transaction state transitions
 #[test]
 fn test_transaction_state_transitions() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     // Initially active
     assert!(tx.is_active());
@@ -230,12 +216,7 @@ fn test_transaction_state_transitions() {
 /// Test transaction operations after commit fail
 #[test]
 fn test_operations_after_commit_fail() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -250,12 +231,7 @@ fn test_operations_after_commit_fail() {
 /// Test transaction with multiple tables
 #[test]
 fn test_transaction_multiple_tables() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table1 = ObjectId::from(1);
     let table2 = ObjectId::from(2);
@@ -294,11 +270,10 @@ fn test_transaction_isolation_levels() {
     ];
     
     for (i, level) in levels.iter().enumerate() {
-        let tx = Transaction::new(
+        let tx = create_test_transaction(
             TransactionId::from(i as u64),
             LogSequenceNumber::from(100),
             *level,
-            create_conflict_detector(),
         );
         assert_eq!(tx.isolation_level(), *level);
     }
@@ -307,12 +282,7 @@ fn test_transaction_isolation_levels() {
 /// Test transaction read tracking for serializable isolation
 #[test]
 fn test_transaction_read_tracking_serializable() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::Serializable,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::Serializable);
     
     let table_id = ObjectId::from(1);
     
@@ -328,12 +298,7 @@ fn test_transaction_read_tracking_serializable() {
 /// Test transaction read tracking not done for lower isolation levels
 #[test]
 fn test_transaction_read_tracking_read_committed() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     
@@ -348,12 +313,7 @@ fn test_transaction_read_tracking_read_committed() {
 /// Test transaction with large write set
 #[test]
 fn test_transaction_large_write_set() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     
@@ -382,12 +342,7 @@ fn test_transaction_large_write_set() {
 /// Test transaction with mixed operations
 #[test]
 fn test_transaction_mixed_operations() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     
@@ -417,12 +372,7 @@ fn test_transaction_mixed_operations() {
 /// Test transaction prepare phase
 #[test]
 fn test_transaction_prepare_phase() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -437,12 +387,7 @@ fn test_transaction_prepare_phase() {
 /// Test transaction cannot prepare twice
 #[test]
 fn test_transaction_cannot_prepare_twice() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     // First prepare succeeds
     assert!(tx.prepare().is_ok());
@@ -454,12 +399,7 @@ fn test_transaction_cannot_prepare_twice() {
 /// Test transaction with empty write set can commit
 #[test]
 fn test_transaction_empty_write_set_commit() {
-    let tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     // Commit with no writes should succeed
     assert!(tx.commit().is_ok());
@@ -468,12 +408,7 @@ fn test_transaction_empty_write_set_commit() {
 /// Test transaction with empty write set can rollback
 #[test]
 fn test_transaction_empty_write_set_rollback() {
-    let tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     // Rollback with no writes should succeed
     assert!(tx.rollback().is_ok());
@@ -482,12 +417,7 @@ fn test_transaction_empty_write_set_rollback() {
 /// Test transaction record_write API
 #[test]
 fn test_transaction_record_write() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     
@@ -505,12 +435,7 @@ fn test_transaction_record_write() {
 /// Test transaction record_delete API
 #[test]
 fn test_transaction_record_delete() {
-    let mut tx = Transaction::new(
-        TransactionId::from(1),
-        LogSequenceNumber::from(100),
-        IsolationLevel::ReadCommitted,
-        create_conflict_detector(),
-    );
+    let mut tx = create_test_transaction(TransactionId::from(1), LogSequenceNumber::from(100), IsolationLevel::ReadCommitted);
     
     let table_id = ObjectId::from(1);
     

@@ -15,6 +15,7 @@
 //
 
 use crate::pager::PagerError;
+use crate::types::ValueRef;
 use crate::wal::WalError;
 
 /// Table Result Type
@@ -244,6 +245,30 @@ pub enum TableError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Value reference not found (for externally stored values)
+    #[error("Value reference not found: {value_ref:?}")]
+    ValueRefNotFound { value_ref: ValueRef },
+
+    /// Invalid value reference
+    #[error("Invalid value reference: {details}")]
+    InvalidValueRef { details: String },
+
+    /// Stale value reference (checksum mismatch)
+    #[error("Stale value reference {value_ref:?}: checksum mismatch (expected: {expected:#x}, found: {found:#x})")]
+    StaleValueRef {
+        value_ref: ValueRef,
+        expected: u32,
+        found: u32,
+    },
+
+    /// Value too large for storage
+    #[error("Value too large: {size} bytes (max: {max}) for reference {value_ref:?}")]
+    ValueTooLarge {
+        value_ref: ValueRef,
+        size: u64,
+        max: u64,
+    },
+
     /// Other Table Error
     #[error("Table error: {0}")]
     Other(String),
@@ -446,6 +471,36 @@ impl TableError {
         Self::SerializationError {
             data_type: data_type.into(),
             details: details.into(),
+        }
+    }
+
+    /// Create a ValueRefNotFound error
+    pub fn value_ref_not_found(value_ref: ValueRef) -> Self {
+        Self::ValueRefNotFound { value_ref }
+    }
+
+    /// Create an InvalidValueRef error
+    pub fn invalid_value_ref(details: impl Into<String>) -> Self {
+        Self::InvalidValueRef {
+            details: details.into(),
+        }
+    }
+
+    /// Create a StaleValueRef error
+    pub fn stale_value_ref(value_ref: ValueRef, expected: u32, found: u32) -> Self {
+        Self::StaleValueRef {
+            value_ref,
+            expected,
+            found,
+        }
+    }
+
+    /// Create a ValueTooLarge error
+    pub fn value_too_large(value_ref: ValueRef, size: u64, max: u64) -> Self {
+        Self::ValueTooLarge {
+            value_ref,
+            size,
+            max,
         }
     }
 }

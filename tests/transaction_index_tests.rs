@@ -19,20 +19,79 @@
 //! These tests verify that the transaction layer correctly handles both tables
 //! and indexes uniformly using ObjectId, without automatic index maintenance.
 
+use nanokv::pager::{Pager, PagerConfig};
+use nanokv::table_registry::TableEngineRegistry;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::{IsolationLevel, ObjectId};
-use nanokv::wal::LogSequenceNumber;
-use std::sync::{Arc, Mutex};
+use nanokv::vfs::MemoryFileSystem;
+use nanokv::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
+use std::sync::{Arc, Mutex, RwLock};
+
+/// Test context that holds shared resources
+struct TestContext {
+    fs: MemoryFileSystem,
+    conflict_detector: Arc<Mutex<ConflictDetector>>,
+    wal: Arc<WalWriter<MemoryFileSystem>>,
+    engine_registry: Arc<TableEngineRegistry<MemoryFileSystem>>,
+}
+
+impl TestContext {
+    fn new() -> Self {
+        let fs = MemoryFileSystem::new();
+        let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
+        let wal = Arc::new(
+            WalWriter::create(&fs, "test.wal", WalWriterConfig::default()).unwrap()
+        );
+        let pager = Arc::new(
+            Pager::create(&fs, "test.db", PagerConfig::default()).unwrap()
+        );
+        let engine_registry = Arc::new(TableEngineRegistry::new(pager));
+        
+        Self {
+            fs,
+            conflict_detector,
+            wal,
+            engine_registry,
+        }
+    }
+    
+    fn create_transaction(
+        &self,
+        txn_id: TransactionId,
+        snapshot_lsn: LogSequenceNumber,
+        isolation: IsolationLevel,
+    ) -> Transaction<MemoryFileSystem> {
+        let current_lsn = Arc::new(RwLock::new(snapshot_lsn));
+        
+        Transaction::new(
+            txn_id,
+            snapshot_lsn,
+            isolation,
+            Arc::clone(&self.conflict_detector),
+            Arc::clone(&self.wal),
+            Arc::clone(&self.engine_registry),
+            current_lsn,
+        )
+    }
+}
+
+/// Helper to create test dependencies for Transaction (for simple tests)
+fn create_test_transaction(
+    txn_id: TransactionId,
+    snapshot_lsn: LogSequenceNumber,
+    isolation: IsolationLevel,
+) -> Transaction<MemoryFileSystem> {
+    let ctx = TestContext::new();
+    ctx.create_transaction(txn_id, snapshot_lsn, isolation)
+}
 
 #[test]
 fn test_index_put_and_get() {
     // Create a transaction
-    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    let mut txn = Transaction::new(
+    let mut txn = create_test_transaction(
         TransactionId::from(1),
         LogSequenceNumber::from(100),
         IsolationLevel::ReadCommitted,
-        conflict_detector,
     );
 
     // Create an index ObjectId (indexes are just specialty tables)
@@ -52,12 +111,10 @@ fn test_index_put_and_get() {
 #[test]
 fn test_index_delete() {
     // Create a transaction
-    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    let mut txn = Transaction::new(
+    let mut txn = create_test_transaction(
         TransactionId::from(2),
         LogSequenceNumber::from(200),
         IsolationLevel::ReadCommitted,
-        conflict_detector,
     );
 
     // Create an index ObjectId
@@ -82,12 +139,10 @@ fn test_index_delete() {
 #[test]
 fn test_index_and_table_operations_independent() {
     // Create a transaction
-    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    let mut txn = Transaction::new(
+    let mut txn = create_test_transaction(
         TransactionId::from(3),
         LogSequenceNumber::from(300),
         IsolationLevel::ReadCommitted,
-        conflict_detector,
     );
 
     // Create table and index ObjectIds (both use same type now)
@@ -120,22 +175,20 @@ fn test_index_and_table_operations_independent() {
 
 #[test]
 fn test_index_write_conflict_detection() {
-    // Create shared conflict detector
-    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-
+    // Create shared context so transactions share conflict detector
+    let ctx = TestContext::new();
+    
     // Create two transactions
-    let mut txn1 = Transaction::new(
+    let mut txn1 = ctx.create_transaction(
         TransactionId::from(4),
         LogSequenceNumber::from(400),
         IsolationLevel::ReadCommitted,
-        conflict_detector.clone(),
     );
 
-    let mut txn2 = Transaction::new(
+    let mut txn2 = ctx.create_transaction(
         TransactionId::from(5),
         LogSequenceNumber::from(400),
         IsolationLevel::ReadCommitted,
-        conflict_detector.clone(),
     );
 
     // Create an index ObjectId
@@ -153,12 +206,10 @@ fn test_index_write_conflict_detection() {
 #[test]
 fn test_index_operations_in_write_set() {
     // Create a transaction
-    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    let mut txn = Transaction::new(
+    let mut txn = create_test_transaction(
         TransactionId::from(6),
         LogSequenceNumber::from(600),
         IsolationLevel::ReadCommitted,
-        conflict_detector,
     );
 
     // Create table and index ObjectIds
@@ -181,12 +232,10 @@ fn test_index_operations_in_write_set() {
 #[test]
 fn test_no_automatic_index_maintenance() {
     // This test documents that index maintenance is NOT automatic
-    let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    let mut txn = Transaction::new(
+    let mut txn = create_test_transaction(
         TransactionId::from(7),
         LogSequenceNumber::from(700),
         IsolationLevel::ReadCommitted,
-        conflict_detector,
     );
 
     let table_id = ObjectId::from(300);

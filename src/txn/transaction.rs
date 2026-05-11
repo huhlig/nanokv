@@ -199,6 +199,9 @@ impl<FS: FileSystem> Transaction<FS> {
         engine_registry: Arc<TableEngineRegistry<FS>>,
         current_lsn: Arc<RwLock<LogSequenceNumber>>,
     ) -> Self {
+        // Write BEGIN record to WAL to register the transaction
+        let _ = wal.write_begin(txn_id);
+        
         Self {
             txn_id,
             snapshot_lsn,

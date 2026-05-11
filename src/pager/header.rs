@@ -283,8 +283,9 @@ mod tests {
         assert_eq!(deserialized.page_size, PageSize::Size4KB);
         assert_eq!(deserialized.compression, CompressionType::None);
         assert_eq!(deserialized.encryption, EncryptionType::None);
-        assert_eq!(deserialized.total_pages, 2);
+        assert_eq!(deserialized.total_pages, 3); // Header (0) + Superblock (1) + Catalog (2)
         assert_eq!(deserialized.superblock_page_id, 1);
+        assert_eq!(deserialized.catalog_page_id, 2);
     }
 
     #[test]

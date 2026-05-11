@@ -14,7 +14,6 @@
 // limitations under the License.
 //
 
-pub mod blob;
 pub mod error;
 pub mod error_observability;
 pub mod kvdb;

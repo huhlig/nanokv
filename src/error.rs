@@ -20,7 +20,6 @@
 //! error types, enabling seamless error propagation across layer boundaries
 //! without manual `map_err` conversions.
 
-use crate::blob::BlobError;
 use crate::error_observability::{
     ErrorClassification, ErrorObservation, ErrorSeverity, ErrorTelemetry, record_error,
 };
@@ -75,10 +74,6 @@ pub enum NanoKvError {
     #[error("Cursor error: {0}")]
     Cursor(#[from] CursorError),
 
-    /// Blob storage subsystem error
-    #[error("Blob error: {0}")]
-    Blob(#[from] BlobError),
-
     /// Virtual file system error
     #[error("VFS error: {0}")]
     Vfs(#[from] FileSystemError),
@@ -121,11 +116,6 @@ impl NanoKvError {
     /// Check if this error is a cursor error
     pub fn is_cursor(&self) -> bool {
         matches!(self, NanoKvError::Cursor(_))
-    }
-
-    /// Check if this error is a blob error
-    pub fn is_blob(&self) -> bool {
-        matches!(self, NanoKvError::Blob(_))
     }
 
     /// Check if this error is a VFS error
@@ -178,14 +168,6 @@ impl NanoKvError {
         }
     }
 
-    /// Get the underlying blob error, if any
-    pub fn as_blob(&self) -> Option<&BlobError> {
-        match self {
-            NanoKvError::Blob(e) => Some(e),
-            _ => None,
-        }
-    }
-
     /// Get the underlying VFS error, if any
     pub fn as_vfs(&self) -> Option<&FileSystemError> {
         match self {
@@ -226,7 +208,6 @@ impl ErrorTelemetry for NanoKvError {
             NanoKvError::Table(err) => err.classification(),
             NanoKvError::Transaction(err) => err.classification(),
             NanoKvError::Cursor(err) => err.classification(),
-            NanoKvError::Blob(err) => err.classification(),
             NanoKvError::Vfs(err) => err.classification(),
             NanoKvError::Io(_) => ErrorClassification {
                 subsystem: "io",
@@ -265,7 +246,6 @@ mod tests {
         assert!(!err.is_table());
         assert!(!err.is_transaction());
         assert!(!err.is_cursor());
-        assert!(!err.is_blob());
         assert!(!err.is_vfs());
         assert!(!err.is_io());
     }

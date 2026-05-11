@@ -152,6 +152,53 @@ impl AsRef<[u8]> for ValueBuf {
     }
 }
 
+/// Reference to a value stored externally (e.g., in linked pages).
+///
+/// This is used by tables that store large values outside of the main
+/// table structure. The reference points to the first page of a potentially
+/// multi-page value chain.
+///
+/// The checksum field enables detection of stale references (e.g., after a value
+/// is deleted and its pages are reused for other data).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ValueRef {
+    /// First page ID of the value
+    pub first_page: u32,
+    /// Total size of the value in bytes
+    pub size: u64,
+    /// Checksum for stale reference detection
+    ///
+    /// When a value is deleted and its pages are reused, the checksum will
+    /// no longer match, allowing detection of use-after-free bugs.
+    pub checksum: u32,
+}
+
+impl ValueRef {
+    /// Create a new value reference.
+    pub fn new(first_page: u32, size: u64, checksum: u32) -> Self {
+        Self {
+            first_page,
+            size,
+            checksum,
+        }
+    }
+
+    /// Get the first page ID.
+    pub fn first_page(&self) -> u32 {
+        self.first_page
+    }
+
+    /// Get the total size in bytes.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Get the checksum.
+    pub fn checksum(&self) -> u32 {
+        self.checksum
+    }
+}
+
 /// A key-value entry returned by owned iterators or batch operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {

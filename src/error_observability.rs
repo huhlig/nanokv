@@ -20,7 +20,6 @@
 //! errors so callers can emit consistent metrics and structured logs without
 //! duplicating subsystem-specific logic.
 
-use crate::blob::BlobError;
 use crate::pager::PagerError;
 use crate::table::TableError;
 use crate::txn::{CursorError, TransactionError};
@@ -179,6 +178,10 @@ impl ErrorTelemetry for TableError {
             TableError::Pager(_) => classification("table", "dependency", "pager_error", ErrorSeverity::Error),
             TableError::Wal(_) => classification("table", "dependency", "wal_error", ErrorSeverity::Error),
             TableError::Io(_) => classification("table", "io", "io_error", ErrorSeverity::Error),
+            TableError::ValueRefNotFound { .. } => classification("table", "not_found", "value_ref_not_found", ErrorSeverity::Warning),
+            TableError::InvalidValueRef { .. } => classification("table", "validation", "invalid_value_ref", ErrorSeverity::Warning),
+            TableError::StaleValueRef { .. } => classification("table", "corruption", "stale_value_ref", ErrorSeverity::Error),
+            TableError::ValueTooLarge { .. } => classification("table", "resource_exhaustion", "value_too_large", ErrorSeverity::Error),
             TableError::Other(_) => classification("table", "internal", "other", ErrorSeverity::Error),
         }
     }
@@ -205,21 +208,6 @@ impl ErrorTelemetry for CursorError {
             CursorError::InvalidPosition { .. } => classification("cursor", "validation", "invalid_position", ErrorSeverity::Warning),
             CursorError::Transaction(_) => classification("cursor", "dependency", "transaction_error", ErrorSeverity::Error),
             CursorError::Other(_) => classification("cursor", "internal", "other", ErrorSeverity::Error),
-        }
-    }
-}
-
-impl ErrorTelemetry for BlobError {
-    fn classification(&self) -> ErrorClassification {
-        match self {
-            BlobError::NotFound { .. } => classification("blob", "not_found", "not_found", ErrorSeverity::Warning),
-            BlobError::InvalidReference { .. } => classification("blob", "validation", "invalid_reference", ErrorSeverity::Warning),
-            BlobError::StaleReference { .. } => classification("blob", "consistency", "stale_reference", ErrorSeverity::Error),
-            BlobError::TooLarge { .. } => classification("blob", "resource_exhaustion", "too_large", ErrorSeverity::Warning),
-            BlobError::Io(_) => classification("blob", "io", "io_error", ErrorSeverity::Error),
-            BlobError::Pager { .. } => classification("blob", "dependency", "pager_error", ErrorSeverity::Error),
-            BlobError::Corrupted { .. } => classification("blob", "corruption", "corrupted", ErrorSeverity::Critical),
-            BlobError::Internal(_) => classification("blob", "internal", "internal", ErrorSeverity::Critical),
         }
     }
 }
@@ -317,10 +305,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blob::BlobRef;
     use crate::error::NanoKvError;
     use crate::pager::{CompressionType, EncryptionType, PageId};
-    use crate::types::ObjectId;
+    use crate::types::{ObjectId, ValueRef};
     use crate::table::TableError;
     use crate::txn::TransactionId;
     use crate::wal::LogSequenceNumber;
@@ -394,19 +381,12 @@ mod tests {
     #[test]
     fn classifies_remaining_subsystems() {
         let vfs = FileSystemError::path_missing("missing.db");
-        let blob = BlobError::corrupted(
-            BlobRef::new(PageId::from(11), 128, 0x1234),
-            "page 11",
-            "checksum",
-            "mismatch",
-        );
         let cursor = CursorError::invalid_position("before first");
         let pager = PagerError::compression_error(PageId::from(1), CompressionType::Lz4, "failed");
         let pager_encryption =
             PagerError::encryption_error(PageId::from(2), EncryptionType::Aes256Gcm, "failed");
 
         assert_eq!(vfs.classification().subsystem, "vfs");
-        assert_eq!(blob.classification().subsystem, "blob");
         assert_eq!(cursor.classification().subsystem, "cursor");
         assert_eq!(pager.classification().category, "encoding");
         assert_eq!(pager_encryption.classification().category, "encryption");
