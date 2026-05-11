@@ -16,10 +16,11 @@
 
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{IsolationLevel, ObjectId, ScanBounds, ValueBuf};
-use crate::wal::LogSequenceNumber;
+use crate::wal::{LogSequenceNumber, WalWriter, WriteOpType};
+use crate::vfs::FileSystem;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Transaction ID type
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
@@ -156,7 +157,7 @@ impl TransactionState {
 }
 
 /// Transaction struct for managing database transactions.
-pub struct Transaction {
+pub struct Transaction<FS: FileSystem> {
     // Core transaction identity and isolation
     txn_id: TransactionId,
     snapshot_lsn: LogSequenceNumber,
@@ -174,15 +175,27 @@ pub struct Transaction {
 
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
+    
+    // WAL writer for durability
+    wal: Arc<WalWriter<FS>>,
+    
+    // Table storage for reading committed data
+    table_storage: Arc<RwLock<HashMap<ObjectId, HashMap<Vec<u8>, Vec<u8>>>>>,
+    
+    // Current LSN (shared with Database)
+    current_lsn: Arc<RwLock<LogSequenceNumber>>,
 }
 
-impl Transaction {
-    /// Create a new transaction with the given ID, snapshot LSN, isolation level, and conflict detector.
+impl<FS: FileSystem> Transaction<FS> {
+    /// Create a new transaction with the given ID, snapshot LSN, isolation level, and shared resources.
     pub fn new(
         txn_id: TransactionId,
         snapshot_lsn: LogSequenceNumber,
         isolation: IsolationLevel,
         conflict_detector: Arc<Mutex<ConflictDetector>>,
+        wal: Arc<WalWriter<FS>>,
+        table_storage: Arc<RwLock<HashMap<ObjectId, HashMap<Vec<u8>, Vec<u8>>>>>,
+        current_lsn: Arc<RwLock<LogSequenceNumber>>,
     ) -> Self {
         Self {
             txn_id,
@@ -192,6 +205,9 @@ impl Transaction {
             read_set: HashSet::new(),
             write_set: HashMap::new(),
             conflict_detector,
+            wal,
+            table_storage,
+            current_lsn,
         }
     }
 
@@ -259,21 +275,16 @@ impl Transaction {
     /// Get a value from an object (table or index).
     ///
     /// This method first checks the transaction's write set for uncommitted changes,
-    /// then would delegate to the underlying storage engine for committed data.
+    /// then reads from the underlying storage engine for committed data.
     ///
     /// Both tables and indexes are treated uniformly using ObjectId.
-    ///
-    /// # Implementation Note
-    ///
-    /// Currently returns values from the write set only. Full implementation requires
-    /// integration with storage engines to read committed data at the snapshot LSN.
     pub fn get(&self, object: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
                 self.txn_id,
                 self.state.as_str(),
-                "put",
+                "get",
             ));
         }
 
@@ -286,26 +297,65 @@ impl Transaction {
             return Ok(value_opt.as_ref().map(|v| ValueBuf(v.clone())));
         }
 
-        // Record read for serializable isolation
-        if self.isolation == IsolationLevel::Serializable {
-            // Note: We cast away const here because record_read needs &mut self
-            // In a full implementation, this would use interior mutability (RefCell/Mutex)
-            // For now, we skip recording reads in get() - they should be recorded by the caller
+        // Read from committed storage
+        let storage = self.table_storage.read().unwrap();
+        if let Some(table) = storage.get(&object_id) {
+            if let Some(value) = table.get(key) {
+                return Ok(Some(ValueBuf(value.clone())));
+            }
         }
 
-        // TODO: Delegate to table engine to read committed data at snapshot_lsn
-        // For now, return None to indicate key not found in write set
+        // Key not found
         Ok(None)
     }
 
     /// Put a key-value pair into an object (table or index).
     ///
-    /// Records the write in the transaction's write set. The change is not visible
+    /// Records the write in the transaction's write set and WAL. The change is not visible
     /// to other transactions until commit.
     ///
     /// For indexes, the caller is responsible for maintaining consistency with
     /// the parent table. The transaction layer does not automatically update indexes.
     pub fn put(&mut self, object: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+        // Check if transaction is still active
+        if !self.is_active() {
+            return Err(TransactionError::invalid_state(
+                self.txn_id,
+                self.state.as_str(),
+                "put",
+            ));
+        }
+
+        let object_id = object;
+
+        // Check for write-write conflicts and acquire lock
+        let mut detector = self.conflict_detector.lock().unwrap();
+        detector.check_write_conflict(object_id, key, self.txn_id)?;
+        detector.acquire_write_lock(object_id, key.to_vec(), self.txn_id);
+        drop(detector);
+
+        // Write to WAL
+        self.wal.write_operation(
+            self.txn_id,
+            object_id,
+            WriteOpType::Put,
+            key.to_vec(),
+            value.to_vec(),
+        ).map_err(|e| TransactionError::Other(format!("WAL write failed: {}", e)))?;
+
+        // Record the write in the write set
+        self.record_write(object_id, key.to_vec(), value.to_vec());
+        Ok(())
+    }
+
+    /// Delete a key from an object (table or index).
+    ///
+    /// Records the deletion in the transaction's write set and WAL. Returns true if the key
+    /// existed (either in the write set or in the underlying storage).
+    ///
+    /// For indexes, the caller is responsible for maintaining consistency with
+    /// the parent table.
+    pub fn delete(&mut self, object: ObjectId, key: &[u8]) -> TransactionResult<bool> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -323,46 +373,28 @@ impl Transaction {
         detector.acquire_write_lock(object_id, key.to_vec(), self.txn_id);
         drop(detector);
 
-        // Record the write in the write set
-        self.record_write(object_id, key.to_vec(), value.to_vec());
-        Ok(())
-    }
-
-    /// Delete a key from an object (table or index).
-    ///
-    /// Records the deletion in the transaction's write set. Returns true if the key
-    /// existed (either in the write set or would exist in the underlying storage).
-    ///
-    /// For indexes, the caller is responsible for maintaining consistency with
-    /// the parent table.
-    pub fn delete(&mut self, object: ObjectId, key: &[u8]) -> TransactionResult<bool> {
-        // Check if transaction is still active
-        if !self.is_active() {
-            return Err(TransactionError::invalid_state(
-                self.txn_id,
-                self.state.as_str(),
-                "get",
-            ));
-        }
-
-        let object_id = object;
-
-        // Check for write-write conflicts and acquire lock
-        let mut detector = self.conflict_detector.lock().unwrap();
-        detector.check_write_conflict(object_id, key, self.txn_id)?;
-        detector.acquire_write_lock(object_id, key.to_vec(), self.txn_id);
-        drop(detector);
-
         let write_key = (object_id, key.to_vec());
         
-        // Check if key exists in write set
-        let existed = self.write_set.contains_key(&write_key);
+        // Check if key exists in write set or storage
+        let existed = self.write_set.contains_key(&write_key) || {
+            let storage = self.table_storage.read().unwrap();
+            storage.get(&object_id)
+                .map(|table| table.contains_key(key))
+                .unwrap_or(false)
+        };
+        
+        // Write to WAL
+        self.wal.write_operation(
+            self.txn_id,
+            object_id,
+            WriteOpType::Delete,
+            key.to_vec(),
+            vec![],
+        ).map_err(|e| TransactionError::Other(format!("WAL write failed: {}", e)))?;
         
         // Record the deletion
         self.record_delete(object_id, key.to_vec());
         
-        // TODO: In full implementation, also check if key exists in underlying table
-        // For now, return true if it was in the write set
         Ok(existed)
     }
 
@@ -372,7 +404,7 @@ impl Transaction {
     ///
     /// Currently not implemented. Full implementation requires:
     /// 1. Scanning the object at snapshot_lsn to find matching keys
-    /// 2. Recording each deletion in the write set
+    /// 2. Recording each deletion in the write set and WAL
     /// 3. Handling the interaction between range bounds and existing writes
     pub fn range_delete(&mut self, object: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
@@ -380,14 +412,14 @@ impl Transaction {
             return Err(TransactionError::invalid_state(
                 self.txn_id,
                 self.state.as_str(),
-                "scan",
+                "range_delete",
             ));
         }
 
         // TODO: Implement range delete
         // This requires:
         // 1. Access to storage engine to scan for keys in range
-        // 2. Recording each deletion in write set
+        // 2. Recording each deletion in write set and WAL
         // 3. Counting deleted keys
         let _ = (object, bounds);
         Err(TransactionError::Other(
@@ -397,14 +429,7 @@ impl Transaction {
 
     /// Commit the transaction.
     ///
-    /// Transitions to Committed state and returns commit information.
-    ///
-    /// # Implementation Note
-    ///
-    /// Currently validates state, performs conflict detection, and releases locks.
-    /// Full implementation requires:
-    /// 1. Writing changes to WAL
-    /// 2. Applying write set to table engines
+    /// Writes commit record to WAL, applies changes to storage, and releases locks.
     pub fn commit(mut self) -> TransactionResult<CommitInfo> {
         // Validate state - must be Active or Preparing
         if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
@@ -421,30 +446,50 @@ impl Transaction {
             detector.check_read_write_conflicts(&self.read_set, self.txn_id)?;
         }
 
+        // Write COMMIT record to WAL
+        let commit_lsn = self.wal.write_commit(self.txn_id)
+            .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?;
+
+        // Apply write set to storage
+        {
+            let mut storage = self.table_storage.write().unwrap();
+            for ((object_id, key), value_opt) in &self.write_set {
+                let table = storage.entry(*object_id).or_insert_with(HashMap::new);
+                match value_opt {
+                    Some(value) => {
+                        table.insert(key.clone(), value.clone());
+                    }
+                    None => {
+                        table.remove(key);
+                    }
+                }
+            }
+        }
+
+        // Update current LSN
+        {
+            let mut current_lsn = self.current_lsn.write().unwrap();
+            *current_lsn = commit_lsn;
+        }
+
         // Transition to Committed state
         self.state = TransactionState::Committed;
-
-        // TODO: Full implementation needs to:
-        // 1. Write commit record to WAL
-        // 2. Apply write_set to table engines
         
         // Release all locks held by this transaction
         let mut detector = self.conflict_detector.lock().unwrap();
         detector.release_locks(self.txn_id);
         drop(detector);
 
-        // For now, return mock commit info
-        // In real implementation, commit_lsn would come from WAL
         Ok(CommitInfo {
             tx_id: self.txn_id,
-            commit_lsn: self.snapshot_lsn, // Mock: use snapshot LSN
-            durable_lsn: None, // Not yet durable
+            commit_lsn,
+            durable_lsn: Some(commit_lsn), // WAL is synced, so it's durable
         })
     }
 
     /// Rollback the transaction.
     ///
-    /// Transitions to Aborted state and discards all changes.
+    /// Writes rollback record to WAL, discards all changes, and releases locks.
     pub fn rollback(mut self) -> TransactionResult<()> {
         // Can rollback from Active or Preparing state
         if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
@@ -455,6 +500,10 @@ impl Transaction {
             ));
         }
 
+        // Write ROLLBACK record to WAL
+        self.wal.write_rollback(self.txn_id)
+            .map_err(|e| TransactionError::Other(format!("WAL rollback failed: {}", e)))?;
+
         // Transition to Aborted state
         self.state = TransactionState::Aborted;
 
@@ -464,15 +513,12 @@ impl Transaction {
         drop(detector);
 
         // Write set is automatically dropped when self is consumed
-        // TODO: In full implementation, also need to:
-        // 1. Write abort record to WAL (optional, for diagnostics)
-        
         Ok(())
     }
 }
 
 /// Implement the TransactionOps trait for Transaction.
-impl TransactionOps for Transaction {
+impl<FS: FileSystem> TransactionOps for Transaction<FS> {
     fn id(&self) -> TransactionId {
         self.txn_id
     }

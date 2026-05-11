@@ -25,7 +25,8 @@ use crate::table::{TableInfo, TableOptions, TableKind, IndexKind, IndexField, In
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::ObjectId;
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
-use crate::wal::LogSequenceNumber;
+use crate::vfs::FileSystem;
+use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig, WriteOpType};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -35,7 +36,7 @@ use std::sync::{Arc, Mutex, RwLock};
 /// and registered table/index engines. ACID semantics should be coordinated at
 /// this layer rather than by independently stacking transactional wrappers around
 /// individual tables.
-pub struct Database {
+pub struct Database<FS: FileSystem> {
     // Transaction management
     /// Shared conflict detector for coordinating transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
@@ -51,23 +52,54 @@ pub struct Database {
     /// Both regular tables and indexes are stored here
     table_catalog: Arc<RwLock<HashMap<String, TableInfo>>>,
     
-    // Storage layer (to be implemented)
-    // TODO: Add fields for:
-    // - WAL writer/reader
-    // - Pager for page-level storage
-    // - Table engines registry
-    // - Snapshot manager
+    // Storage layer
+    /// Write-ahead log for durability
+    wal: Arc<WalWriter<FS>>,
+    
+    /// Table engine storage (ObjectId -> in-memory representation)
+    /// In a full implementation, this would be a registry of different engine types
+    /// For now, we use a simple HashMap to store table data
+    table_storage: Arc<RwLock<HashMap<ObjectId, HashMap<Vec<u8>, Vec<u8>>>>>,
 }
 
-impl Database {
-    /// Create a new database instance.
-    pub fn new() -> Self {
-        Self {
+impl<FS: FileSystem> Database<FS> {
+    /// Create a new database instance with the given filesystem and WAL path.
+    pub fn new(fs: &FS, wal_path: &str) -> Result<Self, DatabaseError> {
+        let wal_config = WalWriterConfig::default();
+        let wal = WalWriter::create(fs, wal_path, wal_config)
+            .map_err(|e| DatabaseError {
+                message: format!("Failed to create WAL: {}", e),
+            })?;
+        
+        Ok(Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(Mutex::new(1)),
             current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
-        }
+            wal: Arc::new(wal),
+            table_storage: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+    
+    /// Open an existing database instance.
+    pub fn open(fs: &FS, wal_path: &str) -> Result<Self, DatabaseError> {
+        let wal_config = WalWriterConfig::default();
+        let wal = WalWriter::open(fs, wal_path, wal_config)
+            .map_err(|e| DatabaseError {
+                message: format!("Failed to open WAL: {}", e),
+            })?;
+        
+        // Get current LSN from WAL
+        let current_lsn = wal.current_lsn();
+        
+        Ok(Self {
+            conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
+            next_txn_id: Arc::new(Mutex::new(1)),
+            current_lsn: Arc::new(RwLock::new(current_lsn)),
+            table_catalog: Arc::new(RwLock::new(HashMap::new())),
+            wal: Arc::new(wal),
+            table_storage: Arc::new(RwLock::new(HashMap::new())),
+        })
     }
 
     /// Allocate a new transaction ID.
@@ -79,27 +111,47 @@ impl Database {
     }
 
     /// Begin a read-only transaction using the latest stable snapshot.
-    pub fn begin_read(&self) -> Result<Transaction, DatabaseError> {
+    pub fn begin_read(&self) -> Result<Transaction<FS>, DatabaseError> {
         let txn_id = self.allocate_txn_id();
         let snapshot_lsn = *self.current_lsn.read().unwrap();
+        
+        // Write BEGIN record to WAL
+        self.wal.write_begin(txn_id)
+            .map_err(|e| DatabaseError {
+                message: format!("Failed to write BEGIN to WAL: {}", e),
+            })?;
+        
         Ok(Transaction::new(
             txn_id,
             snapshot_lsn,
             IsolationLevel::ReadCommitted,
             Arc::clone(&self.conflict_detector),
+            Arc::clone(&self.wal),
+            Arc::clone(&self.table_storage),
+            Arc::clone(&self.current_lsn),
         ))
     }
 
     /// Begin a write transaction with the requested durability policy.
-    pub fn begin_write(&self, durability: Durability) -> Result<Transaction, DatabaseError> {
+    pub fn begin_write(&self, durability: Durability) -> Result<Transaction<FS>, DatabaseError> {
         let _ = durability; // TODO: Use durability policy
         let txn_id = self.allocate_txn_id();
         let snapshot_lsn = *self.current_lsn.read().unwrap();
+        
+        // Write BEGIN record to WAL
+        self.wal.write_begin(txn_id)
+            .map_err(|e| DatabaseError {
+                message: format!("Failed to write BEGIN to WAL: {}", e),
+            })?;
+        
         Ok(Transaction::new(
             txn_id,
             snapshot_lsn,
             IsolationLevel::ReadCommitted,
             Arc::clone(&self.conflict_detector),
+            Arc::clone(&self.wal),
+            Arc::clone(&self.table_storage),
+            Arc::clone(&self.current_lsn),
         ))
     }
 
@@ -108,14 +160,24 @@ impl Database {
     /// This is useful for reading from named snapshots or implementing
     /// time-travel queries. Returns an error if the LSN is not available
     /// (e.g., too old and already garbage collected).
-    pub fn begin_read_at(&self, lsn: LogSequenceNumber) -> Result<Transaction, DatabaseError> {
+    pub fn begin_read_at(&self, lsn: LogSequenceNumber) -> Result<Transaction<FS>, DatabaseError> {
         let txn_id = self.allocate_txn_id();
+        
+        // Write BEGIN record to WAL
+        self.wal.write_begin(txn_id)
+            .map_err(|e| DatabaseError {
+                message: format!("Failed to write BEGIN to WAL: {}", e),
+            })?;
+        
         // TODO: Validate that LSN is still available
         Ok(Transaction::new(
             txn_id,
             lsn,
             IsolationLevel::ReadCommitted,
             Arc::clone(&self.conflict_detector),
+            Arc::clone(&self.wal),
+            Arc::clone(&self.table_storage),
+            Arc::clone(&self.current_lsn),
         ))
     }
 
