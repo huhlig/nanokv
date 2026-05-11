@@ -86,7 +86,7 @@ use crate::txn::TransactionId;
 use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
-use metrics::{counter, gauge, histogram};
+use metrics::{counter, histogram};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, instrument};

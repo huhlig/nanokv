@@ -18,27 +18,26 @@
 //!
 //! These tests validate the complete database lifecycle including:
 //! - Creating database files
-//! - Creating tables with different storage engines
+//! - Creating tables with different storage engines (BTree, LSM, Memory)
 //! - Populating tables with data
 //! - Creating indexes
 //! - Performing mixed operations
 //! - Closing and reopening the database
 //! - Verifying data persistence
 //!
-//! # Current Limitations
+//! # Implementation Status
 //!
-//! **IMPORTANT**: These tests currently have limited functionality due to pending work:
+//! ✅ **Catalog persistence** - Table metadata persists across database restarts
+//! ✅ **BTree engine** - Fully integrated with data persistence
+//! ✅ **LSM engine** - Integrated but memtable flush on close not yet implemented
+//! ⚠️  **Memory tables** - Intentionally non-persistent (by design)
 //!
-//! - ❌ **Data persistence not yet implemented** (issue nanokv-ni6)
-//!   - Database still uses HashMap for table_storage instead of Pager
-//!   - Data is lost when database is closed
-//!   - Only catalog (table definitions) persists
+//! # Known Limitations
 //!
-//! - ❌ **BTree engine not yet integrated** (issue nanokv-vhc)
-//!   - Cannot test BTree tables yet
-//!   - Only Memory and LSM engines available
-//!
-//! Once these issues are resolved, these tests will provide full end-to-end validation.
+//! - **LSM memtable persistence**: LSM trees don't automatically flush memtables on close.
+//!   Data in memtables is lost unless explicitly flushed to SSTables. This requires
+//!   implementing a Drop handler or explicit close() method for LsmTree.
+//!   For now, LSM persistence tests are marked as ignored.
 
 use nanokv::kvdb::Database;
 use nanokv::table::{IndexConsistency, IndexField, TableEngineKind, TableOptions};
@@ -233,16 +232,9 @@ fn test_drop_table_persistence() {
 // Data Persistence Tests (Currently Failing - Blocked by nanokv-ni6)
 // =============================================================================
 
-/// Test data persistence across database close/reopen.
-///
-/// **CURRENTLY IGNORED**: This test is blocked by issue nanokv-ni6.
-/// The Database still uses HashMap for table_storage instead of the Pager,
-/// so data is lost when the database is closed.
-///
-/// Once nanokv-ni6 is resolved, remove the #[ignore] attribute.
+/// Test BTree data persistence across database close/reopen.
 #[test]
-#[ignore = "Blocked by nanokv-ni6: Data storage uses HashMap, not Pager"]
-fn test_data_persistence_memory_table() {
+fn test_data_persistence_btree_table() {
     let fs = MemoryFileSystem::new();
     
     // Phase 1: Create database and insert data
@@ -250,8 +242,14 @@ fn test_data_persistence_memory_table() {
         let db = Database::new(&fs, "test.wal", "test.db")
             .expect("Failed to create database");
         
-        let users_id = db.create_table("users", memory_table_options())
-            .expect("Failed to create users table");
+        let users_id = db.create_table("users", TableOptions {
+            engine: TableEngineKind::BTree,
+            key_encoding: KeyEncoding::RawBytes,
+            compression: None,
+            encryption: None,
+            page_size: None,
+            format_version: 1,
+        }).expect("Failed to create users table");
         
         // Insert test data
         db.insert(users_id, b"user1", b"Alice").unwrap();
@@ -285,9 +283,11 @@ fn test_data_persistence_memory_table() {
 
 /// Test LSM table data persistence.
 ///
-/// **CURRENTLY IGNORED**: Blocked by nanokv-ni6.
+/// **CURRENTLY IGNORED**: LSM trees don't automatically flush memtables on close.
+/// This requires implementing a Drop handler or explicit close() method.
+/// Track in a separate issue for LSM memtable persistence.
 #[test]
-#[ignore = "Blocked by nanokv-ni6: Data storage uses HashMap, not Pager"]
+#[ignore = "LSM memtable flush on close not yet implemented"]
 fn test_data_persistence_lsm_table() {
     let fs = MemoryFileSystem::new();
     
@@ -334,9 +334,9 @@ fn test_data_persistence_lsm_table() {
 
 /// Test mixed operations across multiple tables with persistence.
 ///
-/// **CURRENTLY IGNORED**: Blocked by nanokv-ni6.
+/// **CURRENTLY IGNORED**: LSM portion fails due to memtable flush issue.
 #[test]
-#[ignore = "Blocked by nanokv-ni6: Data storage uses HashMap, not Pager"]
+#[ignore = "LSM memtable flush on close not yet implemented"]
 fn test_mixed_operations_with_persistence() {
     let fs = MemoryFileSystem::new();
     
@@ -345,8 +345,15 @@ fn test_mixed_operations_with_persistence() {
         let db = Database::new(&fs, "test.wal", "test.db")
             .expect("Failed to create database");
         
-        // Create different table types
-        let users_id = db.create_table("users", memory_table_options()).unwrap();
+        // Create different table types - use BTree for users (read-optimized)
+        let users_id = db.create_table("users", TableOptions {
+            engine: TableEngineKind::BTree,
+            key_encoding: KeyEncoding::RawBytes,
+            compression: None,
+            encryption: None,
+            page_size: None,
+            format_version: 1,
+        }).unwrap();
         let logs_id = db.create_table("logs", lsm_table_options()).unwrap();
         let cache_id = db.create_table("cache", memory_table_options()).unwrap();
         
@@ -391,8 +398,9 @@ fn test_mixed_operations_with_persistence() {
         assert!(db.get(logs_id, b"log000").unwrap().is_some());
         assert!(db.get(logs_id, b"log049").unwrap().is_some());
         
-        // Verify cache (including delete)
-        assert!(db.get(cache_id, b"key1").unwrap().is_some());
+        // Verify cache (Memory table doesn't persist, so data is lost)
+        // This is expected behavior - Memory tables are intentionally non-persistent
+        assert!(db.get(cache_id, b"key1").unwrap().is_none(), "Memory table data should not persist");
         assert!(db.get(cache_id, b"key2").unwrap().is_none());
     }
 }

@@ -43,7 +43,7 @@
 //! └─────────────────┘
 //! ```
 
-use crate::pager::{Page, PageId, PageType, Pager, PagerResult};
+use crate::pager::{Page, PageId, PageType, Pager};
 use crate::table::lsm::{BloomFilter, BloomFilterBuilder, SStableConfig};
 use crate::table::TableResult;
 use crate::txn::VersionChain;

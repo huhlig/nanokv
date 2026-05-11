@@ -32,7 +32,7 @@ use crate::table::{
     VerificationReport, WriteBatch,
 };
 use crate::txn::TransactionId;
-use crate::types::{KeyBuf, ObjectId, ScanBounds, ValueBuf};
+use crate::types::{ObjectId, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::path::PathBuf;
 

@@ -126,12 +126,13 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
     }
 
     /// Create a new table engine instance.
+    /// Returns the engine instance and its root page ID (if applicable).
     pub fn create_engine(
         &self,
         table_id: ObjectId,
         name: String,
         options: &TableOptions,
-    ) -> Result<TableEngineInstance<FS>, RegistryError> {
+    ) -> Result<(TableEngineInstance<FS>, Option<PageId>), RegistryError> {
         match options.engine {
             TableEngineKind::BTree => {
                 // Create new BTree with allocated root page
@@ -141,7 +142,8 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                         details: format!("Failed to create BTree: {}", e),
                     }
                 })?;
-                Ok(TableEngineInstance::PagedBTree(Arc::new(btree)))
+                let root_page_id = btree.get_root_page_id();
+                Ok((TableEngineInstance::PagedBTree(Arc::new(btree)), Some(root_page_id)))
             }
             TableEngineKind::LsmTree => {
                 // Allocate root page for LSM manifest
@@ -166,12 +168,12 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     engine: options.engine,
                     details: format!("Failed to create LSM tree: {}", e),
                 })?;
-                Ok(TableEngineInstance::LsmTree(Arc::new(lsm)))
+                Ok((TableEngineInstance::LsmTree(Arc::new(lsm)), Some(root_page_id)))
             }
             TableEngineKind::Memory => {
-                // Create in-memory BTree
+                // Create in-memory BTree - no root page
                 let memory_btree = MemoryBTree::new(table_id, name);
-                Ok(TableEngineInstance::MemoryBTree(Arc::new(memory_btree)))
+                Ok((TableEngineInstance::MemoryBTree(Arc::new(memory_btree)), None))
             }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry (doesn't take FS generic)

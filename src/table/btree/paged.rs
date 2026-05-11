@@ -398,7 +398,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Get the current root page ID.
-    fn get_root_page_id(&self) -> PageId {
+    pub fn get_root_page_id(&self) -> PageId {
         *self.root_page_id.read().unwrap()
     }
 

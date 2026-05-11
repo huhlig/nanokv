@@ -861,7 +861,6 @@ impl<FS: FileSystem> Manifest<FS> {
         config: &crate::table::lsm::SStableConfig,
     ) -> TableResult<Version> {
         use crate::table::lsm::SStableReader;
-        use std::collections::HashMap;
 
         // Step 1: Scan all pages to find SSTable first pages
         let total_pages = pager.total_pages();

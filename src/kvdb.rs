@@ -269,6 +269,7 @@ impl<FS: FileSystem> Database<FS> {
     /// Recover the catalog from disk.
     ///
     /// Reads the catalog page and deserializes the table metadata.
+    /// Also reopens all storage engines for the recovered tables.
     fn recover_catalog(&self) -> Result<(), DatabaseError> {
         // Catalog page is always page 2 (page 0 = header, page 1 = superblock, page 2 = catalog)
         let catalog_page_id = PageId::from(2);
@@ -308,11 +309,48 @@ impl<FS: FileSystem> Database<FS> {
             )));
         }
         
-        // Populate catalog
+        // Populate catalog and reopen engines
         let mut catalog = self.table_catalog.write().unwrap();
         catalog.clear();
         
         for table_info in tables {
+            // Reopen the storage engine for this table if it has a root page
+            // Memory tables don't persist, so they start fresh
+            if let Some(root_location) = table_info.root {
+                let engine = self.engine_registry.open_engine(
+                    table_info.id,
+                    table_info.name.clone(),
+                    &table_info.options,
+                    root_location.page_id,
+                ).map_err(|e| DatabaseError::other(format!(
+                    "Failed to reopen storage engine for table '{}': {}",
+                    table_info.name, e
+                )))?;
+                
+                // Register the reopened engine
+                self.engine_registry.register(engine)
+                    .map_err(|e| DatabaseError::other(format!(
+                        "Failed to register storage engine for table '{}': {}",
+                        table_info.name, e
+                    )))?;
+            } else {
+                // Memory table or table without root - create fresh engine
+                let (engine, _root_page_id) = self.engine_registry.create_engine(
+                    table_info.id,
+                    table_info.name.clone(),
+                    &table_info.options,
+                ).map_err(|e| DatabaseError::other(format!(
+                    "Failed to create storage engine for table '{}': {}",
+                    table_info.name, e
+                )))?;
+                
+                self.engine_registry.register(engine)
+                    .map_err(|e| DatabaseError::other(format!(
+                        "Failed to register storage engine for table '{}': {}",
+                        table_info.name, e
+                    )))?;
+            }
+            
             catalog.insert(table_info.name.clone(), table_info);
         }
         
@@ -342,19 +380,25 @@ impl<FS: FileSystem> Database<FS> {
         let created_lsn = *self.current_lsn.read().unwrap();
         
         // Create the storage engine instance
-        let engine = self.engine_registry.create_engine(table_id, name.to_string(), &options)
+        let (engine, root_page_id) = self.engine_registry.create_engine(table_id, name.to_string(), &options)
             .map_err(|e| DatabaseError::other(format!("Failed to create storage engine: {}", e)))?;
         
         // Register the engine
         self.engine_registry.register(engine)
             .map_err(|e| DatabaseError::other(format!("Failed to register storage engine: {}", e)))?;
         
-        // Create table info
+        // Create table info with root page location
+        let root = root_page_id.map(|page_id| crate::pager::PhysicalLocation {
+            page_id,
+            offset: 0,
+            length: 0,
+        });
+        
         let table_info = TableInfo {
             id: table_id,
             name: name.to_string(),
             options,
-            root: None, // Root page is managed by the engine
+            root,
             created_lsn,
             index_metadata: None, // Regular table, not an index
         };
@@ -576,7 +620,7 @@ impl<FS: FileSystem> Database<FS> {
     /// The snapshot pins necessary pages/segments to enable consistent reads
     /// at the snapshot LSN. Snapshots must be explicitly released to free
     /// resources.
-    pub fn create_snapshot(&self, name: &str) -> Result<Snapshot, DatabaseError> {
+    pub fn create_snapshot(&self, _name: &str) -> Result<Snapshot, DatabaseError> {
         todo!("Create a named snapshot at the current LSN")
     }
 
@@ -588,7 +632,7 @@ impl<FS: FileSystem> Database<FS> {
     /// Release a snapshot, allowing its resources to be reclaimed.
     ///
     /// After releasing, the snapshot LSN may no longer be available for reads.
-    pub fn release_snapshot(&self, snapshot_id: SnapshotId) -> Result<(), DatabaseError> {
+    pub fn release_snapshot(&self, _snapshot_id: SnapshotId) -> Result<(), DatabaseError> {
         todo!("Release the specified snapshot and reclaim its resources")
     }
 
