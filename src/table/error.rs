@@ -192,6 +192,46 @@ pub enum TableError {
     #[error("Compaction thread panicked")]
     CompactionThreadPanic,
 
+    /// Invalid level in LSM tree
+    #[error("Invalid level {level}: max level is {max_level}")]
+    InvalidLevel {
+        level: u32,
+        max_level: u32,
+    },
+
+    /// SSTable ID already exists
+    #[error("SSTable ID {id} already exists in manifest")]
+    SStableIdExists {
+        id: String,
+    },
+
+    /// SSTable ID not found
+    #[error("SSTable ID {id} not found in manifest")]
+    SStableIdNotFound {
+        id: String,
+    },
+
+    /// Manifest operation error
+    #[error("Manifest operation failed: {operation} - {details}")]
+    ManifestError {
+        operation: String,
+        details: String,
+    },
+
+    /// Invalid operation state
+    #[error("Invalid operation state: {operation} - {reason}")]
+    InvalidOperationState {
+        operation: String,
+        reason: String,
+    },
+
+    /// Serialization error
+    #[error("Serialization failed for {data_type}: {details}")]
+    SerializationError {
+        data_type: String,
+        details: String,
+    },
+
     /// I/O error from pager
     #[error("Pager error: {0}")]
     Pager(#[from] PagerError),
@@ -367,6 +407,45 @@ impl TableError {
         Self::SnapshotNotFound {
             snapshot_id,
             context: context.into(),
+        }
+    }
+
+    /// Create an InvalidLevel error with context
+    pub fn invalid_level(level: u32, max_level: u32) -> Self {
+        Self::InvalidLevel { level, max_level }
+    }
+
+    /// Create an SStableIdExists error with context
+    pub fn sstable_id_exists(id: impl Into<String>) -> Self {
+        Self::SStableIdExists { id: id.into() }
+    }
+
+    /// Create an SStableIdNotFound error with context
+    pub fn sstable_id_not_found(id: impl Into<String>) -> Self {
+        Self::SStableIdNotFound { id: id.into() }
+    }
+
+    /// Create a ManifestError with context
+    pub fn manifest_error(operation: impl Into<String>, details: impl Into<String>) -> Self {
+        Self::ManifestError {
+            operation: operation.into(),
+            details: details.into(),
+        }
+    }
+
+    /// Create an InvalidOperationState error with context
+    pub fn invalid_operation_state(operation: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::InvalidOperationState {
+            operation: operation.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a SerializationError with context
+    pub fn serialization_error(data_type: impl Into<String>, details: impl Into<String>) -> Self {
+        Self::SerializationError {
+            data_type: data_type.into(),
+            details: details.into(),
         }
     }
 }

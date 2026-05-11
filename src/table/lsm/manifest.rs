@@ -231,11 +231,10 @@ impl Version {
             } => {
                 let level_idx = *level as usize;
                 if level_idx >= new_version.levels.len() {
-                    return Err(TableError::Other(format!(
-                        "Invalid level {}, max is {}",
-                        level,
-                        new_version.levels.len() - 1
-                    )));
+                    return Err(TableError::invalid_level(
+                        *level,
+                        (new_version.levels.len() - 1) as u32,
+                    ));
                 }
                 
                 let metadata = FileMetadata {
@@ -252,10 +251,7 @@ impl Version {
                 
                 // Check for duplicate ID
                 if new_version.files_by_id.contains_key(id) {
-                    return Err(TableError::Other(format!(
-                        "SSTable ID {} already exists",
-                        id
-                    )));
+                    return Err(TableError::sstable_id_exists(id.to_string()));
                 }
                 
                 // Add to level
@@ -273,7 +269,7 @@ impl Version {
             VersionEdit::RemoveSStable { id } => {
                 // Remove from ID map
                 let metadata = new_version.files_by_id.remove(id).ok_or_else(|| {
-                    TableError::Other(format!("SSTable ID {} not found", id))
+                    TableError::sstable_id_not_found(id.to_string())
                 })?;
                 
                 // Remove from level
@@ -496,11 +492,11 @@ impl ManifestPageHeader {
         page_ids: &[PageId],
     ) -> TableResult<Vec<u8>> {
         let num_levels = u32::try_from(num_levels)
-            .map_err(|_| TableError::Other("Too many manifest levels".to_string()))?;
+            .map_err(|_| TableError::manifest_error("serialize", "Too many manifest levels"))?;
         let payload_len = u64::try_from(payload_len)
-            .map_err(|_| TableError::Other("Manifest payload too large".to_string()))?;
+            .map_err(|_| TableError::manifest_error("serialize", "Manifest payload too large"))?;
         let page_count = u32::try_from(page_ids.len())
-            .map_err(|_| TableError::Other("Manifest page count too large".to_string()))?;
+            .map_err(|_| TableError::manifest_error("serialize", "Manifest page count too large"))?;
 
         let mut bytes = Vec::with_capacity(Self::size_for_page_count(page_ids.len()));
         bytes.extend_from_slice(&Self::MAGIC);
@@ -723,14 +719,15 @@ impl<FS: FileSystem> Manifest<FS> {
             version: VersionDisk::from(version),
         };
         let payload = bincode::serialize(&snapshot).map_err(|e| {
-            TableError::Other(format!("Failed to serialize manifest snapshot: {}", e))
+            TableError::serialization_error("manifest_snapshot", e.to_string())
         })?;
 
         let page_capacity = self.pager.page_size().data_size();
         let max_page_count = ManifestPageHeader::max_page_count(page_capacity);
         if max_page_count == 0 {
-            return Err(TableError::Other(
-                "Pager page size too small for manifest metadata".to_string(),
+            return Err(TableError::manifest_error(
+                "write",
+                "Pager page size too small for manifest metadata",
             ));
         }
 
@@ -739,8 +736,9 @@ impl<FS: FileSystem> Manifest<FS> {
             let page_count = page_ids.len();
             let header_size = ManifestPageHeader::size_for_page_count(page_count);
             if header_size >= page_capacity {
-                return Err(TableError::Other(
-                    "Manifest header exceeds pager page capacity".to_string(),
+                return Err(TableError::manifest_error(
+                    "write",
+                    "Manifest header exceeds pager page capacity",
                 ));
             }
 
@@ -754,10 +752,13 @@ impl<FS: FileSystem> Manifest<FS> {
             let required_page_count = 1 + continuation_pages;
 
             if required_page_count > max_page_count {
-                return Err(TableError::Other(format!(
-                    "Manifest requires {} pages, exceeds header address capacity {}",
-                    required_page_count, max_page_count
-                )));
+                return Err(TableError::manifest_error(
+                    "write",
+                    format!(
+                        "Manifest requires {} pages, exceeds header address capacity {}",
+                        required_page_count, max_page_count
+                    ),
+                ));
             }
 
             if required_page_count == page_count {

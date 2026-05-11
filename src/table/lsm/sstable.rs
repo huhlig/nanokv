@@ -340,8 +340,9 @@ impl DataBlock {
     pub fn add(&mut self, key: Vec<u8>, chain: VersionChain) -> TableResult<()> {
         if let Some((last_key, _)) = self.entries.last() {
             if &key <= last_key {
-                return Err(crate::table::TableError::Other(
-                    "Keys must be added in sorted order".to_string(),
+                return Err(crate::table::TableError::invalid_operation_state(
+                    "DataBlock::add",
+                    "Keys must be added in sorted order",
                 ));
             }
         }
@@ -409,7 +410,7 @@ impl DataBlock {
 
             // Serialize version chain using bincode
             let chain_bytes = bincode::serialize(chain).map_err(|e| {
-                crate::table::TableError::Other(format!("Failed to serialize version chain: {}", e))
+                crate::table::TableError::serialization_error("version_chain", e.to_string())
             })?;
 
             // Version chain length and data
@@ -676,8 +677,9 @@ impl IndexBlock {
     pub fn add(&mut self, first_key: Vec<u8>, page_id: PageId, offset: u64) -> TableResult<()> {
         if let Some(last_entry) = self.entries.last() {
             if first_key <= last_entry.first_key {
-                return Err(crate::table::TableError::Other(
-                    "Index entries must be added in sorted order".to_string(),
+                return Err(crate::table::TableError::invalid_operation_state(
+                    "IndexBlock::add",
+                    "Index entries must be added in sorted order",
                 ));
             }
         }
@@ -1362,8 +1364,9 @@ impl<FS: FileSystem> SStableWriter<FS> {
         // Verify keys are in sorted order
         if let Some((last_key, _)) = self.entries.last() {
             if &key <= last_key {
-                return Err(crate::table::TableError::Other(
-                    "Keys must be added in sorted order".to_string(),
+                return Err(crate::table::TableError::invalid_operation_state(
+                    "SStableBuilder::add",
+                    "Keys must be added in sorted order",
                 ));
             }
         }
@@ -1378,8 +1381,9 @@ impl<FS: FileSystem> SStableWriter<FS> {
     /// Finish writing the SSTable and return its metadata.
     pub fn finish(mut self, created_lsn: LogSequenceNumber) -> TableResult<SStableMetadata> {
         if self.entries.is_empty() {
-            return Err(crate::table::TableError::Other(
-                "Cannot create empty SSTable".to_string(),
+            return Err(crate::table::TableError::invalid_operation_state(
+                "SStableBuilder::build",
+                "Cannot create empty SSTable",
             ));
         }
 
