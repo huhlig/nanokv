@@ -13,11 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+pub mod blob;
 pub mod btree;
 mod error;
 pub mod lsm;
 mod traits;
 
+pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
 pub use self::lsm::{
@@ -35,7 +37,7 @@ pub use self::traits::{
     TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
     VacuumReport, ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
     // Specialty table traits (formerly index traits)
-    ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
+    ApproximateMembership, BlobTable, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
     FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,
     IvfVector, PhysicalRange, Predicate, QueryBudget, QueryablePredicate, Rebuildable,
     RebuildBudget, RebuildProgress, ScoredDocument, SparseOrdered, SparseQuery,

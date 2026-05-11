@@ -151,6 +151,8 @@ pub enum TableEngineKind {
     TimeSeries,
     /// Graph adjacency list
     GraphAdjacency,
+    /// Blob storage (large binary objects)
+    Blob,
     /// Custom engine
     Custom(u32),
 }
@@ -183,6 +185,10 @@ impl TableEngineKind {
             | Self::VectorIvf
             | Self::GeoSpatial
             | Self::GraphAdjacency => false,
+
+            // Blob storage - can be persistent or ephemeral depending on implementation
+            // The specific implementation (MemoryBlob, PagedBlob, FileBlob) determines this
+            Self::Blob => true,
 
             // Custom engines - assume non-persistent by default
             Self::Custom(_) => false,
@@ -1007,6 +1013,77 @@ pub trait Rebuildable {
         source: &dyn SpecialtyTableSource,
         budget: RebuildBudget,
     ) -> TableResult<RebuildProgress>;
+}
+
+/// Blob storage table for large binary objects.
+///
+/// This specialty trait provides operations for storing and retrieving large
+/// binary objects (blobs) that are too large to fit efficiently in regular
+/// table pages. Different implementations provide different storage strategies:
+///
+/// - `MemoryBlob`: In-memory storage for ephemeral blobs
+/// - `PagedBlob`: Disk-backed storage using linked pages
+/// - `FileBlob`: Direct file-based storage for very large blobs
+///
+/// Blobs are stored by key and can be retrieved, deleted, or checked for existence.
+/// The trait also provides metadata about blob sizes and storage limits.
+pub trait BlobTable {
+    fn table_id(&self) -> ObjectId;
+
+    fn name(&self) -> &str;
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities;
+
+    /// Store a blob and return its size.
+    ///
+    /// The key identifies the blob for later retrieval. If a blob with the
+    /// same key already exists, it is replaced.
+    fn put_blob(&mut self, key: &[u8], data: &[u8]) -> TableResult<u64>;
+
+    /// Retrieve a blob by key.
+    ///
+    /// Returns None if the blob doesn't exist or has been deleted.
+    fn get_blob(&self, key: &[u8]) -> TableResult<Option<ValueBuf>>;
+
+    /// Delete a blob by key.
+    ///
+    /// Returns true if the blob existed and was deleted, false if it didn't exist.
+    fn delete_blob(&mut self, key: &[u8]) -> TableResult<bool>;
+
+    /// Check if a blob exists.
+    fn contains_blob(&self, key: &[u8]) -> TableResult<bool> {
+        Ok(self.get_blob(key)?.is_some())
+    }
+
+    /// Get the size of a blob without retrieving its data.
+    ///
+    /// Returns None if the blob doesn't exist.
+    fn blob_size(&self, key: &[u8]) -> TableResult<Option<u64>>;
+
+    /// Get the maximum inline size for this blob store.
+    ///
+    /// Values smaller than this threshold should be stored inline in table pages
+    /// rather than as separate blobs.
+    fn max_inline_size(&self) -> usize;
+
+    /// Get the maximum blob size supported by this implementation.
+    fn max_blob_size(&self) -> u64 {
+        // Default to 1GB max blob size
+        1024 * 1024 * 1024
+    }
+
+    /// List all blob keys (for iteration/scanning).
+    ///
+    /// This is optional and may not be efficiently supported by all implementations.
+    fn list_keys(&self) -> TableResult<Vec<KeyBuf>> {
+        Err(crate::table::TableError::Other(
+            "list_keys not supported by this blob implementation".to_string(),
+        ))
+    }
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats>;
+
+    fn verify(&self) -> TableResult<VerificationReport>;
 }
 
 // =============================================================================
