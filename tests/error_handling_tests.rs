@@ -104,14 +104,24 @@ fn test_encryption_key_validation() {
 #[test]
 fn test_wal_encryption_errors() {
     // Test WAL encryption error types
-    let error = WalError::EncryptionError("Failed to encrypt record".to_string());
+    let error = WalError::EncryptionError {
+        lsn: LogSequenceNumber::from(1),
+        encryption_type: "AES256-GCM".to_string(),
+        details: "Failed to encrypt record".to_string(),
+    };
     assert!(error.to_string().contains("Encryption error"));
 
-    let error = WalError::DecryptionError("Failed to decrypt record".to_string());
+    let error = WalError::DecryptionError {
+        offset: 100,
+        encryption_type: "AES256-GCM".to_string(),
+        details: "Failed to decrypt record".to_string(),
+    };
     assert!(error.to_string().contains("Decryption error"));
 
-    let error = WalError::MissingEncryptionKey;
-    assert_eq!(error.to_string(), "Missing encryption key");
+    let error = WalError::MissingEncryptionKey {
+        encryption_type: "AES256-GCM".to_string(),
+    };
+    assert!(error.to_string().contains("Missing encryption key"));
 }
 
 // ============================================================================
@@ -153,10 +163,10 @@ fn test_wal_corrupted_record_during_recovery() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            WalError::CorruptedWal(_)
-            | WalError::ChecksumMismatch(_)
-            | WalError::InvalidRecord(_)
-            | WalError::DeserializationError(_) => {}
+            WalError::CorruptedWal { .. }
+            | WalError::ChecksumMismatch { .. }
+            | WalError::InvalidRecord { .. }
+            | WalError::DeserializationError { .. } => {}
             e => panic!("Expected corruption-related error, got: {:?}", e),
         }
     }
@@ -236,11 +246,11 @@ fn test_wal_truncated_file_recovery() {
         Err(e) => {
             // Should be a corruption or EOF-related error
             match e {
-                WalError::CorruptedWal(_)
-                | WalError::InvalidRecord(_)
-                | WalError::DeserializationError(_)
+                WalError::CorruptedWal { .. }
+                | WalError::InvalidRecord { .. }
+                | WalError::DeserializationError { .. }
                 | WalError::IoError(_)
-                | WalError::ChecksumMismatch(_) => {}
+                | WalError::ChecksumMismatch { .. } => {}
                 e => panic!("Unexpected error type: {:?}", e),
             }
         }
@@ -278,7 +288,7 @@ fn test_wal_invalid_transaction_state_sequence() {
     assert!(result.is_err());
     if let Err(e) = result {
         match e {
-            WalError::InvalidTransactionState(_) | WalError::TransactionNotFound(_) => {}
+            WalError::InvalidTransactionState { .. } | WalError::TransactionNotFound { .. } => {}
             e => panic!(
                 "Expected InvalidTransactionState or TransactionNotFound, got: {:?}",
                 e
@@ -290,16 +300,16 @@ fn test_wal_invalid_transaction_state_sequence() {
 #[test]
 fn test_wal_error_types() {
     // Test various WAL error types
-    let error = WalError::CorruptedWal("Invalid header".to_string());
+    let error = WalError::corrupted_wal(0, "header", "Invalid header");
     assert!(error.to_string().contains("Corrupted WAL"));
 
-    let error = WalError::InvalidRecord("Bad record format".to_string());
+    let error = WalError::invalid_record(LogSequenceNumber::from(1), "Bad record format");
     assert!(error.to_string().contains("Invalid WAL record"));
 
-    let error = WalError::RecoveryError("Failed to replay".to_string());
+    let error = WalError::recovery_error(LogSequenceNumber::from(1), "replay", "Failed to replay");
     assert!(error.to_string().contains("Recovery error"));
 
-    let error = WalError::CheckpointError("Checkpoint failed".to_string());
+    let error = WalError::checkpoint_error(LogSequenceNumber::from(1), "Checkpoint failed");
     assert!(error.to_string().contains("Checkpoint error"));
 }
 
@@ -339,8 +349,8 @@ fn test_memory_limit_exceeded_error() {
 
 #[test]
 fn test_wal_full_error() {
-    let error = WalError::WalFull;
-    assert_eq!(error.to_string(), "WAL is full (max size reached)");
+    let error = WalError::wal_full(1024 * 1024 * 100, 1024 * 1024 * 100);
+    assert!(error.to_string().contains("WAL is full"));
 }
 
 #[test]
@@ -360,7 +370,7 @@ fn test_blob_too_large_error() {
 
 #[test]
 fn test_table_full_error() {
-    let error = TableError::TableFull("No more space in B-tree".to_string());
+    let error = TableError::table_full(1000, 1000, "No more space in B-tree");
     assert!(error.to_string().contains("Table full"));
 }
 
@@ -384,7 +394,7 @@ fn test_error_propagation_pager_to_nanokv() {
 
 #[test]
 fn test_error_propagation_wal_to_nanokv() {
-    let wal_error = WalError::WalFull;
+    let wal_error = WalError::wal_full(1000, 1000);
     let nanokv_error: NanoKvError = wal_error.into();
 
     assert!(nanokv_error.is_wal());
@@ -393,7 +403,7 @@ fn test_error_propagation_wal_to_nanokv() {
 
 #[test]
 fn test_error_propagation_table_to_nanokv() {
-    let table_error = TableError::KeyNotFound;
+    let table_error = TableError::key_not_found("test_key");
     let nanokv_error: NanoKvError = table_error.into();
 
     assert!(nanokv_error.is_table());
@@ -462,8 +472,8 @@ fn test_write_write_conflict_error_details() {
     let error_str = error.to_string();
     assert!(error_str.contains("Write-write conflict"));
     assert!(error_str.contains("already locked"));
-    assert!(error_str.contains("holder_txn_id"));
-    assert!(error_str.contains("requester_txn_id"));
+    assert!(error_str.contains("TransactionId(42)")); // holder
+    assert!(error_str.contains("TransactionId(99)")); // requester
 }
 
 #[test]
@@ -541,7 +551,7 @@ fn test_pager_checksum_mismatch_error() {
 
 #[test]
 fn test_wal_checksum_mismatch_error() {
-    let error = WalError::ChecksumMismatch(LogSequenceNumber::from(456));
+    let error = WalError::checksum_mismatch(LogSequenceNumber::from(456), 100, 0xDEADBEEF, 0xBADC0FFE);
 
     let error_str = error.to_string();
     assert!(error_str.contains("Checksum mismatch"));
@@ -565,10 +575,8 @@ fn test_table_checksum_mismatch_error() {
 
 #[test]
 fn test_blob_stale_reference_error() {
-    let error = BlobError::StaleReference {
-        expected: 0x12345678,
-        found: 0x87654321,
-    };
+    let blob_ref = BlobRef::new(PageId::from(1), 0, 100);
+    let error = BlobError::stale_reference(blob_ref, 0x12345678, 0x87654321);
 
     let error_str = error.to_string();
     assert!(error_str.contains("Stale blob reference"));
@@ -612,12 +620,12 @@ fn test_error_type_checking_helpers() {
     assert!(!pager_err.is_wal());
     assert!(!pager_err.is_table());
 
-    let wal_err: NanoKvError = WalError::WalFull.into();
+    let wal_err: NanoKvError = WalError::wal_full(1000, 1000).into();
     assert!(!wal_err.is_pager());
     assert!(wal_err.is_wal());
     assert!(!wal_err.is_table());
 
-    let table_err: NanoKvError = TableError::KeyNotFound.into();
+    let table_err: NanoKvError = TableError::key_not_found("test").into();
     assert!(!table_err.is_pager());
     assert!(!table_err.is_wal());
     assert!(table_err.is_table());
@@ -677,7 +685,7 @@ fn test_vfs_already_locked_error() {
 
 #[test]
 fn test_index_source_error_from_table_error() {
-    let table_error = TableError::Corruption("Index data corrupted".to_string());
+    let table_error = TableError::corruption("index", "data", "Index data corrupted");
     let index_error: IndexSourceError = table_error.into();
 
     match index_error {
@@ -709,21 +717,22 @@ fn test_index_source_cancelled_error() {
 #[test]
 fn test_blob_not_found_error() {
     let blob_ref = BlobRef::new(PageId::from(42), 100, 0x12345678);
-    let error = BlobError::NotFound(blob_ref);
+    let error = BlobError::not_found(blob_ref);
     let error_str = error.to_string();
     assert!(error_str.contains("Blob not found"));
 }
 
 #[test]
 fn test_blob_invalid_reference_error() {
-    let error = BlobError::InvalidReference("Bad blob ref format".to_string());
+    let error = BlobError::invalid_reference("Bad blob ref format");
     let error_str = error.to_string();
     assert!(error_str.contains("Invalid blob reference"));
 }
 
 #[test]
 fn test_blob_corrupted_error() {
-    let error = BlobError::Corrupted("Blob data corrupted".to_string());
+    let blob_ref = BlobRef::new(PageId::from(1), 0, 100);
+    let error = BlobError::corrupted(blob_ref, "data section", "checksum", "Blob data corrupted");
     let error_str = error.to_string();
     assert!(error_str.contains("Corruption detected"));
 }
@@ -734,14 +743,14 @@ fn test_blob_corrupted_error() {
 
 #[test]
 fn test_table_corruption_error() {
-    let error = TableError::Corruption("B-tree structure corrupted".to_string());
+    let error = TableError::corruption("B-tree", "structure", "B-tree structure corrupted");
     let error_str = error.to_string();
     assert!(error_str.contains("Corruption detected"));
 }
 
 #[test]
 fn test_table_compaction_errors() {
-    let error = TableError::CompactionFailed("Merge failed".to_string());
+    let error = TableError::compaction_failed(1, vec!["file1.sst".to_string()], "Merge failed");
     assert!(error.to_string().contains("Compaction failed"));
 
     let error = TableError::CompactionAlreadyRunning;

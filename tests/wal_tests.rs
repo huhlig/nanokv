@@ -828,7 +828,7 @@ fn test_wal_decryption_failure_with_wrong_key() {
     writer.flush().unwrap();
 
     let err = WalRecovery::recover_with_key(&fs, path, Some(wrong_key)).unwrap_err();
-    assert!(matches!(err, WalError::DecryptionError(_)));
+    assert!(matches!(err, WalError::DecryptionError { .. }));
 }
 
 #[test]
@@ -916,7 +916,7 @@ fn test_wal_missing_key_error_handling() {
 
     let writer = WalWriter::create(&fs, path, config).unwrap();
     let err = writer.write_begin(TransactionId::from(1)).unwrap_err();
-    assert!(matches!(err, WalError::MissingEncryptionKey));
+    assert!(matches!(err, WalError::MissingEncryptionKey { .. }));
 }
 
 fn overwrite_record_lsn(fs: &MemoryFileSystem, path: &str, record_offset: u64, lsn: u64) {
@@ -1010,7 +1010,7 @@ fn test_wal_partial_record_write_stops_recovery_at_tail() {
     let result = WalRecovery::recover(&fs, path).unwrap_err();
     assert!(matches!(
         result,
-        WalError::CorruptedWal(_) | WalError::InvalidRecord(_)
+        WalError::CorruptedWal { .. } | WalError::InvalidRecord { .. }
     ));
 }
 
@@ -1039,8 +1039,8 @@ fn test_wal_corrupted_lsn_sequence_does_not_drop_committed_data() {
     overwrite_record_lsn(&fs, path, offsets[1], 99);
 
     let err = WalRecovery::recover(&fs, path).unwrap_err();
-    let lsn = LogSequenceNumber::from(99);
-    assert!(matches!(err, WalError::ChecksumMismatch(lsn)));
+    let _lsn = LogSequenceNumber::from(99);
+    assert!(matches!(err, WalError::ChecksumMismatch { .. }));
 }
 
 #[test]
@@ -1196,5 +1196,5 @@ fn test_wal_encryption_key_rotation_failure_is_detected() {
     writer.flush().unwrap();
 
     let err = WalRecovery::recover_with_key(&fs, path, Some(new_key)).unwrap_err();
-    assert!(matches!(err, WalError::DecryptionError(_)));
+    assert!(matches!(err, WalError::DecryptionError { .. }));
 }
