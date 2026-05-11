@@ -20,19 +20,34 @@
 //! for durability and crash recovery.
 
 use nanokv::kvdb::Database;
-use nanokv::types::{Durability, ObjectId};
+use nanokv::table::{TableEngineKind, TableOptions};
+use nanokv::types::{Durability, KeyEncoding};
 use nanokv::vfs::MemoryFileSystem;
+
+/// Helper to create default table options for tests
+fn default_table_options() -> TableOptions {
+    TableOptions {
+        engine: TableEngineKind::Memory, // Memory engine for fast tests
+        key_encoding: KeyEncoding::RawBytes,
+        compression: None,
+        encryption: None,
+        page_size: None,
+        format_version: 1,
+    }
+}
 
 #[test]
 fn test_transaction_basic_commit() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+    
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // Begin a write transaction
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     
     // Write some data
-    let table_id = ObjectId::from(1);
     txn.put(table_id, b"key1", b"value1").unwrap();
     txn.put(table_id, b"key2", b"value2").unwrap();
     
@@ -51,13 +66,15 @@ fn test_transaction_basic_commit() {
 #[test]
 fn test_transaction_rollback() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+    
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // Begin a write transaction
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     
     // Write some data
-    let table_id = ObjectId::from(1);
     txn.put(table_id, b"key1", b"value1").unwrap();
     txn.put(table_id, b"key2", b"value2").unwrap();
     
@@ -75,13 +92,15 @@ fn test_transaction_rollback() {
 #[test]
 fn test_transaction_read_uncommitted_changes() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+    
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // Begin a write transaction
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     
     // Write some data
-    let table_id = ObjectId::from(1);
     txn.put(table_id, b"key1", b"value1").unwrap();
     
     // Read uncommitted data within the same transaction
@@ -95,10 +114,12 @@ fn test_transaction_read_uncommitted_changes() {
 #[test]
 fn test_transaction_delete() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+    
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // First, insert some data
-    let table_id = ObjectId::from(1);
     {
         let mut txn = db.begin_write(Durability::WalOnly).unwrap();
         txn.put(table_id, b"key1", b"value1").unwrap();
@@ -122,9 +143,10 @@ fn test_transaction_delete() {
 #[test]
 fn test_transaction_update() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
-    let table_id = ObjectId::from(1);
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // Insert initial value
     {
@@ -149,14 +171,15 @@ fn test_transaction_update() {
 #[test]
 fn test_multi_table_transaction() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+    
+    // Create multiple tables first
+    let table1 = db.create_table("table1", default_table_options()).unwrap();
+    let table2 = db.create_table("table2", default_table_options()).unwrap();
+    let table3 = db.create_table("table3", default_table_options()).unwrap();
     
     // Write to multiple tables in a single transaction
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
-    
-    let table1 = ObjectId::from(1);
-    let table2 = ObjectId::from(2);
-    let table3 = ObjectId::from(3);
     
     txn.put(table1, b"user:1", b"Alice").unwrap();
     txn.put(table2, b"post:1", b"Hello World").unwrap();
@@ -174,9 +197,10 @@ fn test_multi_table_transaction() {
 #[test]
 fn test_transaction_isolation() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
-    let table_id = ObjectId::from(1);
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // Transaction 1: Insert initial data
     {
@@ -205,9 +229,10 @@ fn test_transaction_isolation() {
 #[test]
 fn test_transaction_delete_nonexistent_key() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
-    let table_id = ObjectId::from(1);
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     
     // Delete a key that doesn't exist
@@ -220,9 +245,10 @@ fn test_transaction_delete_nonexistent_key() {
 #[test]
 fn test_transaction_multiple_operations_same_key() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
-    let table_id = ObjectId::from(1);
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     
     // Multiple operations on the same key within a transaction
@@ -245,9 +271,10 @@ fn test_transaction_multiple_operations_same_key() {
 #[test]
 fn test_transaction_put_delete_put() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
-    let table_id = ObjectId::from(1);
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     
     // Put, delete, then put again
@@ -270,7 +297,7 @@ fn test_transaction_put_delete_put() {
 #[test]
 fn test_empty_transaction_commit() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
     // Empty transaction should commit successfully
     let txn = db.begin_write(Durability::WalOnly).unwrap();
@@ -281,7 +308,7 @@ fn test_empty_transaction_commit() {
 #[test]
 fn test_empty_transaction_rollback() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
     // Empty transaction should rollback successfully
     let txn = db.begin_write(Durability::WalOnly).unwrap();
@@ -291,9 +318,10 @@ fn test_empty_transaction_rollback() {
 #[test]
 fn test_sequential_transactions() {
     let fs = MemoryFileSystem::new();
-    let db = Database::new(&fs, "test.wal").unwrap();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
     
-    let table_id = ObjectId::from(1);
+    // Create a table first
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
     
     // Transaction 1
     {
