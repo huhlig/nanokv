@@ -21,6 +21,9 @@
 //! without manual `map_err` conversions.
 
 use crate::blob::BlobError;
+use crate::error_observability::{
+    ErrorClassification, ErrorObservation, ErrorSeverity, ErrorTelemetry, record_error,
+};
 use crate::index::{IndexError, IndexSourceError};
 use crate::pager::PagerError;
 use crate::table::TableError;
@@ -233,6 +236,49 @@ impl NanoKvError {
             _ => None,
         }
     }
+    /// Classify this error for observability purposes.
+    pub fn classification(&self) -> ErrorClassification {
+        <Self as ErrorTelemetry>::classification(self)
+    }
+
+    /// Convenience accessor for severity derived from the classification.
+    pub fn severity(&self) -> ErrorSeverity {
+        self.classification().severity
+    }
+
+    /// Record this error using the shared observability layer.
+    #[must_use]
+    pub fn record(&self) -> ErrorObservation {
+        record_error(self)
+    }
+}
+
+impl ErrorTelemetry for NanoKvError {
+    fn classification(&self) -> ErrorClassification {
+        match self {
+            NanoKvError::Pager(err) => err.classification(),
+            NanoKvError::Wal(err) => err.classification(),
+            NanoKvError::Table(err) => err.classification(),
+            NanoKvError::Transaction(err) => err.classification(),
+            NanoKvError::Cursor(err) => err.classification(),
+            NanoKvError::Blob(err) => err.classification(),
+            NanoKvError::Index(err) => err.classification(),
+            NanoKvError::IndexSource(err) => err.classification(),
+            NanoKvError::Vfs(err) => err.classification(),
+            NanoKvError::Io(_) => ErrorClassification {
+                subsystem: "io",
+                category: "io",
+                variant: "io_error",
+                severity: ErrorSeverity::Error,
+            },
+            NanoKvError::Other(_) => ErrorClassification {
+                subsystem: "nanokv",
+                category: "internal",
+                variant: "other",
+                severity: ErrorSeverity::Error,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,10 +312,40 @@ mod tests {
     fn test_error_extraction() {
         let pager_err = PagerError::DatabaseFull;
         let nanokv_err: NanoKvError = pager_err.into();
-        
+
         assert!(nanokv_err.as_pager().is_some());
         assert!(nanokv_err.as_wal().is_none());
         assert!(nanokv_err.as_table().is_none());
+    }
+
+    #[test]
+    fn test_error_classification() {
+        let err: NanoKvError = PagerError::DatabaseFull.into();
+        let classification = err.classification();
+
+        assert_eq!(classification.subsystem, "pager");
+        assert_eq!(classification.category, "resource_exhaustion");
+        assert_eq!(classification.variant, "database_full");
+        assert_eq!(classification.severity, ErrorSeverity::Error);
+    }
+
+    #[test]
+    fn test_error_severity() {
+        let err: NanoKvError = WalError::corrupted_wal(128, "checksum", "record damaged").into();
+        assert_eq!(err.severity(), ErrorSeverity::Critical);
+    }
+
+    #[test]
+    fn test_error_recording_returns_observation() {
+        let err: NanoKvError = TableError::key_not_found("missing-key").into();
+        let observation = err.record();
+
+        assert_eq!(observation.classification.subsystem, "table");
+        assert_eq!(observation.classification.category, "not_found");
+        assert_eq!(observation.classification.variant, "key_not_found");
+        assert_eq!(observation.classification.severity, ErrorSeverity::Warning);
+        assert!(!observation.message.is_empty());
+        assert!(observation.timestamp_secs > 0);
     }
 }
 

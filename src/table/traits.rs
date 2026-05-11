@@ -34,39 +34,40 @@ use crate::wal::LogSequenceNumber;
 use std::borrow::Cow;
 
 /// Logical table identifier assigned by the catalog.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct TableId(ObjectId);
+///
+/// This is now a type alias to ObjectId, unifying the type system.
+/// Both regular tables and indexes use the same identifier type.
+pub type TableId = ObjectId;
 
-impl TableId {
-    /// Convert to the underlying ObjectId for transaction/storage operations.
-    pub fn as_object_id(&self) -> ObjectId {
-        self.0
-    }
-
-    /// Create a TableId from an ObjectId.
-    pub fn from_object_id(id: ObjectId) -> Self {
-        Self(id)
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.0.as_u64()
-    }
-
-    pub fn to_bytes(&self) -> [u8; 8] {
-        self.0.to_bytes()
-    }
+/// Table kind distinguishes between regular tables and specialty tables (indexes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableKind {
+    /// Regular key-value table
+    Regular,
+    /// Specialty table serving as an index
+    Index {
+        /// The parent table this index belongs to
+        parent_table: ObjectId,
+        /// Index-specific kind
+        index_kind: IndexKind,
+    },
 }
 
-impl std::fmt::Display for TableId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TableId({})", self.0.as_u64())
-    }
-}
-
-impl From<u64> for TableId {
-    fn from(value: u64) -> Self {
-        Self(ObjectId::from(value))
-    }
+/// High-level index family (moved from index module for unification).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexKind {
+    DenseOrdered,
+    SparseOrdered,
+    Hash,
+    Bitmap,
+    Bloom,
+    FullText,
+    VectorHnsw,
+    VectorIvf,
+    GeoSpatial,
+    TimeSeries,
+    GraphAdjacency,
+    Custom(u32),
 }
 
 /// Options for creating a table.
@@ -78,9 +79,41 @@ pub struct TableOptions {
     pub encryption: Option<EncryptionKind>,
     pub page_size: Option<usize>,
     pub format_version: u32,
+    /// Table kind - distinguishes regular tables from indexes
+    pub kind: TableKind,
+    /// Index-specific fields (only used when kind is TableKind::Index)
+    pub index_fields: Vec<IndexField>,
+    /// Whether index enforces uniqueness (only used for indexes)
+    pub unique: bool,
+    /// Index consistency model (only used for indexes)
+    pub consistency: Option<IndexConsistency>,
+}
+
+/// Index field specification (moved from index module for unification).
+#[derive(Clone, Debug)]
+pub struct IndexField {
+    pub name: String,
+    pub encoding: KeyEncoding,
+    pub descending: bool,
+}
+
+/// Index consistency model (moved from index module for unification).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexConsistency {
+    /// Index updates are part of the same transaction commit.
+    Synchronous,
+    /// Index updates may lag but are replayable/recoverable.
+    Deferred,
+    /// Index may be stale and must expose staleness to query planners.
+    StaleQueryable,
+    /// Index is rebuilt out of band and not used when stale.
+    RebuildRequired,
 }
 
 /// Table metadata from the catalog.
+///
+/// This unified structure represents both regular tables and indexes.
+/// Use the `kind` field to distinguish between them.
 #[derive(Clone, Debug)]
 pub struct TableInfo {
     pub id: TableId,
@@ -88,6 +121,8 @@ pub struct TableInfo {
     pub options: TableOptions,
     pub root: Option<PhysicalLocation>,
     pub created_lsn: LogSequenceNumber,
+    /// Whether index is stale (only relevant for indexes)
+    pub stale: bool,
 }
 
 /// Physical table implementation kind.
@@ -506,8 +541,7 @@ pub struct WorkBudget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerifyScope {
     Catalog,
-    Table(crate::table::TableId),
-    Index(crate::index::IndexId),
+    Table(TableId),
     Page(crate::pager::PageId),
     FullDatabase,
 }
@@ -561,15 +595,12 @@ pub struct RepairPlan {
 
 #[derive(Clone, Debug)]
 pub enum RepairAction {
-    RebuildIndex(crate::index::IndexId),
+    RebuildTable(TableId),
     ReclaimOrphanedPages,
     RestoreFromWal {
         through: LogSequenceNumber,
     },
-    DropCorruptedObject {
-        table: Option<crate::table::TableId>,
-        index: Option<crate::index::IndexId>,
-    },
+    DropCorruptedTable(TableId),
 }
 
 #[derive(Clone, Debug, Default)]

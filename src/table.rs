@@ -27,10 +27,10 @@ pub use self::lsm::{
 pub use self::traits::{
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
     ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
-    Histogram, HistogramBucket, KeyStatistics, Maintainable, MemoryAware, Migratable, MutableTable,
-    Mutation, OrderedKvTable, OrderedScan, PointLookup, PrefixScan, RepairAction, RepairPlan,
-    RepairReport, Severity, StatisticsProvider, TableCapabilities, TableCursor, TableEngine,
-    TableEngineKind, TableId, TableInfo, TableOptions, TableReader, TableStatistics, TableWriter,
-    VacuumOptions, VacuumReport, ValueStatistics, VerificationReport, VerifyScope, WorkBudget,
-    WriteBatch,
+    Histogram, HistogramBucket, IndexConsistency, IndexField, IndexKind, KeyStatistics,
+    Maintainable, MemoryAware, Migratable, MutableTable, Mutation, OrderedKvTable, OrderedScan,
+    PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, StatisticsProvider,
+    TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableId, TableInfo, TableKind,
+    TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions, VacuumReport,
+    ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
 };

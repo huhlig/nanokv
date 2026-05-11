@@ -28,47 +28,21 @@
 use crate::index::IndexResult;
 use crate::index::error::IndexSourceError;
 use crate::pager::{PageId, PhysicalLocation};
-use crate::table::{TableId, VerificationReport};
+use crate::table::{TableId, VerificationReport, IndexKind, IndexField, IndexConsistency};
 use crate::types::{Bound, KeyBuf, KeyEncoding, ObjectId, ScanBounds};
 use crate::wal::LogSequenceNumber;
 
 /// Logical index identifier assigned by the catalog.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct IndexId(ObjectId);
-
-impl IndexId {
-    /// Convert to the underlying ObjectId for transaction/storage operations.
-    pub fn as_object_id(&self) -> ObjectId {
-        self.0
-    }
-
-    /// Create an IndexId from an ObjectId.
-    pub fn from_object_id(id: ObjectId) -> Self {
-        Self(id)
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.0.as_u64()
-    }
-
-    pub fn to_bytes(&self) -> [u8; 8] {
-        self.0.to_bytes()
-    }
-}
-
-impl std::fmt::Display for IndexId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IndexId({})", self.0.as_u64())
-    }
-}
-
-impl From<u64> for IndexId {
-    fn from(value: u64) -> Self {
-        Self(ObjectId::from(value))
-    }
-}
+///
+/// This is now a type alias to TableId (which is itself ObjectId).
+/// Indexes are now treated as specialty tables in the unified type system.
+pub type IndexId = TableId;
 
 /// Options for creating an index.
+///
+/// DEPRECATED: Use TableOptions with TableKind::Index instead.
+/// This type is kept temporarily for backward compatibility.
+#[deprecated(since = "0.1.0", note = "Use TableOptions with TableKind::Index instead")]
 #[derive(Clone, Debug)]
 pub struct IndexOptions {
     pub kind: IndexKind,
@@ -78,45 +52,11 @@ pub struct IndexOptions {
     pub format_version: u32,
 }
 
-/// High-level index family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IndexKind {
-    DenseOrdered,
-    SparseOrdered,
-    Hash,
-    Bitmap,
-    Bloom,
-    FullText,
-    VectorHnsw,
-    VectorIvf,
-    GeoSpatial,
-    TimeSeries,
-    GraphAdjacency,
-    Custom(u32),
-}
-
-/// Index field specification.
-#[derive(Clone, Debug)]
-pub struct IndexField {
-    pub name: String,
-    pub encoding: KeyEncoding,
-    pub descending: bool,
-}
-
-/// Index consistency model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IndexConsistency {
-    /// Index updates are part of the same transaction commit.
-    Synchronous,
-    /// Index updates may lag but are replayable/recoverable.
-    Deferred,
-    /// Index may be stale and must expose staleness to query planners.
-    StaleQueryable,
-    /// Index is rebuilt out of band and not used when stale.
-    RebuildRequired,
-}
-
 /// Index metadata from the catalog.
+///
+/// DEPRECATED: Use TableInfo instead.
+/// This type is kept temporarily for backward compatibility.
+#[deprecated(since = "0.1.0", note = "Use TableInfo instead")]
 #[derive(Clone, Debug)]
 pub struct IndexInfo {
     pub id: IndexId,

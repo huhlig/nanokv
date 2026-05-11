@@ -291,8 +291,8 @@ impl Transaction {
             ));
         }
 
-        // Convert TableId to ObjectId for internal storage
-        let object_id = table.as_object_id();
+        // TableId is now ObjectId directly
+        let object_id = table;
 
         // Check write set first for uncommitted changes
         let write_key = (object_id, key.to_vec());
@@ -327,8 +327,8 @@ impl Transaction {
             ));
         }
 
-        // Convert TableId to ObjectId for internal storage
-        let object_id = table.as_object_id();
+        // TableId is now ObjectId directly
+        let object_id = table;
 
         // Check for write-write conflicts and acquire lock
         let mut detector = self.conflict_detector.lock().unwrap();
@@ -355,8 +355,8 @@ impl Transaction {
             ));
         }
 
-        // Convert TableId to ObjectId for internal storage
-        let object_id = table.as_object_id();
+        // TableId is now ObjectId directly
+        let object_id = table;
 
         // Check for write-write conflicts and acquire lock
         let mut detector = self.conflict_detector.lock().unwrap();
@@ -420,8 +420,8 @@ impl Transaction {
             ));
         }
 
-        // Convert IndexId to ObjectId for internal storage
-        let object_id = index.as_object_id();
+        // IndexId is now ObjectId directly
+        let object_id = index;
 
         // Check write set first for uncommitted changes
         let write_key = (object_id, key.to_vec());
@@ -456,8 +456,8 @@ impl Transaction {
             ));
         }
 
-        // Convert IndexId to ObjectId for internal storage
-        let object_id = index.as_object_id();
+        // IndexId is now ObjectId directly
+        let object_id = index;
 
         // Check for write-write conflicts and acquire lock
         let mut detector = self.conflict_detector.lock().unwrap();
@@ -485,8 +485,8 @@ impl Transaction {
             ));
         }
 
-        // Convert IndexId to ObjectId for internal storage
-        let object_id = index.as_object_id();
+        // IndexId is now ObjectId directly
+        let object_id = index;
 
         // Check for write-write conflicts and acquire lock
         let mut detector = self.conflict_detector.lock().unwrap();

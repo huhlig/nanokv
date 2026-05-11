@@ -463,7 +463,7 @@ fn test_error_propagation_io_to_multiple_layers() {
 #[test]
 fn test_write_write_conflict_error_details() {
     let error = TransactionError::write_write_conflict(
-        TableId::from(1).as_object_id(),
+        TableId::from(1),
         b"user:123".to_vec(),
         TransactionId::from(42),
         TransactionId::from(99),
@@ -479,7 +479,7 @@ fn test_write_write_conflict_error_details() {
 #[test]
 fn test_read_write_conflict_error_details() {
     let error = TransactionError::read_write_conflict(
-        TableId::from(2).as_object_id(),
+        TableId::from(2),
         b"product:456".to_vec(),
         TransactionId::from(10),
         TransactionId::from(20),
@@ -595,20 +595,20 @@ fn test_recovery_from_write_conflict() {
     let table = TableId::from(1);
 
     // Transaction 1 locks a key
-    detector.acquire_write_lock(table.as_object_id(), b"key1".to_vec(), txn1);
+    detector.acquire_write_lock(table, b"key1".to_vec(), txn1);
 
     // Transaction 2 tries to lock the same key and fails
-    let result = detector.check_write_conflict(table.as_object_id(), b"key1", txn2);
+    let result = detector.check_write_conflict(table, b"key1", txn2);
     assert!(result.is_err());
 
     // Transaction 2 should be able to lock a different key
-    let result2 = detector.check_write_conflict(table.as_object_id(), b"key2", txn2);
+    let result2 = detector.check_write_conflict(table, b"key2", txn2);
     assert!(result2.is_ok());
-    detector.acquire_write_lock(table.as_object_id(), b"key2".to_vec(), txn2);
+    detector.acquire_write_lock(table, b"key2".to_vec(), txn2);
 
     // After transaction 1 releases locks, transaction 2 should be able to acquire
     detector.release_locks(txn1);
-    let result3 = detector.check_write_conflict(table.as_object_id(), b"key1", txn2);
+    let result3 = detector.check_write_conflict(table, b"key1", txn2);
     assert!(result3.is_ok());
 }
 
@@ -786,7 +786,7 @@ fn test_index_key_not_found_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("Key not found"));
-    assert!(error_str.contains("IndexId(42)"));
+    assert!(error_str.contains("ObjectId(42)"));
 }
 
 #[test]
@@ -799,7 +799,7 @@ fn test_index_duplicate_key_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("Duplicate key"));
-    assert!(error_str.contains("IndexId(100)"));
+    assert!(error_str.contains("ObjectId(100)"));
 }
 
 #[test]
@@ -811,7 +811,7 @@ fn test_index_invalid_key_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("Invalid key format"));
-    assert!(error_str.contains("IndexId(5)"));
+    assert!(error_str.contains("ObjectId(5)"));
     assert!(error_str.contains("Key encoding mismatch"));
 }
 
@@ -824,7 +824,7 @@ fn test_index_stale_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("stale"));
-    assert!(error_str.contains("IndexId(7)"));
+    assert!(error_str.contains("ObjectId(7)"));
     assert!(error_str.contains("out of sync"));
 }
 
@@ -842,7 +842,7 @@ fn test_index_corrupted_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("Corruption detected"));
-    assert!(error_str.contains("IndexId(15)"));
+    assert!(error_str.contains("ObjectId(15)"));
     assert!(error_str.contains("B-tree node"));
     assert!(error_str.contains("invalid pointer"));
     assert!(error_str.contains("Child pointer out of bounds"));
@@ -858,7 +858,7 @@ fn test_index_operation_failed_error() {
     
     assert!(error_str.contains("operation"));
     assert!(error_str.contains("insert"));
-    assert!(error_str.contains("IndexId(20)"));
+    assert!(error_str.contains("ObjectId(20)"));
     assert!(error_str.contains("Page allocation failed"));
 }
 
@@ -871,7 +871,7 @@ fn test_index_capacity_exceeded_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("capacity exceeded"));
-    assert!(error_str.contains("IndexId(30)"));
+    assert!(error_str.contains("ObjectId(30)"));
     assert!(error_str.contains("Maximum index size"));
 }
 
@@ -885,7 +885,7 @@ fn test_index_unsupported_operation_error() {
     
     assert!(error_str.contains("Unsupported operation"));
     assert!(error_str.contains("range_scan"));
-    assert!(error_str.contains("IndexId(50)"));
+    assert!(error_str.contains("ObjectId(50)"));
     assert!(error_str.contains("Bloom"));
 }
 
@@ -900,7 +900,7 @@ fn test_index_io_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("I/O error"));
-    assert!(error_str.contains("IndexId(60)"));
+    assert!(error_str.contains("ObjectId(60)"));
 }
 
 #[test]
@@ -913,7 +913,7 @@ fn test_index_table_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("Table error"));
-    assert!(error_str.contains("IndexId(70)"));
+    assert!(error_str.contains("ObjectId(70)"));
 }
 
 #[test]
@@ -925,6 +925,6 @@ fn test_index_internal_error() {
     let error_str = error.to_string();
     
     assert!(error_str.contains("Internal error"));
-    assert!(error_str.contains("IndexId(80)"));
+    assert!(error_str.contains("ObjectId(80)"));
     assert!(error_str.contains("Unexpected state transition"));
 }

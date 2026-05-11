@@ -788,8 +788,14 @@ impl IndexBlock {
     /// - Checksum validation fails
     pub fn from_bytes(bytes: &[u8]) -> TableResult<Self> {
         if bytes.len() < Self::HEADER_SIZE {
-            return Err(crate::table::TableError::Other(
-                "Index block data too short".to_string(),
+            return Err(crate::table::TableError::corruption(
+                "IndexBlock::from_bytes",
+                "truncated_header",
+                format!(
+                    "Index block data too short: expected at least {} bytes, found {}",
+                    Self::HEADER_SIZE,
+                    bytes.len()
+                ),
             ));
         }
 
@@ -804,8 +810,10 @@ impl IndexBlock {
         let computed_checksum = hasher.finalize();
 
         if stored_checksum != computed_checksum.as_slice() {
-            return Err(crate::table::TableError::Other(
-                "Index block checksum mismatch".to_string(),
+            return Err(crate::table::TableError::corruption(
+                "IndexBlock::from_bytes",
+                "checksum_mismatch",
+                "Index block checksum mismatch",
             ));
         }
 
@@ -815,8 +823,14 @@ impl IndexBlock {
 
         for _ in 0..num_entries {
             if offset + 4 > bytes.len() {
-                return Err(crate::table::TableError::Other(
-                    "Truncated index entry (key_len)".to_string(),
+                return Err(crate::table::TableError::corruption(
+                    "IndexBlock::from_bytes",
+                    "truncated_entry_key_len",
+                    format!(
+                        "Truncated index entry key length at entry offset {} (buffer len {})",
+                        offset,
+                        bytes.len()
+                    ),
                 ));
             }
 
@@ -830,8 +844,15 @@ impl IndexBlock {
             offset += 4;
 
             if offset + key_len > bytes.len() {
-                return Err(crate::table::TableError::Other(
-                    "Truncated index entry (key)".to_string(),
+                return Err(crate::table::TableError::corruption(
+                    "IndexBlock::from_bytes",
+                    "truncated_entry_key",
+                    format!(
+                        "Truncated index entry key: need {} bytes at offset {}, buffer len {}",
+                        key_len,
+                        offset,
+                        bytes.len()
+                    ),
                 ));
             }
 
@@ -840,8 +861,14 @@ impl IndexBlock {
             offset += key_len;
 
             if offset + 16 > bytes.len() {
-                return Err(crate::table::TableError::Other(
-                    "Truncated index entry (page_id/offset)".to_string(),
+                return Err(crate::table::TableError::corruption(
+                    "IndexBlock::from_bytes",
+                    "truncated_entry_pointer",
+                    format!(
+                        "Truncated index entry pointer metadata at offset {} (buffer len {})",
+                        offset,
+                        bytes.len()
+                    ),
                 ));
             }
 
@@ -881,8 +908,13 @@ impl IndexBlock {
         // Verify entries are sorted
         for i in 1..entries.len() {
             if entries[i - 1].first_key >= entries[i].first_key {
-                return Err(crate::table::TableError::Other(
-                    "Index entries not sorted".to_string(),
+                return Err(crate::table::TableError::corruption(
+                    "IndexBlock::from_bytes",
+                    "unsorted_entries",
+                    format!(
+                        "Index entries not sorted: entry {} key is not greater than previous entry",
+                        i
+                    ),
                 ));
             }
         }
@@ -2278,7 +2310,75 @@ mod tests {
         bytes[4] ^= 0xFF;
         
         let result = IndexBlock::from_bytes(&bytes);
-        assert!(result.is_err());
+        match result {
+            Err(crate::table::TableError::Corruption {
+                location,
+                corruption_type,
+                ..
+            }) => {
+                assert_eq!(location, "IndexBlock::from_bytes");
+                assert_eq!(corruption_type, "checksum_mismatch");
+            }
+            other => panic!("expected corruption error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_index_block_truncated_header_reports_corruption() {
+        let bytes = vec![0u8; IndexBlock::HEADER_SIZE - 1];
+
+        let result = IndexBlock::from_bytes(&bytes);
+        match result {
+            Err(crate::table::TableError::Corruption {
+                location,
+                corruption_type,
+                details,
+            }) => {
+                assert_eq!(location, "IndexBlock::from_bytes");
+                assert_eq!(corruption_type, "truncated_header");
+                assert!(details.contains("too short"));
+            }
+            other => panic!("expected corruption error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_index_block_unsorted_entries_report_corruption() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 32]);
+
+        let entries_start = bytes.len();
+
+        for (key, page_id, offset) in [
+            (b"banana".as_slice(), PageId::from(2), 20_u64),
+            (b"apple".as_slice(), PageId::from(1), 10_u64),
+        ] {
+            bytes.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(key);
+            bytes.extend_from_slice(&page_id.as_u64().to_le_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+
+        let entries_data = &bytes[entries_start..];
+        let mut hasher = Sha256::new();
+        hasher.update(entries_data);
+        let checksum = hasher.finalize();
+        bytes[4..36].copy_from_slice(&checksum);
+
+        let result = IndexBlock::from_bytes(&bytes);
+        match result {
+            Err(crate::table::TableError::Corruption {
+                location,
+                corruption_type,
+                details,
+            }) => {
+                assert_eq!(location, "IndexBlock::from_bytes");
+                assert_eq!(corruption_type, "unsorted_entries");
+                assert!(details.contains("not sorted"));
+            }
+            other => panic!("expected corruption error, got {other:?}"),
+        }
     }
 
     #[test]

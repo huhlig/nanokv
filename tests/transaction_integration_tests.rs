@@ -317,9 +317,9 @@ fn test_transaction_read_tracking_serializable() {
     let table_id = TableId::from(1);
     
     // Record reads manually (in real implementation, this would be done by get())
-    tx.record_read(table_id.as_object_id(), b"key1".to_vec());
-    tx.record_read(table_id.as_object_id(), b"key2".to_vec());
-    tx.record_read(table_id.as_object_id(), b"key3".to_vec());
+    tx.record_read(table_id, b"key1".to_vec());
+    tx.record_read(table_id, b"key2".to_vec());
+    tx.record_read(table_id, b"key3".to_vec());
     
     // Read set is tracked internally for conflict detection
     // This test verifies the API works without panicking
@@ -338,8 +338,8 @@ fn test_transaction_read_tracking_read_committed() {
     let table_id = TableId::from(1);
     
     // Record reads - should be no-op for ReadCommitted
-    tx.record_read(table_id.as_object_id(), b"key1".to_vec());
-    tx.record_read(table_id.as_object_id(), b"key2".to_vec());
+    tx.record_read(table_id, b"key1".to_vec());
+    tx.record_read(table_id, b"key2".to_vec());
     
     // Should not affect transaction behavior
     assert!(tx.is_active());
@@ -492,8 +492,8 @@ fn test_transaction_record_write() {
     let table_id = TableId::from(1);
     
     // Record writes directly
-    tx.record_write(table_id.as_object_id(), b"key1".to_vec(), b"value1".to_vec());
-    tx.record_write(table_id.as_object_id(), b"key2".to_vec(), b"value2".to_vec());
+    tx.record_write(table_id, b"key1".to_vec(), b"value1".to_vec());
+    tx.record_write(table_id, b"key2".to_vec(), b"value2".to_vec());
     
     // Should be able to read back
     assert_eq!(
@@ -515,8 +515,8 @@ fn test_transaction_record_delete() {
     let table_id = TableId::from(1);
     
     // Put then delete
-    tx.record_write(table_id.as_object_id(), b"key1".to_vec(), b"value1".to_vec());
-    tx.record_delete(table_id.as_object_id(), b"key1".to_vec());
+    tx.record_write(table_id, b"key1".to_vec(), b"value1".to_vec());
+    tx.record_delete(table_id, b"key1".to_vec());
     
     // Should read as None
     assert_eq!(tx.get(table_id, b"key1").unwrap(), None);

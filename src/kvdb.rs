@@ -20,9 +20,9 @@
 //! transaction manager, WAL, and registered table/index engines. ACID semantics are coordinated
 //! at this layer.
 
-use crate::index::{IndexId, IndexInfo, IndexOptions};
+use crate::index::IndexId;
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableId, TableInfo, TableOptions};
+use crate::table::{TableId, TableInfo, TableOptions, TableKind, IndexKind, IndexField, IndexConsistency};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::wal::LogSequenceNumber;
@@ -47,11 +47,9 @@ pub struct Database {
     current_lsn: Arc<RwLock<LogSequenceNumber>>,
     
     // Catalog management
-    /// Table catalog: maps table names to table IDs and metadata
+    /// Unified catalog: maps table/index names to their metadata
+    /// Both regular tables and indexes are stored here
     table_catalog: Arc<RwLock<HashMap<String, TableInfo>>>,
-    
-    /// Index catalog: maps index IDs to index metadata
-    index_catalog: Arc<RwLock<HashMap<IndexId, IndexInfo>>>,
     
     // Storage layer (to be implemented)
     // TODO: Add fields for:
@@ -69,7 +67,6 @@ impl Database {
             next_txn_id: Arc::new(Mutex::new(1)),
             current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
-            index_catalog: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -153,6 +150,7 @@ impl Database {
             options,
             root: None, // No root page yet
             created_lsn,
+            stale: false, // Only relevant for indexes
         };
         
         // Add to catalog
@@ -205,22 +203,48 @@ impl Database {
     /// the current LSN advances (simulating a commit).
     pub fn create_index(
         &self,
-        table: TableId,
+        parent_table: TableId,
         name: &str,
-        options: IndexOptions,
+        index_kind: IndexKind,
+        fields: Vec<IndexField>,
+        unique: bool,
+        consistency: IndexConsistency,
     ) -> Result<IndexId, DatabaseError> {
-        let mut catalog = self.index_catalog.write().unwrap();
+        let mut catalog = self.table_catalog.write().unwrap();
         
-        // Allocate new index ID
-        let index_id = IndexId::from(catalog.len() as u64 + 1);
+        // Check if index already exists
+        if catalog.contains_key(name) {
+            return Err(DatabaseError {
+                message: format!("Index '{}' already exists", name),
+            });
+        }
+        
+        // Allocate new index ID (same as table ID since they're unified)
+        let index_id = TableId::from(catalog.len() as u64 + 1);
         
         // Get current LSN for creation timestamp
         let created_lsn = *self.current_lsn.read().unwrap();
         
-        // Create index info
-        let index_info = IndexInfo {
+        // Create table options for the index
+        let options = TableOptions {
+            engine: crate::table::TableEngineKind::BTree, // Default engine for indexes
+            key_encoding: crate::types::KeyEncoding::RawBytes,
+            compression: None,
+            encryption: None,
+            page_size: None,
+            format_version: 1,
+            kind: TableKind::Index {
+                parent_table,
+                index_kind,
+            },
+            index_fields: fields,
+            unique,
+            consistency: Some(consistency),
+        };
+        
+        // Create table info for the index
+        let index_info = TableInfo {
             id: index_id,
-            table_id: table,
             name: name.to_string(),
             options,
             root: None, // No root page yet
@@ -228,8 +252,8 @@ impl Database {
             stale: false, // New index starts fresh
         };
         
-        // Add to catalog
-        catalog.insert(index_id, index_info);
+        // Add to unified catalog
+        catalog.insert(name.to_string(), index_info);
         
         Ok(index_id)
     }
@@ -239,9 +263,18 @@ impl Database {
     /// This operation is transactional - the index becomes invisible only after
     /// the current LSN advances (simulating a commit).
     pub fn drop_index(&self, index: IndexId) -> Result<(), DatabaseError> {
-        let mut catalog = self.index_catalog.write().unwrap();
+        let mut catalog = self.table_catalog.write().unwrap();
         
-        if catalog.remove(&index).is_some() {
+        // Find and remove the index
+        let index_name = catalog
+            .iter()
+            .find(|(_, info)| {
+                info.id == index && matches!(info.options.kind, TableKind::Index { .. })
+            })
+            .map(|(name, _)| name.clone());
+        
+        if let Some(name) = index_name {
+            catalog.remove(&name);
             Ok(())
         } else {
             Err(DatabaseError {
@@ -251,11 +284,13 @@ impl Database {
     }
 
     /// Return catalog-visible indexes for a table.
-    pub fn list_indexes(&self, table: TableId) -> Result<Vec<IndexInfo>, DatabaseError> {
-        let catalog = self.index_catalog.read().unwrap();
+    pub fn list_indexes(&self, table: TableId) -> Result<Vec<TableInfo>, DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
         Ok(catalog
             .values()
-            .filter(|info| info.table_id == table)
+            .filter(|info| {
+                matches!(info.options.kind, TableKind::Index { parent_table, .. } if parent_table == table)
+            })
             .cloned()
             .collect())
     }

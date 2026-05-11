@@ -213,32 +213,84 @@ pub enum BlobError {
 
 ### Phase 2: Add Error Metrics and Logging
 
-#### Error Metrics Structure
+Status: **Implemented**
+
+#### Implemented Observability API
+
+NanoKV now exposes a centralized shared observability layer in `src/error_observability.rs`
+and re-exports it as `nanokv::error_observability`.
+
+Core pieces:
+- `ErrorTelemetry` trait for subsystem classification
+- `ErrorClassification` with:
+  - `subsystem`
+  - `category`
+  - `variant`
+  - `severity`
+- `ErrorSeverity` with stable values:
+  - `warning`
+  - `error`
+  - `critical`
+- `record_error(&error)` helper for metrics + structured logging
+- `NanoKvError::{classification, severity, record}` convenience methods
+
+#### Metrics Emitted
+
+The centralized recorder emits the following metrics:
+
 ```rust
-pub struct ErrorMetrics {
-    // Error counts by type
-    pager_errors: AtomicU64,
-    wal_errors: AtomicU64,
-    table_errors: AtomicU64,
-    transaction_errors: AtomicU64,
-    vfs_errors: AtomicU64,
-    
-    // Specific error categories
-    checksum_mismatches: AtomicU64,
-    corruption_detected: AtomicU64,
-    resource_exhaustion: AtomicU64,
-    transaction_conflicts: AtomicU64,
-    
-    // Last error timestamp
-    last_error_time: AtomicU64,
-}
+counter!(
+    "nanokv.error.total",
+    "subsystem" => ...,
+    "category" => ...,
+    "variant" => ...,
+    "severity" => ...
+).increment(1);
+
+counter!(
+    "nanokv.error.category.total",
+    "category" => ...,
+    "severity" => ...
+).increment(1);
 ```
 
-#### Error Logging Strategy
-1. **Structured logging**: Use `tracing` crate for structured error logging
-2. **Error context**: Include full context in log messages
-3. **Error severity**: Categorize errors by severity (critical, error, warning)
-4. **Error correlation**: Include correlation IDs for tracking related errors
+This complements existing subsystem metrics such as `pager.error` and `wal.error` by
+providing a uniform cross-module error view suitable for dashboards and alerting.
+
+#### Structured Logging Strategy
+
+The recorder emits a structured `tracing` event for every recorded error with:
+- `subsystem`
+- `category`
+- `variant`
+- `severity`
+- `timestamp_secs`
+- rendered `error` message
+
+Severity mapping:
+- **warning** → `tracing::warn!`
+- **error** / **critical** → `tracing::error!`
+
+This ensures all recorded errors carry both the original contextual message and a stable
+set of dimensions for filtering and aggregation.
+
+#### Example Usage
+
+```rust
+use nanokv::error::NanoKvError;
+use nanokv::error_observability::record_error;
+use nanokv::pager::PagerError;
+
+// Record a subsystem error directly
+let pager_error = PagerError::DatabaseFull;
+let observation = record_error(&pager_error);
+assert_eq!(observation.classification.subsystem, "pager");
+
+// Or record through the unified NanoKvError type
+let err: NanoKvError = pager_error.into();
+let observation = err.record();
+assert_eq!(err.severity().as_str(), "error");
+```
 
 ### Phase 3: Error Recovery Strategies
 
@@ -305,14 +357,14 @@ pub trait RecoverableError {
 - Add corruption type to corrupted errors
 
 ### Step 7: Error Metrics Infrastructure
-- Implement ErrorMetrics structure
-- Add metrics collection to error creation
-- Add metrics reporting API
+- ✅ Implemented centralized error classification infrastructure
+- ✅ Added metrics collection through `record_error`
+- ✅ Added public reporting API via `NanoKvError::record()`
 
 ### Step 8: Error Logging
-- Integrate `tracing` crate
-- Add structured logging to all error creation sites
-- Add correlation IDs for error tracking
+- ✅ Integrated shared structured logging through `tracing`
+- ✅ Added stable structured fields for all classified errors
+- ⏳ Correlation IDs remain future work if request-scoped tracing is added
 
 ### Step 9: Error Recovery
 - Implement retry logic for transient errors
@@ -354,7 +406,7 @@ Breaking changes:
 ## Success Metrics
 
 1. **Context Coverage**: 100% of errors include relevant IDs (page, transaction, etc.)
-2. **Error Metrics**: All error types tracked in metrics
+2. **Error Metrics**: All unified and subsystem errors can be classified and recorded
 3. **Recovery Rate**: Measure successful error recovery attempts
 4. **MTTR**: Reduce mean time to resolution for production issues
-5. **Test Coverage**: 100% coverage of new error context fields
+5. **Test Coverage**: Classification and structured logging validated by unit tests

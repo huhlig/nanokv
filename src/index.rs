@@ -64,9 +64,12 @@ pub use self::error::{IndexError, IndexResult, IndexSourceError};
 pub use self::traits::{
     ApproximateMembershipIndex, CandidateSet, CostEstimate, DenseOrderedIndex, EdgeRef,
     FullTextIndex, GeoHit, GeoPoint, GeoSpatialIndex, GeometryRef, GraphAdjacencyIndex, HnswIndex,
-    Index, IndexCapabilities, IndexConsistency, IndexCursor, IndexField, IndexId, IndexInfo,
-    IndexKind, IndexOptions, IndexSource, IndexStats, IvfIndex, PhysicalRange,
-    Predicate, QueryBudget, QueryableIndex, RebuildBudget, RebuildProgress, RebuildableIndex,
-    ScoredDocument, SparseIndex, SparseQuery, TextField, TextQuery, TimePointRef, TimeSeriesIndex,
-    VectorHit, VectorIndex, VectorMetric, VectorSearchOptions,
+    Index, IndexCapabilities, IndexCursor, IndexId, IndexInfo, IndexOptions, IndexSource,
+    IndexStats, IvfIndex, PhysicalRange, Predicate, QueryBudget, QueryableIndex, RebuildBudget,
+    RebuildProgress, RebuildableIndex, ScoredDocument, SparseIndex, SparseQuery, TextField,
+    TextQuery, TimePointRef, TimeSeriesIndex, VectorHit, VectorIndex, VectorMetric,
+    VectorSearchOptions,
 };
+
+// Re-export unified types from table module
+pub use crate::table::{IndexConsistency, IndexField, IndexKind};
