@@ -708,6 +708,7 @@ fn test_index_source_cancelled_error() {
     let error_str = error.to_string();
     assert!(error_str.contains("Scan cancelled"));
     assert!(error_str.contains("User interrupted rebuild"));
+
 }
 
 // ============================================================================
@@ -770,3 +771,160 @@ fn test_table_memtable_errors() {
 }
 
 // Made with Bob
+
+// ============================================================================
+// Index Error Tests
+// ============================================================================
+
+#[test]
+fn test_index_key_not_found_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(42);
+    let key = b"missing_key".to_vec();
+    let error = IndexError::key_not_found(index_id, key.clone());
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Key not found"));
+    assert!(error_str.contains("IndexId(42)"));
+}
+
+#[test]
+fn test_index_duplicate_key_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(100);
+    let key = b"duplicate_key".to_vec();
+    let error = IndexError::duplicate_key(index_id, key.clone());
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Duplicate key"));
+    assert!(error_str.contains("IndexId(100)"));
+}
+
+#[test]
+fn test_index_invalid_key_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(5);
+    let error = IndexError::invalid_key(index_id, "Key encoding mismatch");
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Invalid key format"));
+    assert!(error_str.contains("IndexId(5)"));
+    assert!(error_str.contains("Key encoding mismatch"));
+}
+
+#[test]
+fn test_index_stale_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(7);
+    let error = IndexError::stale(index_id, "Index out of sync with table");
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("stale"));
+    assert!(error_str.contains("IndexId(7)"));
+    assert!(error_str.contains("out of sync"));
+}
+
+#[test]
+fn test_index_corrupted_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(15);
+    let error = IndexError::corrupted(
+        index_id,
+        "B-tree node",
+        "invalid pointer",
+        "Child pointer out of bounds"
+    );
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Corruption detected"));
+    assert!(error_str.contains("IndexId(15)"));
+    assert!(error_str.contains("B-tree node"));
+    assert!(error_str.contains("invalid pointer"));
+    assert!(error_str.contains("Child pointer out of bounds"));
+}
+
+#[test]
+fn test_index_operation_failed_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(20);
+    let error = IndexError::operation_failed(index_id, "insert", "Page allocation failed");
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("operation"));
+    assert!(error_str.contains("insert"));
+    assert!(error_str.contains("IndexId(20)"));
+    assert!(error_str.contains("Page allocation failed"));
+}
+
+#[test]
+fn test_index_capacity_exceeded_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(30);
+    let error = IndexError::capacity_exceeded(index_id, "Maximum index size reached");
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("capacity exceeded"));
+    assert!(error_str.contains("IndexId(30)"));
+    assert!(error_str.contains("Maximum index size"));
+}
+
+#[test]
+fn test_index_unsupported_operation_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(50);
+    let error = IndexError::unsupported_operation(index_id, "Bloom", "range_scan");
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Unsupported operation"));
+    assert!(error_str.contains("range_scan"));
+    assert!(error_str.contains("IndexId(50)"));
+    assert!(error_str.contains("Bloom"));
+}
+
+#[test]
+fn test_index_io_error() {
+    use nanokv::index::IndexId;
+    use std::io;
+    
+    let index_id = IndexId::from(60);
+    let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "Access denied");
+    let error = IndexError::io(index_id, io_error);
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("I/O error"));
+    assert!(error_str.contains("IndexId(60)"));
+}
+
+#[test]
+fn test_index_table_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(70);
+    let table_error = TableError::corruption("table", "data", "Table data corrupted");
+    let error = IndexError::table(index_id, table_error);
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Table error"));
+    assert!(error_str.contains("IndexId(70)"));
+}
+
+#[test]
+fn test_index_internal_error() {
+    use nanokv::index::IndexId;
+    
+    let index_id = IndexId::from(80);
+    let error = IndexError::internal(index_id, "Unexpected state transition");
+    let error_str = error.to_string();
+    
+    assert!(error_str.contains("Internal error"));
+    assert!(error_str.contains("IndexId(80)"));
+    assert!(error_str.contains("Unexpected state transition"));
+}
