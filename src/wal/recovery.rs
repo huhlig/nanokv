@@ -46,8 +46,8 @@
 //! - Start recovery from the last checkpoint instead of the beginning of the WAL
 //! - Implement parallel recovery for independent transactions
 
-use crate::table::TableId;
 use crate::txn::TransactionId;
+use crate::types::ObjectId;
 use crate::vfs::FileSystem;
 use crate::wal::{
     LogSequenceNumber, RecordData, WalError, WalReader, WalRecord, WalResult, WriteOpType,
@@ -69,7 +69,7 @@ enum TransactionState {
 #[derive(Debug, Clone)]
 pub struct RecoveredWrite {
     /// Table ID
-    pub table_id: TableId,
+    pub table_id: ObjectId,
     /// Operation type
     pub op_type: WriteOpType,
     /// Key
@@ -183,7 +183,7 @@ impl WalRecovery {
     fn process_write(
         &mut self,
         txn_id: TransactionId,
-        table_id: TableId,
+        table_id: ObjectId,
         op_type: WriteOpType,
         key: Vec<u8>,
         value: Vec<u8>,
@@ -366,7 +366,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -379,7 +379,7 @@ mod tests {
         let result = WalRecovery::recover(&fs, path).unwrap();
 
         assert_eq!(result.committed_writes.len(), 1);
-        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
+        assert_eq!(result.committed_writes[0].table_id, ObjectId::from(1));
         assert_eq!(result.committed_writes[0].key, b"key1");
         assert_eq!(result.committed_writes[0].value, b"value1");
         assert!(result.active_transactions.is_empty());
@@ -398,7 +398,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -427,7 +427,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -456,7 +456,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -469,7 +469,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -482,7 +482,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(3),
-                TableId::from(3),
+                ObjectId::from(3),
                 WriteOpType::Put,
                 b"key3".to_vec(),
                 b"value3".to_vec(),
@@ -495,7 +495,7 @@ mod tests {
         let result = WalRecovery::recover(&fs, path).unwrap();
 
         assert_eq!(result.committed_writes.len(), 1);
-        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
+        assert_eq!(result.committed_writes[0].table_id, ObjectId::from(1));
         assert_eq!(result.active_transactions.len(), 1);
         assert!(result.active_transactions.contains(&TransactionId::from(3)));
         assert_eq!(result.records_processed, 8);
@@ -513,7 +513,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -526,7 +526,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -560,7 +560,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Delete,
                 b"key1".to_vec(),
                 vec![],
@@ -589,7 +589,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -601,7 +601,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -638,7 +638,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -650,7 +650,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -685,7 +685,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -697,7 +697,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -709,7 +709,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(3),
-                TableId::from(3),
+                ObjectId::from(3),
                 WriteOpType::Put,
                 b"key3".to_vec(),
                 b"value3".to_vec(),
@@ -733,7 +733,7 @@ mod tests {
 
         assert!(result.last_checkpoint_lsn.is_some());
         assert_eq!(result.committed_writes.len(), 1);
-        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
+        assert_eq!(result.committed_writes[0].table_id, ObjectId::from(1));
         assert_eq!(result.active_transactions.len(), 1);
         assert!(result.active_transactions.contains(&TransactionId::from(3)));
     }
@@ -750,7 +750,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -766,7 +766,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),
@@ -801,7 +801,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -817,7 +817,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Put,
                 b"key2".to_vec(),
                 b"value2".to_vec(),

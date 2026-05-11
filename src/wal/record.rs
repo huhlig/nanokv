@@ -17,8 +17,8 @@
 //! WAL record types and serialization
 
 use crate::pager::{CompressionType, EncryptionType};
-use crate::table::TableId;
 use crate::txn::TransactionId;
+use crate::types::ObjectId;
 use crate::wal::{WalError, WalResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -136,7 +136,7 @@ pub enum RecordData {
         /// Transaction ID
         txn_id: TransactionId,
         /// Table ID
-        table_id: TableId,
+        table_id: ObjectId,
         /// Operation type
         op_type: WriteOpType,
         /// Key
@@ -634,7 +634,7 @@ impl WalRecord {
                         details: "Invalid Write record: missing table ID".to_string(),
                     });
                 }
-                let table_id = TableId::from(u64::from_le_bytes(
+                let table_id = ObjectId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
                 ));
                 cursor += 8;
@@ -805,7 +805,7 @@ mod tests {
             LogSequenceNumber::from(2),
             RecordData::Write {
                 txn_id: TransactionId::from(42),
-                table_id: TableId::from(1),
+                table_id: ObjectId::from(1),
                 op_type: WriteOpType::Put,
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),

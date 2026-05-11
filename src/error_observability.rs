@@ -344,11 +344,10 @@ mod tests {
     use super::*;
     use crate::blob::BlobRef;
     use crate::error::NanoKvError;
-    use crate::index::IndexId;
     use crate::pager::{CompressionType, EncryptionType, PageId};
+    use crate::types::ObjectId;
     use crate::table::TableError;
     use crate::txn::TransactionId;
-    use crate::types::ObjectId;
     use crate::wal::LogSequenceNumber;
     use tracing_test::traced_test;
 
@@ -426,7 +425,7 @@ mod tests {
             "checksum",
             "mismatch",
         );
-        let index = IndexError::corrupted(IndexId::from(5), "root", "checksum", "bad root");
+        let index = IndexError::corrupted(ObjectId::from(5), "root", "checksum", "bad root");
         let cursor = CursorError::invalid_position("before first");
         let pager = PagerError::compression_error(PageId::from(1), CompressionType::Lz4, "failed");
         let pager_encryption =

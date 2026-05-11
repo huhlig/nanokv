@@ -28,11 +28,11 @@
 use crate::snap::Snapshot;
 use crate::table::{
     BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
-    TableCapabilities, TableCursor, TableEngineKind, TableId, TableReader, TableResult,
+    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
     TableStatistics, TableWriter, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{Bound, KeyBuf, ScanBounds, ValueBuf};
+use crate::types::{Bound, KeyBuf, ObjectId, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -45,7 +45,7 @@ const DEFAULT_ORDER: usize = 128;
 /// Uses Rust's standard BTreeMap for efficient ordered operations.
 /// Each key maps to a version chain supporting MVCC.
 pub struct MemoryBTree {
-    id: TableId,
+    id: ObjectId,
     name: String,
     /// Shared tree data protected by RwLock for concurrent reads
     data: Arc<RwLock<BTreeMap<Vec<u8>, VersionChain>>>,
@@ -57,12 +57,12 @@ pub struct MemoryBTree {
 
 impl MemoryBTree {
     /// Create a new in-memory B-Tree table.
-    pub fn new(id: TableId, name: String) -> Self {
+    pub fn new(id: ObjectId, name: String) -> Self {
         Self::with_budget(id, name, 64 * 1024 * 1024) // 64MB default
     }
 
     /// Create a new in-memory B-Tree table with a specific memory budget.
-    pub fn with_budget(id: TableId, name: String, memory_budget: usize) -> Self {
+    pub fn with_budget(id: ObjectId, name: String, memory_budget: usize) -> Self {
         Self {
             id,
             name,
@@ -105,7 +105,7 @@ impl Table for MemoryBTree {
     type Reader<'a> = MemoryBTreeReader<'a>;
     type Writer<'a> = MemoryBTreeWriter<'a>;
 
-    fn table_id(&self) -> TableId {
+    fn table_id(&self) -> ObjectId {
         self.id
     }
 
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_basic_operations() {
-        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
+        let table = MemoryBTree::new(ObjectId::from(1), "test".to_string());
         let tx_id = TransactionId::from(1);
         let write_lsn = LogSequenceNumber::from(1);
 
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_cursor_iteration() {
-        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
+        let table = MemoryBTree::new(ObjectId::from(1), "test".to_string());
         let tx_id = TransactionId::from(1);
         let write_lsn = LogSequenceNumber::from(1);
 
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_range_scan() {
-        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
+        let table = MemoryBTree::new(ObjectId::from(1), "test".to_string());
         let tx_id = TransactionId::from(1);
         let write_lsn = LogSequenceNumber::from(1);
 

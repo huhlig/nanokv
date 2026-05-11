@@ -14,8 +14,6 @@
 // limitations under the License.
 //
 
-use crate::index::IndexId;
-use crate::table::TableId;
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{IsolationLevel, ObjectId, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
@@ -99,40 +97,40 @@ pub trait TransactionOps {
     fn snapshot_lsn(&self) -> LogSequenceNumber;
 
     /// Get a value from a table.
-    fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
+    fn get(&self, table: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
 
     /// Put a key-value pair into a table.
-    fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
+    fn put(&mut self, table: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
 
     /// Delete a key from a table.
-    fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool>;
+    fn delete(&mut self, table: ObjectId, key: &[u8]) -> TransactionResult<bool>;
 
     /// Delete a range of keys from a table.
-    fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64>;
+    fn range_delete(&mut self, table: ObjectId, bounds: ScanBounds) -> TransactionResult<u64>;
 
     /// Get a value from an index.
     ///
     /// Indexes are treated as specialty tables at the transaction layer.
     /// The transaction does not automatically maintain indexes - that is the
     /// responsibility of the API consumer.
-    fn index_get(&self, index: IndexId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
+    fn index_get(&self, index: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
 
     /// Put a key-value pair into an index.
     ///
     /// This is an explicit index operation. The transaction layer does not
     /// automatically update indexes when table data changes - the caller must
     /// explicitly maintain index consistency.
-    fn index_put(&mut self, index: IndexId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
+    fn index_put(&mut self, index: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
 
     /// Delete a key from an index.
     ///
     /// This is an explicit index operation. The transaction layer does not
     /// automatically update indexes when table data changes - the caller must
     /// explicitly maintain index consistency.
-    fn index_delete(&mut self, index: IndexId, key: &[u8]) -> TransactionResult<bool>;
+    fn index_delete(&mut self, index: ObjectId, key: &[u8]) -> TransactionResult<bool>;
 
     /// Delete a range of keys from an index.
-    fn index_range_delete(&mut self, index: IndexId, bounds: ScanBounds) -> TransactionResult<u64>;
+    fn index_range_delete(&mut self, index: ObjectId, bounds: ScanBounds) -> TransactionResult<u64>;
 
     /// Commit the transaction.
     fn commit(self) -> TransactionResult<CommitInfo>;
@@ -281,7 +279,7 @@ impl Transaction {
     ///
     /// Currently returns values from the write set only. Full implementation requires
     /// integration with table engines to read committed data at the snapshot LSN.
-    pub fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    pub fn get(&self, table: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -291,7 +289,7 @@ impl Transaction {
             ));
         }
 
-        // TableId is now ObjectId directly
+        // Use ObjectId directly
         let object_id = table;
 
         // Check write set first for uncommitted changes
@@ -317,7 +315,7 @@ impl Transaction {
     ///
     /// Records the write in the transaction's write set. The change is not visible
     /// to other transactions until commit.
-    pub fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+    pub fn put(&mut self, table: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -327,7 +325,7 @@ impl Transaction {
             ));
         }
 
-        // TableId is now ObjectId directly
+        // Use ObjectId directly
         let object_id = table;
 
         // Check for write-write conflicts and acquire lock
@@ -345,7 +343,7 @@ impl Transaction {
     ///
     /// Records the deletion in the transaction's write set. Returns true if the key
     /// existed (either in the write set or would exist in the underlying table).
-    pub fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool> {
+    pub fn delete(&mut self, table: ObjectId, key: &[u8]) -> TransactionResult<bool> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -355,7 +353,7 @@ impl Transaction {
             ));
         }
 
-        // TableId is now ObjectId directly
+        // Use ObjectId directly
         let object_id = table;
 
         // Check for write-write conflicts and acquire lock
@@ -385,7 +383,7 @@ impl Transaction {
     /// 1. Scanning the table at snapshot_lsn to find matching keys
     /// 2. Recording each deletion in the write set
     /// 3. Handling the interaction between range bounds and existing writes
-    pub fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
+    pub fn range_delete(&mut self, table: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -410,7 +408,7 @@ impl Transaction {
     ///
     /// Indexes are treated as specialty tables at the transaction layer.
     /// This method works identically to get() but operates on an index ObjectId.
-    pub fn index_get(&self, index: IndexId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    pub fn index_get(&self, index: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -420,7 +418,7 @@ impl Transaction {
             ));
         }
 
-        // IndexId is now ObjectId directly
+        // Use ObjectId directly
         let object_id = index;
 
         // Check write set first for uncommitted changes
@@ -446,7 +444,7 @@ impl Transaction {
     /// This is an explicit index operation. The transaction layer does not
     /// automatically update indexes when table data changes - the caller must
     /// explicitly maintain index consistency.
-    pub fn index_put(&mut self, index: IndexId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+    pub fn index_put(&mut self, index: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -456,7 +454,7 @@ impl Transaction {
             ));
         }
 
-        // IndexId is now ObjectId directly
+        // Use ObjectId directly
         let object_id = index;
 
         // Check for write-write conflicts and acquire lock
@@ -475,7 +473,7 @@ impl Transaction {
     /// This is an explicit index operation. The transaction layer does not
     /// automatically update indexes when table data changes - the caller must
     /// explicitly maintain index consistency.
-    pub fn index_delete(&mut self, index: IndexId, key: &[u8]) -> TransactionResult<bool> {
+    pub fn index_delete(&mut self, index: ObjectId, key: &[u8]) -> TransactionResult<bool> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -485,7 +483,7 @@ impl Transaction {
             ));
         }
 
-        // IndexId is now ObjectId directly
+        // Use ObjectId directly
         let object_id = index;
 
         // Check for write-write conflicts and acquire lock
@@ -515,7 +513,7 @@ impl Transaction {
     /// 1. Scanning the index at snapshot_lsn to find matching keys
     /// 2. Recording each deletion in the write set
     /// 3. Handling the interaction between range bounds and existing writes
-    pub fn index_range_delete(&mut self, index: IndexId, bounds: ScanBounds) -> TransactionResult<u64> {
+    pub fn index_range_delete(&mut self, index: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -626,35 +624,35 @@ impl TransactionOps for Transaction {
         self.snapshot_lsn
     }
 
-    fn get(&self, table: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn get(&self, table: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         Transaction::get(self, table, key)
     }
 
-    fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+    fn put(&mut self, table: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         Transaction::put(self, table, key, value)
     }
 
-    fn delete(&mut self, table: TableId, key: &[u8]) -> TransactionResult<bool> {
+    fn delete(&mut self, table: ObjectId, key: &[u8]) -> TransactionResult<bool> {
         Transaction::delete(self, table, key)
     }
 
-    fn range_delete(&mut self, table: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
+    fn range_delete(&mut self, table: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
         Transaction::range_delete(self, table, bounds)
     }
 
-    fn index_get(&self, index: IndexId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn index_get(&self, index: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         Transaction::index_get(self, index, key)
     }
 
-    fn index_put(&mut self, index: IndexId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+    fn index_put(&mut self, index: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         Transaction::index_put(self, index, key, value)
     }
 
-    fn index_delete(&mut self, index: IndexId, key: &[u8]) -> TransactionResult<bool> {
+    fn index_delete(&mut self, index: ObjectId, key: &[u8]) -> TransactionResult<bool> {
         Transaction::index_delete(self, index, key)
     }
 
-    fn index_range_delete(&mut self, index: IndexId, bounds: ScanBounds) -> TransactionResult<u64> {
+    fn index_range_delete(&mut self, index: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
         Transaction::index_range_delete(self, index, bounds)
     }
 

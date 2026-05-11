@@ -33,11 +33,9 @@ use crate::types::{
 use crate::wal::LogSequenceNumber;
 use std::borrow::Cow;
 
-/// Logical table identifier assigned by the catalog.
-///
-/// This is now a type alias to ObjectId, unifying the type system.
-/// Both regular tables and indexes use the same identifier type.
-pub type TableId = ObjectId;
+// TableId has been removed - use ObjectId directly throughout the codebase.
+// This completes the type system unification where tables and indexes share
+// the same identifier type without wrapper aliases.
 
 /// Table kind distinguishes between regular tables and specialty tables (indexes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +114,7 @@ pub enum IndexConsistency {
 /// Use the `kind` field to distinguish between them.
 #[derive(Clone, Debug)]
 pub struct TableInfo {
-    pub id: TableId,
+    pub id: ObjectId,
     pub name: String,
     pub options: TableOptions,
     pub root: Option<PhysicalLocation>,
@@ -316,7 +314,7 @@ pub trait Table {
     where
         Self: 'a;
 
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -551,7 +549,7 @@ pub struct WorkBudget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerifyScope {
     Catalog,
-    Table(TableId),
+    Table(ObjectId),
     Page(crate::pager::PageId),
     FullDatabase,
 }
@@ -605,12 +603,12 @@ pub struct RepairPlan {
 
 #[derive(Clone, Debug)]
 pub enum RepairAction {
-    RebuildTable(TableId),
+    RebuildTable(ObjectId),
     ReclaimOrphanedPages,
     RestoreFromWal {
         through: LogSequenceNumber,
     },
-    DropCorruptedTable(TableId),
+    DropCorruptedTable(ObjectId),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -668,7 +666,7 @@ pub trait DenseOrdered {
     where
         Self: 'a;
 
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -688,7 +686,7 @@ pub trait DenseOrdered {
 /// Sparse specialty table: maps summarized keys/statistics to candidate physical ranges.
 /// Renamed from SparseIndex to reflect unified table architecture.
 pub trait SparseOrdered {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -731,7 +729,7 @@ pub trait SparseOrdered {
 /// Approximate membership table such as a Bloom filter.
 /// Renamed from ApproximateMembershipIndex to reflect unified table architecture.
 pub trait ApproximateMembership {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -753,7 +751,7 @@ pub trait ApproximateMembership {
 /// Full-text search table with field-aware tokenization, posting lists, and scoring.
 /// Renamed from FullTextIndex to reflect unified table architecture.
 pub trait FullTextSearch {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -791,7 +789,7 @@ pub trait FullTextSearch {
 /// Shared vector-search interface for HNSW, IVF, flat, and hybrid vector tables.
 /// Renamed from VectorIndex to reflect unified table architecture.
 pub trait VectorSearch {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -837,7 +835,7 @@ pub trait GraphAdjacency {
     where
         Self: 'a;
 
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -883,7 +881,7 @@ pub trait TimeSeries {
     where
         Self: 'a;
 
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -917,7 +915,7 @@ pub trait TimeSeries {
 /// Geospatial table abstraction for point and region queries.
 /// Renamed from GeoSpatialIndex to reflect unified table architecture.
 pub trait GeoSpatial {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 
@@ -938,7 +936,7 @@ pub trait GeoSpatial {
 
 /// Incremental rebuild lifecycle for specialty tables that may become stale.
 pub trait Rebuildable {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn mark_stale(&mut self) -> TableResult<()>;
 
@@ -959,7 +957,7 @@ pub trait Rebuildable {
 
 /// Common interface for specialty tables that can participate in query planning.
 pub trait QueryablePredicate {
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn estimate(&self, predicate: Predicate<'_>) -> TableResult<CostEstimate>;
 

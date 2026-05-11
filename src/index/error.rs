@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 
-use crate::index::IndexId;
+use crate::types::ObjectId;
 use crate::table::TableError;
 
 /// Index Result Type
@@ -29,35 +29,35 @@ pub enum IndexError {
     /// Key not found in index
     #[error("Key not found in index {index_id}: {key:?}")]
     KeyNotFound {
-        index_id: IndexId,
+        index_id: ObjectId,
         key: Vec<u8>,
     },
 
     /// Duplicate key violation in unique index
     #[error("Duplicate key in unique index {index_id}: {key:?}")]
     DuplicateKey {
-        index_id: IndexId,
+        index_id: ObjectId,
         key: Vec<u8>,
     },
 
     /// Invalid key format or encoding
     #[error("Invalid key format in index {index_id}: {details}")]
     InvalidKey {
-        index_id: IndexId,
+        index_id: ObjectId,
         details: String,
     },
 
     /// Index is stale and needs rebuild
     #[error("Index {index_id} is stale: {details}")]
     Stale {
-        index_id: IndexId,
+        index_id: ObjectId,
         details: String,
     },
 
     /// Index corruption detected
     #[error("Corruption detected in index {index_id} at {location}: {corruption_type} - {details}")]
     Corrupted {
-        index_id: IndexId,
+        index_id: ObjectId,
         location: String,
         corruption_type: String,
         details: String,
@@ -66,7 +66,7 @@ pub enum IndexError {
     /// Index operation failed
     #[error("Index operation '{operation}' failed for index {index_id}: {details}")]
     OperationFailed {
-        index_id: IndexId,
+        index_id: ObjectId,
         operation: String,
         details: String,
     },
@@ -74,14 +74,14 @@ pub enum IndexError {
     /// Index capacity exceeded
     #[error("Index {index_id} capacity exceeded: {details}")]
     CapacityExceeded {
-        index_id: IndexId,
+        index_id: ObjectId,
         details: String,
     },
 
     /// Unsupported index operation
     #[error("Unsupported operation '{operation}' for index {index_id} of type {index_type}")]
     UnsupportedOperation {
-        index_id: IndexId,
+        index_id: ObjectId,
         index_type: String,
         operation: String,
     },
@@ -89,7 +89,7 @@ pub enum IndexError {
     /// I/O error during index operation
     #[error("I/O error in index {index_id}: {source}")]
     Io {
-        index_id: IndexId,
+        index_id: ObjectId,
         #[source]
         source: std::io::Error,
     },
@@ -97,7 +97,7 @@ pub enum IndexError {
     /// Table error during index operation
     #[error("Table error in index {index_id}: {source}")]
     Table {
-        index_id: IndexId,
+        index_id: ObjectId,
         #[source]
         source: TableError,
     },
@@ -105,24 +105,24 @@ pub enum IndexError {
     /// Internal error
     #[error("Internal error in index {index_id}: {details}")]
     Internal {
-        index_id: IndexId,
+        index_id: ObjectId,
         details: String,
     },
 }
 
 impl IndexError {
     /// Create a key not found error
-    pub fn key_not_found(index_id: IndexId, key: Vec<u8>) -> Self {
+    pub fn key_not_found(index_id: ObjectId, key: Vec<u8>) -> Self {
         Self::KeyNotFound { index_id, key }
     }
 
     /// Create a duplicate key error
-    pub fn duplicate_key(index_id: IndexId, key: Vec<u8>) -> Self {
+    pub fn duplicate_key(index_id: ObjectId, key: Vec<u8>) -> Self {
         Self::DuplicateKey { index_id, key }
     }
 
     /// Create an invalid key error
-    pub fn invalid_key(index_id: IndexId, details: impl Into<String>) -> Self {
+    pub fn invalid_key(index_id: ObjectId, details: impl Into<String>) -> Self {
         Self::InvalidKey {
             index_id,
             details: details.into(),
@@ -130,7 +130,7 @@ impl IndexError {
     }
 
     /// Create a stale index error
-    pub fn stale(index_id: IndexId, details: impl Into<String>) -> Self {
+    pub fn stale(index_id: ObjectId, details: impl Into<String>) -> Self {
         Self::Stale {
             index_id,
             details: details.into(),
@@ -139,7 +139,7 @@ impl IndexError {
 
     /// Create a corruption error
     pub fn corrupted(
-        index_id: IndexId,
+        index_id: ObjectId,
         location: impl Into<String>,
         corruption_type: impl Into<String>,
         details: impl Into<String>,
@@ -154,7 +154,7 @@ impl IndexError {
 
     /// Create an operation failed error
     pub fn operation_failed(
-        index_id: IndexId,
+        index_id: ObjectId,
         operation: impl Into<String>,
         details: impl Into<String>,
     ) -> Self {
@@ -166,7 +166,7 @@ impl IndexError {
     }
 
     /// Create a capacity exceeded error
-    pub fn capacity_exceeded(index_id: IndexId, details: impl Into<String>) -> Self {
+    pub fn capacity_exceeded(index_id: ObjectId, details: impl Into<String>) -> Self {
         Self::CapacityExceeded {
             index_id,
             details: details.into(),
@@ -175,7 +175,7 @@ impl IndexError {
 
     /// Create an unsupported operation error
     pub fn unsupported_operation(
-        index_id: IndexId,
+        index_id: ObjectId,
         index_type: impl Into<String>,
         operation: impl Into<String>,
     ) -> Self {
@@ -187,17 +187,17 @@ impl IndexError {
     }
 
     /// Create an I/O error
-    pub fn io(index_id: IndexId, source: std::io::Error) -> Self {
+    pub fn io(index_id: ObjectId, source: std::io::Error) -> Self {
         Self::Io { index_id, source }
     }
 
     /// Create a table error
-    pub fn table(index_id: IndexId, source: TableError) -> Self {
+    pub fn table(index_id: ObjectId, source: TableError) -> Self {
         Self::Table { index_id, source }
     }
 
     /// Create an internal error
-    pub fn internal(index_id: IndexId, details: impl Into<String>) -> Self {
+    pub fn internal(index_id: ObjectId, details: impl Into<String>) -> Self {
         Self::Internal {
             index_id,
             details: details.into(),

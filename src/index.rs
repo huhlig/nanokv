@@ -127,4 +127,4 @@ pub use crate::table::SpecialtyTableStats as IndexStats;
 pub use crate::table::SpecialtyTableSource as IndexSource;
 
 // Keep the old traits module for backward compatibility with deprecated items
-pub use self::traits::{IndexId, IndexInfo, IndexOptions};
+pub use self::traits::{IndexInfo, IndexOptions};

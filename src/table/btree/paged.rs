@@ -32,11 +32,11 @@ use crate::pager::{Page, PageId, PageType, Pager};
 use crate::snap::Snapshot;
 use crate::table::{
     BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
-    TableCapabilities, TableCursor, TableEngineKind, TableId, TableReader, TableResult,
+    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
     TableStatistics, TableWriter, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{Bound, ScanBounds, ValueBuf};
+use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use metrics::{counter, histogram};
@@ -359,7 +359,7 @@ impl BTreeNode {
 
 /// Paged B-Tree table using the pager for disk storage.
 pub struct PagedBTree<FS: FileSystem> {
-    id: TableId,
+    id: ObjectId,
     name: String,
     pager: Arc<Pager<FS>>,
     /// Root page ID wrapped in Arc<RwLock> to allow atomic updates during root splits
@@ -368,7 +368,7 @@ pub struct PagedBTree<FS: FileSystem> {
 
 impl<FS: FileSystem> PagedBTree<FS> {
     /// Create a new paged B-Tree table.
-    pub fn new(id: TableId, name: String, pager: Arc<Pager<FS>>) -> TableResult<Self> {
+    pub fn new(id: ObjectId, name: String, pager: Arc<Pager<FS>>) -> TableResult<Self> {
         // Allocate root page (initially a leaf)
         let root_page_id = pager.allocate_page(PageType::BTreeLeaf)?;
         let root_node = BTreeNode::new_leaf();
@@ -387,7 +387,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Open an existing paged B-Tree table.
-    pub fn open(id: TableId, name: String, pager: Arc<Pager<FS>>, root_page_id: PageId) -> Self {
+    pub fn open(id: ObjectId, name: String, pager: Arc<Pager<FS>>, root_page_id: PageId) -> Self {
         Self {
             id,
             name,
@@ -1124,7 +1124,7 @@ impl<FS: FileSystem> Table for PagedBTree<FS> {
     type Reader<'a> = PagedBTreeReader<'a, FS> where Self: 'a;
     type Writer<'a> = PagedBTreeWriter<'a, FS> where Self: 'a;
 
-    fn table_id(&self) -> TableId {
+    fn table_id(&self) -> ObjectId {
         self.id
     }
 

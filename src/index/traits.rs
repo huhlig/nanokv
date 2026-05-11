@@ -28,15 +28,13 @@
 use crate::index::IndexResult;
 use crate::index::error::IndexSourceError;
 use crate::pager::{PageId, PhysicalLocation};
-use crate::table::{TableId, VerificationReport, IndexKind, IndexField, IndexConsistency};
+use crate::table::{VerificationReport, IndexKind, IndexField, IndexConsistency};
 use crate::types::{Bound, KeyBuf, KeyEncoding, ObjectId, ScanBounds};
 use crate::wal::LogSequenceNumber;
 
-/// Logical index identifier assigned by the catalog.
-///
-/// This is now a type alias to TableId (which is itself ObjectId).
-/// Indexes are now treated as specialty tables in the unified type system.
-pub type IndexId = TableId;
+// IndexId has been removed - use ObjectId directly throughout the codebase.
+// Indexes are now treated as specialty tables in the unified type system,
+// sharing the same ObjectId identifier type.
 
 /// Options for creating an index.
 ///
@@ -59,8 +57,8 @@ pub struct IndexOptions {
 #[deprecated(since = "0.1.0", note = "Use TableInfo instead")]
 #[derive(Clone, Debug)]
 pub struct IndexInfo {
-    pub id: IndexId,
-    pub table_id: TableId,
+    pub id: ObjectId,
+    pub table_id: ObjectId,
     pub name: String,
     pub options: IndexOptions,
     pub root: Option<crate::pager::PhysicalLocation>,
@@ -76,9 +74,9 @@ pub struct IndexInfo {
 pub trait Index {
     type Error;
 
-    fn index_id(&self) -> IndexId;
+    fn index_id(&self) -> ObjectId;
 
-    fn table_id(&self) -> TableId;
+    fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
 

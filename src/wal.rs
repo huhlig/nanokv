@@ -99,8 +99,8 @@ pub use self::writer::{WalWriter, WalWriterConfig};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::table::TableId;
     use crate::txn::TransactionId;
+    use crate::types::ObjectId;
     use crate::vfs::MemoryFileSystem;
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"user:1".to_vec(),
                     b"Alice".to_vec(),
@@ -127,7 +127,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"user:2".to_vec(),
                     b"Bob".to_vec(),
@@ -140,7 +140,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(2),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Delete,
                     b"user:1".to_vec(),
                     vec![],
@@ -153,7 +153,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(3),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"user:3".to_vec(),
                     b"Charlie".to_vec(),
@@ -168,7 +168,7 @@ mod tests {
 
         // Verify recovery result
         assert_eq!(result.committed_writes.len(), 2);
-        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
+        assert_eq!(result.committed_writes[0].table_id, ObjectId::from(1));
         assert_eq!(result.committed_writes[0].key, b"user:1");
         assert_eq!(result.committed_writes[0].value, b"Alice");
         assert_eq!(result.committed_writes[1].key, b"user:2");
@@ -194,7 +194,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"key1".to_vec(),
                     b"value1".to_vec(),
@@ -207,7 +207,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(2),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"key2".to_vec(),
                     b"value2".to_vec(),
@@ -225,7 +225,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(3),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"key3".to_vec(),
                     b"value3".to_vec(),
@@ -258,7 +258,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"key".to_vec(),
                     b"value".to_vec(),
@@ -298,7 +298,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(1),
+                    ObjectId::from(1),
                     WriteOpType::Put,
                     b"user:1".to_vec(),
                     b"Alice".to_vec(),
@@ -307,7 +307,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(2),
+                    ObjectId::from(2),
                     WriteOpType::Put,
                     b"post:1".to_vec(),
                     b"Hello".to_vec(),
@@ -316,7 +316,7 @@ mod tests {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    TableId::from(3),
+                    ObjectId::from(3),
                     WriteOpType::Put,
                     b"comment:1".to_vec(),
                     b"Nice!".to_vec(),
@@ -330,8 +330,8 @@ mod tests {
         let result = WalRecovery::recover(&fs, path).unwrap();
 
         assert_eq!(result.committed_writes.len(), 3);
-        assert_eq!(result.committed_writes[0].table_id, TableId::from(1));
-        assert_eq!(result.committed_writes[1].table_id, TableId::from(2));
-        assert_eq!(result.committed_writes[2].table_id, TableId::from(3));
+        assert_eq!(result.committed_writes[0].table_id, ObjectId::from(1));
+        assert_eq!(result.committed_writes[1].table_id, ObjectId::from(2));
+        assert_eq!(result.committed_writes[2].table_id, ObjectId::from(3));
     }
 }

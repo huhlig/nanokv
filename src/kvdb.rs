@@ -20,10 +20,10 @@
 //! transaction manager, WAL, and registered table/index engines. ACID semantics are coordinated
 //! at this layer.
 
-use crate::index::IndexId;
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableId, TableInfo, TableOptions, TableKind, IndexKind, IndexField, IndexConsistency};
+use crate::table::{TableInfo, TableOptions, TableKind, IndexKind, IndexField, IndexConsistency};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
+use crate::types::ObjectId;
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::wal::LogSequenceNumber;
 use std::collections::HashMap;
@@ -127,7 +127,7 @@ impl Database {
         &self,
         name: &str,
         options: TableOptions,
-    ) -> Result<TableId, DatabaseError> {
+    ) -> Result<ObjectId, DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
         
         // Check if table already exists
@@ -138,7 +138,7 @@ impl Database {
         }
 
         // Allocate new table ID
-        let table_id = TableId::from(catalog.len() as u64 + 1);
+        let table_id = ObjectId::from(catalog.len() as u64 + 1);
         
         // Get current LSN for creation timestamp
         let created_lsn = *self.current_lsn.read().unwrap();
@@ -163,7 +163,7 @@ impl Database {
     ///
     /// This operation is transactional - the table becomes invisible only after
     /// the current LSN advances (simulating a commit).
-    pub fn drop_table(&self, table: TableId) -> Result<(), DatabaseError> {
+    pub fn drop_table(&self, table: ObjectId) -> Result<(), DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
         
         // Find and remove the table
@@ -186,7 +186,7 @@ impl Database {
     }
 
     /// Open an existing table by name.
-    pub fn open_table(&self, name: &str) -> Result<Option<TableId>, DatabaseError> {
+    pub fn open_table(&self, name: &str) -> Result<Option<ObjectId>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.get(name).map(|info| info.id))
     }
@@ -203,13 +203,13 @@ impl Database {
     /// the current LSN advances (simulating a commit).
     pub fn create_index(
         &self,
-        parent_table: TableId,
+        parent_table: ObjectId,
         name: &str,
         index_kind: IndexKind,
         fields: Vec<IndexField>,
         unique: bool,
         consistency: IndexConsistency,
-    ) -> Result<IndexId, DatabaseError> {
+    ) -> Result<ObjectId, DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
         
         // Check if index already exists
@@ -220,7 +220,7 @@ impl Database {
         }
         
         // Allocate new index ID (same as table ID since they're unified)
-        let index_id = TableId::from(catalog.len() as u64 + 1);
+        let index_id = ObjectId::from(catalog.len() as u64 + 1);
         
         // Get current LSN for creation timestamp
         let created_lsn = *self.current_lsn.read().unwrap();
@@ -262,7 +262,7 @@ impl Database {
     ///
     /// This operation is transactional - the index becomes invisible only after
     /// the current LSN advances (simulating a commit).
-    pub fn drop_index(&self, index: IndexId) -> Result<(), DatabaseError> {
+    pub fn drop_index(&self, index: ObjectId) -> Result<(), DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
         
         // Find and remove the index
@@ -284,7 +284,7 @@ impl Database {
     }
 
     /// Return catalog-visible indexes for a table.
-    pub fn list_indexes(&self, table: TableId) -> Result<Vec<TableInfo>, DatabaseError> {
+    pub fn list_indexes(&self, table: ObjectId) -> Result<Vec<TableInfo>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog
             .values()

@@ -181,8 +181,8 @@ impl<FS: FileSystem> Iterator for WalRecordIterator<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::table::TableId;
     use crate::txn::TransactionId;
+    use crate::types::ObjectId;
     use crate::vfs::MemoryFileSystem;
     use crate::wal::{RecordData, WalWriter, WalWriterConfig, WriteOpType};
 
@@ -197,7 +197,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(1),
-                TableId::from(1),
+                ObjectId::from(1),
                 WriteOpType::Put,
                 b"key1".to_vec(),
                 b"value1".to_vec(),
@@ -209,7 +209,7 @@ mod tests {
         writer
             .write_operation(
                 TransactionId::from(2),
-                TableId::from(2),
+                ObjectId::from(2),
                 WriteOpType::Delete,
                 b"key2".to_vec(),
                 vec![],
@@ -247,7 +247,7 @@ mod tests {
         } = &records[1].data
         {
             assert_eq!(*txn_id, TransactionId::from(1));
-            assert_eq!(*table_id, TableId::from(1));
+            assert_eq!(*table_id, ObjectId::from(1));
             assert_eq!(*op_type, WriteOpType::Put);
             assert_eq!(key, b"key1");
             assert_eq!(value, b"value1");
