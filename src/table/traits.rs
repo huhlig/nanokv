@@ -155,6 +155,46 @@ pub enum TableEngineKind {
     Custom(u32),
 }
 
+impl TableEngineKind {
+    /// Returns true if this engine provides persistent storage.
+    ///
+    /// Persistent engines survive process restarts and store data on disk.
+    /// Non-persistent engines are ephemeral and lose data when the process ends.
+    pub fn is_persistent(&self) -> bool {
+        match self {
+            // Paged engines - persistent
+            Self::BTree
+            | Self::BPlusTree
+            | Self::LsmTree
+            | Self::Art
+            | Self::AppendLog
+            | Self::ColumnarSegment
+            | Self::TimeSeries => true,
+
+            // In-memory engines - ephemeral
+            Self::Hash | Self::Memory => false,
+
+            // Specialty indexes - typically ephemeral, rebuilt from base table
+            Self::SparseOrdered
+            | Self::Bloom
+            | Self::Bitmap
+            | Self::FullText
+            | Self::VectorHnsw
+            | Self::VectorIvf
+            | Self::GeoSpatial
+            | Self::GraphAdjacency => false,
+
+            // Custom engines - assume non-persistent by default
+            Self::Custom(_) => false,
+        }
+    }
+
+    /// Returns true if this engine is in-memory only (ephemeral).
+    pub fn is_ephemeral(&self) -> bool {
+        !self.is_persistent()
+    }
+}
+
 // =============================================================================
 // Table capability traits
 // =============================================================================
