@@ -24,7 +24,6 @@ use crate::blob::BlobError;
 use crate::error_observability::{
     ErrorClassification, ErrorObservation, ErrorSeverity, ErrorTelemetry, record_error,
 };
-use crate::index::{IndexError, IndexSourceError};
 use crate::pager::PagerError;
 use crate::table::TableError;
 use crate::txn::{CursorError, TransactionError};
@@ -80,14 +79,6 @@ pub enum NanoKvError {
     #[error("Blob error: {0}")]
     Blob(#[from] BlobError),
 
-    /// Index subsystem error
-    #[error("Index error: {0}")]
-    Index(#[from] IndexError),
-
-    /// Index source error (for rebuild operations)
-    #[error("Index source error: {0}")]
-    IndexSource(#[from] IndexSourceError),
-
     /// Virtual file system error
     #[error("VFS error: {0}")]
     Vfs(#[from] FileSystemError),
@@ -135,16 +126,6 @@ impl NanoKvError {
     /// Check if this error is a blob error
     pub fn is_blob(&self) -> bool {
         matches!(self, NanoKvError::Blob(_))
-    }
-
-    /// Check if this error is an index error
-    pub fn is_index(&self) -> bool {
-        matches!(self, NanoKvError::Index(_))
-    }
-
-    /// Check if this error is an index source error
-    pub fn is_index_source(&self) -> bool {
-        matches!(self, NanoKvError::IndexSource(_))
     }
 
     /// Check if this error is a VFS error
@@ -205,22 +186,6 @@ impl NanoKvError {
         }
     }
 
-    /// Get the underlying index error, if any
-    pub fn as_index(&self) -> Option<&IndexError> {
-        match self {
-            NanoKvError::Index(e) => Some(e),
-            _ => None,
-        }
-    }
-
-    /// Get the underlying index source error, if any
-    pub fn as_index_source(&self) -> Option<&IndexSourceError> {
-        match self {
-            NanoKvError::IndexSource(e) => Some(e),
-            _ => None,
-        }
-    }
-
     /// Get the underlying VFS error, if any
     pub fn as_vfs(&self) -> Option<&FileSystemError> {
         match self {
@@ -262,8 +227,6 @@ impl ErrorTelemetry for NanoKvError {
             NanoKvError::Transaction(err) => err.classification(),
             NanoKvError::Cursor(err) => err.classification(),
             NanoKvError::Blob(err) => err.classification(),
-            NanoKvError::Index(err) => err.classification(),
-            NanoKvError::IndexSource(err) => err.classification(),
             NanoKvError::Vfs(err) => err.classification(),
             NanoKvError::Io(_) => ErrorClassification {
                 subsystem: "io",
@@ -303,7 +266,6 @@ mod tests {
         assert!(!err.is_transaction());
         assert!(!err.is_cursor());
         assert!(!err.is_blob());
-        assert!(!err.is_index());
         assert!(!err.is_vfs());
         assert!(!err.is_io());
     }

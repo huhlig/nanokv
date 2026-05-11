@@ -21,7 +21,6 @@
 //! duplicating subsystem-specific logic.
 
 use crate::blob::BlobError;
-use crate::index::{IndexError, IndexSourceError};
 use crate::pager::PagerError;
 use crate::table::TableError;
 use crate::txn::{CursorError, TransactionError};
@@ -225,36 +224,6 @@ impl ErrorTelemetry for BlobError {
     }
 }
 
-impl ErrorTelemetry for IndexError {
-    fn classification(&self) -> ErrorClassification {
-        match self {
-            IndexError::KeyNotFound { .. } => classification("index", "not_found", "key_not_found", ErrorSeverity::Warning),
-            IndexError::DuplicateKey { .. } => classification("index", "conflict", "duplicate_key", ErrorSeverity::Warning),
-            IndexError::InvalidKey { .. } => classification("index", "validation", "invalid_key", ErrorSeverity::Warning),
-            IndexError::Stale { .. } => classification("index", "consistency", "stale", ErrorSeverity::Warning),
-            IndexError::Corrupted { .. } => classification("index", "corruption", "corrupted", ErrorSeverity::Critical),
-            IndexError::OperationFailed { .. } => classification("index", "operation", "operation_failed", ErrorSeverity::Error),
-            IndexError::CapacityExceeded { .. } => classification("index", "resource_exhaustion", "capacity_exceeded", ErrorSeverity::Error),
-            IndexError::UnsupportedOperation { .. } => classification("index", "unsupported", "unsupported_operation", ErrorSeverity::Warning),
-            IndexError::Io { .. } => classification("index", "io", "io_error", ErrorSeverity::Error),
-            IndexError::Table { .. } => classification("index", "dependency", "table_error", ErrorSeverity::Error),
-            IndexError::Internal { .. } => classification("index", "internal", "internal", ErrorSeverity::Critical),
-        }
-    }
-}
-
-impl ErrorTelemetry for IndexSourceError {
-    fn classification(&self) -> ErrorClassification {
-        match self {
-            IndexSourceError::TableScan(_) => classification("index_source", "dependency", "table_scan", ErrorSeverity::Error),
-            IndexSourceError::Io(_) => classification("index_source", "io", "io_error", ErrorSeverity::Error),
-            IndexSourceError::InvalidData(_) => classification("index_source", "validation", "invalid_data", ErrorSeverity::Warning),
-            IndexSourceError::Cancelled(_) => classification("index_source", "cancellation", "cancelled", ErrorSeverity::Warning),
-            IndexSourceError::Other(_) => classification("index_source", "internal", "other", ErrorSeverity::Error),
-        }
-    }
-}
-
 impl ErrorTelemetry for FileSystemError {
     fn classification(&self) -> ErrorClassification {
         match self {
@@ -431,7 +400,6 @@ mod tests {
             "checksum",
             "mismatch",
         );
-        let index = IndexError::corrupted(ObjectId::from(5), "root", "checksum", "bad root");
         let cursor = CursorError::invalid_position("before first");
         let pager = PagerError::compression_error(PageId::from(1), CompressionType::Lz4, "failed");
         let pager_encryption =
@@ -439,7 +407,6 @@ mod tests {
 
         assert_eq!(vfs.classification().subsystem, "vfs");
         assert_eq!(blob.classification().subsystem, "blob");
-        assert_eq!(index.classification().subsystem, "index");
         assert_eq!(cursor.classification().subsystem, "cursor");
         assert_eq!(pager.classification().category, "encoding");
         assert_eq!(pager_encryption.classification().category, "encryption");

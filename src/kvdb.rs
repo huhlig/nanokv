@@ -37,7 +37,7 @@
 //! - Index updates are explicit and visible in transaction write sets
 
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableInfo, TableOptions, TableKind, IndexKind, IndexField, IndexConsistency, TableEngineKind};
+use crate::table::{TableInfo, TableOptions, IndexMetadata, IndexField, IndexConsistency, TableEngineKind};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ObjectId, ValueBuf, ScanBounds};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
@@ -216,7 +216,7 @@ impl<FS: FileSystem> Database<FS> {
             options,
             root: None, // No root page yet
             created_lsn,
-            stale: false, // Only relevant for indexes
+            index_metadata: None, // Regular table, not an index
         };
         
         // Add to catalog
@@ -235,7 +235,7 @@ impl<FS: FileSystem> Database<FS> {
         // Find and remove the table
         let table_name = catalog
             .iter()
-            .find(|(_, info)| info.id == table && matches!(info.options.kind, TableKind::Regular))
+            .find(|(_, info)| info.id == table && info.index_metadata.is_none())
             .map(|(name, _)| name.clone());
         
         if let Some(name) = table_name {
@@ -245,7 +245,7 @@ impl<FS: FileSystem> Database<FS> {
             let index_names: Vec<String> = catalog
                 .iter()
                 .filter(|(_, info)| {
-                    matches!(info.options.kind, TableKind::Index { parent_table, .. } if parent_table == table)
+                    info.index_metadata.as_ref().map(|m| m.parent_table) == Some(table)
                 })
                 .map(|(name, _)| name.clone())
                 .collect();
@@ -282,7 +282,7 @@ impl<FS: FileSystem> Database<FS> {
     pub fn is_table(&self, id: ObjectId) -> Result<bool, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().any(|info| {
-            info.id == id && matches!(info.options.kind, TableKind::Regular)
+            info.id == id && info.index_metadata.is_none()
         }))
     }
 
@@ -290,7 +290,7 @@ impl<FS: FileSystem> Database<FS> {
     pub fn is_index(&self, id: ObjectId) -> Result<bool, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().any(|info| {
-            info.id == id && matches!(info.options.kind, TableKind::Index { .. })
+            info.id == id && info.index_metadata.is_some()
         }))
     }
 
@@ -299,7 +299,7 @@ impl<FS: FileSystem> Database<FS> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog
             .values()
-            .filter(|info| matches!(info.options.kind, TableKind::Regular))
+            .filter(|info| info.index_metadata.is_none())
             .cloned()
             .collect())
     }
@@ -318,7 +318,7 @@ impl<FS: FileSystem> Database<FS> {
         &self,
         parent_table: ObjectId,
         name: &str,
-        index_kind: IndexKind,
+        engine: TableEngineKind,
         fields: Vec<IndexField>,
         unique: bool,
         consistency: IndexConsistency,
@@ -338,19 +338,21 @@ impl<FS: FileSystem> Database<FS> {
         
         // Create table options for the index
         let options = TableOptions {
-            engine: crate::table::TableEngineKind::BTree, // Default engine for indexes
+            engine, // Engine determines capabilities
             key_encoding: crate::types::KeyEncoding::RawBytes,
             compression: None,
             encryption: None,
             page_size: None,
             format_version: 1,
-            kind: TableKind::Index {
-                parent_table,
-                index_kind,
-            },
+        };
+        
+        // Create index metadata
+        let index_metadata = IndexMetadata {
+            parent_table,
             index_fields: fields,
             unique,
-            consistency: Some(consistency),
+            consistency,
+            stale: false, // New index starts fresh
         };
         
         // Create table info for the index
@@ -360,7 +362,7 @@ impl<FS: FileSystem> Database<FS> {
             options,
             root: None, // No root page yet
             created_lsn,
-            stale: false, // New index starts fresh
+            index_metadata: Some(index_metadata),
         };
         
         // Add to unified catalog
@@ -380,7 +382,7 @@ impl<FS: FileSystem> Database<FS> {
         let index_name = catalog
             .iter()
             .find(|(_, info)| {
-                info.id == index && matches!(info.options.kind, TableKind::Index { .. })
+                info.id == index && info.index_metadata.is_some()
             })
             .map(|(name, _)| name.clone());
         
@@ -398,7 +400,7 @@ impl<FS: FileSystem> Database<FS> {
         Ok(catalog
             .values()
             .filter(|info| {
-                matches!(info.options.kind, TableKind::Index { parent_table, .. } if parent_table == table)
+                info.index_metadata.as_ref().map(|m| m.parent_table) == Some(table)
             })
             .cloned()
             .collect())
@@ -749,16 +751,21 @@ impl<FS: FileSystem> Database<FS> {
         // TODO: Implement proper index key extraction based on schema
         // For now, use a simple concatenation approach
         
-        if index_info.options.index_fields.is_empty() {
-            // If no fields specified, use table key as index key
-            Ok(table_key.to_vec())
+        if let Some(metadata) = &index_info.index_metadata {
+            if metadata.index_fields.is_empty() {
+                // If no fields specified, use table key as index key
+                Ok(table_key.to_vec())
+            } else {
+                // In a real implementation, we would:
+                // 1. Parse table_value according to schema
+                // 2. Extract fields specified in metadata.index_fields
+                // 3. Encode them according to index_info.options.key_encoding
+                //
+                // For now, just use table_key as a placeholder
+                Ok(table_key.to_vec())
+            }
         } else {
-            // In a real implementation, we would:
-            // 1. Parse table_value according to schema
-            // 2. Extract fields specified in index_info.options.index_fields
-            // 3. Encode them according to index_info.options.key_encoding
-            //
-            // For now, just use table_key as a placeholder
+            // Not an index, shouldn't happen
             Ok(table_key.to_vec())
         }
     }

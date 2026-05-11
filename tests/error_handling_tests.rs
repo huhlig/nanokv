@@ -25,7 +25,7 @@
 
 use nanokv::blob::{BlobError, BlobRef};
 use nanokv::error::NanoKvError;
-use nanokv::index::{IndexError, IndexSourceError};
+// Index errors removed - indexes are now just tables in the unified architecture
 use nanokv::pager::{
     CompressionType, EncryptionType, Page, PageId, PageSize, PageType, Pager, PagerConfig,
     PagerError,

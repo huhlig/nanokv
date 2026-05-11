@@ -37,38 +37,30 @@ use std::borrow::Cow;
 // This completes the type system unification where tables and indexes share
 // the same identifier type without wrapper aliases.
 
-/// Table kind distinguishes between regular tables and specialty tables (indexes).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TableKind {
-    /// Regular key-value table
-    Regular,
-    /// Specialty table serving as an index
-    Index {
-        /// The parent table this index belongs to
-        parent_table: ObjectId,
-        /// Index-specific kind
-        index_kind: IndexKind,
-    },
-}
 
-/// High-level index family (moved from index module for unification).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IndexKind {
-    DenseOrdered,
-    SparseOrdered,
-    Hash,
-    Bitmap,
-    Bloom,
-    FullText,
-    VectorHnsw,
-    VectorIvf,
-    GeoSpatial,
-    TimeSeries,
-    GraphAdjacency,
-    Custom(u32),
+/// Index-specific metadata stored at the database/catalog layer.
+///
+/// This metadata tracks the relationship between a table serving as an index
+/// and its parent table. The storage layer is completely agnostic to this.
+/// Regular tables that don't serve as indexes have None for this field.
+#[derive(Clone, Debug)]
+pub struct IndexMetadata {
+    /// The parent table this index belongs to
+    pub parent_table: ObjectId,
+    /// Index field specifications
+    pub index_fields: Vec<IndexField>,
+    /// Whether index enforces uniqueness
+    pub unique: bool,
+    /// Index consistency model
+    pub consistency: IndexConsistency,
+    /// Whether index is stale and needs rebuilding
+    pub stale: bool,
 }
 
 /// Options for creating a table.
+///
+/// In the unified architecture, the engine determines the table's capabilities.
+/// Capabilities are discovered via trait implementations, not enums.
 #[derive(Clone, Debug)]
 pub struct TableOptions {
     pub engine: TableEngineKind,
@@ -77,14 +69,6 @@ pub struct TableOptions {
     pub encryption: Option<EncryptionKind>,
     pub page_size: Option<usize>,
     pub format_version: u32,
-    /// Table kind - distinguishes regular tables from indexes
-    pub kind: TableKind,
-    /// Index-specific fields (only used when kind is TableKind::Index)
-    pub index_fields: Vec<IndexField>,
-    /// Whether index enforces uniqueness (only used for indexes)
-    pub unique: bool,
-    /// Index consistency model (only used for indexes)
-    pub consistency: Option<IndexConsistency>,
 }
 
 /// Index field specification (moved from index module for unification).
@@ -110,8 +94,9 @@ pub enum IndexConsistency {
 
 /// Table metadata from the catalog.
 ///
-/// This unified structure represents both regular tables and indexes.
-/// Use the `kind` field to distinguish between them.
+/// In the unified architecture, this represents ALL tables.
+/// The `options.engine` field determines the table's implementation and capabilities.
+/// The optional `index_metadata` field indicates if this table serves as an index.
 #[derive(Clone, Debug)]
 pub struct TableInfo {
     pub id: ObjectId,
@@ -119,21 +104,54 @@ pub struct TableInfo {
     pub options: TableOptions,
     pub root: Option<PhysicalLocation>,
     pub created_lsn: LogSequenceNumber,
-    /// Whether index is stale (only relevant for indexes)
-    pub stale: bool,
+    /// Index-specific metadata (None for regular tables, Some for tables serving as indexes)
+    pub index_metadata: Option<IndexMetadata>,
 }
 
-/// Physical table implementation kind.
+/// Table engine kind - determines both implementation and capabilities.
+///
+/// In the unified architecture, the engine kind specifies what type of table
+/// this is. Capabilities are determined by what traits the engine implements.
+///
+/// Dense ordered engines (BTree, LsmTree, Memory) implement DenseOrdered trait.
+/// Specialty engines (Bloom, SparseOrdered, etc.) implement their specific traits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TableEngineKind {
+    /// B-Tree (paged, dense ordered)
     BTree,
+    /// B+ Tree (paged, dense ordered)
     BPlusTree,
+    /// LSM Tree (paged, dense ordered, write-optimized)
     LsmTree,
+    /// Adaptive Radix Tree (paged, dense ordered)
     Art,
+    /// In-memory hash table
     Hash,
+    /// In-memory dense ordered table
     Memory,
+    /// Append-only log
     AppendLog,
+    /// Columnar storage segment
     ColumnarSegment,
+    /// Sparse ordered index with markers
+    SparseOrdered,
+    /// Bloom filter (approximate membership)
+    Bloom,
+    /// Bitmap index
+    Bitmap,
+    /// Full-text search index
+    FullText,
+    /// Vector search using HNSW
+    VectorHnsw,
+    /// Vector search using IVF
+    VectorIvf,
+    /// Geospatial index
+    GeoSpatial,
+    /// Time series storage
+    TimeSeries,
+    /// Graph adjacency list
+    GraphAdjacency,
+    /// Custom engine
     Custom(u32),
 }
 

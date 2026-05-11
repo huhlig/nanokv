@@ -24,7 +24,7 @@
 //! - Error handling
 
 use nanokv::kvdb::{Database, DatabaseError, DatabaseErrorKind};
-use nanokv::table::{TableOptions, TableKind, TableEngineKind, IndexKind, IndexField, IndexConsistency};
+use nanokv::table::{TableOptions, TableEngineKind, IndexField, IndexConsistency};
 use nanokv::types::{ObjectId, KeyEncoding, Durability};
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
@@ -38,16 +38,12 @@ fn create_test_db() -> Database<MemoryFileSystem> {
 /// Helper to create default table options
 fn default_table_options() -> TableOptions {
     TableOptions {
-        engine: TableEngineKind::Memory,
+        engine: TableEngineKind::Memory, // Memory engine provides DenseOrdered capability
         key_encoding: KeyEncoding::RawBytes,
         compression: None,
         encryption: None,
         page_size: None,
         format_version: 1,
-        kind: TableKind::Regular,
-        index_fields: vec![],
-        unique: false,
-        consistency: None,
     }
 }
 
@@ -69,7 +65,8 @@ fn test_create_table() {
     // Verify table info
     let info = db.get_object_info(table_id).unwrap().expect("Table not found");
     assert_eq!(info.name, "users");
-    assert!(matches!(info.options.kind, TableKind::Regular));
+    assert_eq!(info.options.engine, TableEngineKind::Memory);
+    assert!(info.index_metadata.is_none()); // Regular table, not an index
 }
 
 #[test]
@@ -353,7 +350,7 @@ fn test_create_index() {
     let index_id = db.create_index(
         table_id,
         "users_email_idx",
-        IndexKind::DenseOrdered,
+        TableEngineKind::BTree, // Index uses BTree engine
         vec![IndexField {
             name: "email".to_string(),
             encoding: KeyEncoding::Utf8,
@@ -370,7 +367,11 @@ fn test_create_index() {
     // Verify index info
     let info = db.get_object_info(index_id).unwrap().unwrap();
     assert_eq!(info.name, "users_email_idx");
-    assert!(matches!(info.options.kind, TableKind::Index { .. }));
+    assert_eq!(info.options.engine, TableEngineKind::BTree); // Index uses BTree engine
+    assert!(info.index_metadata.is_some()); // This is an index
+    let metadata = info.index_metadata.as_ref().unwrap();
+    assert_eq!(metadata.parent_table, table_id);
+    assert!(metadata.unique);
 }
 
 #[test]
@@ -382,7 +383,7 @@ fn test_list_indexes() {
     db.create_index(
         table_id,
         "users_email_idx",
-        IndexKind::DenseOrdered,
+        TableEngineKind::BTree,
         vec![],
         true,
         IndexConsistency::Synchronous,
@@ -391,7 +392,7 @@ fn test_list_indexes() {
     db.create_index(
         table_id,
         "users_name_idx",
-        IndexKind::DenseOrdered,
+        TableEngineKind::BTree,
         vec![],
         false,
         IndexConsistency::Synchronous,
@@ -414,7 +415,7 @@ fn test_drop_index() {
     let index_id = db.create_index(
         table_id,
         "users_email_idx",
-        IndexKind::DenseOrdered,
+        TableEngineKind::BTree,
         vec![],
         true,
         IndexConsistency::Synchronous,
@@ -436,7 +437,7 @@ fn test_drop_table_drops_indexes() {
     let index_id = db.create_index(
         table_id,
         "users_email_idx",
-        IndexKind::DenseOrdered,
+        TableEngineKind::BTree,
         vec![],
         true,
         IndexConsistency::Synchronous,
@@ -477,7 +478,7 @@ fn test_operation_on_index_as_table() {
     let index_id = db.create_index(
         table_id,
         "users_email_idx",
-        IndexKind::DenseOrdered,
+        TableEngineKind::BTree,
         vec![],
         true,
         IndexConsistency::Synchronous,
