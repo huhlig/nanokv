@@ -19,11 +19,27 @@
 //! This module provides the main `Database` struct that owns the catalog, file allocation,
 //! transaction manager, WAL, and registered table/index engines. ACID semantics are coordinated
 //! at this layer.
+//!
+//! # Phase 4: Core API - Database & Table Handles
+//!
+//! This implementation provides:
+//! - Database-level CRUD operations with automatic index maintenance
+//! - Table handle wrapper for ergonomic access
+//! - Proper error handling and validation
+//! - Support for both persistent and memory tables
+//!
+//! ## Design Philosophy: "All Collections Are Tables"
+//!
+//! Following ADR-007 and ADR-011, this implementation treats indexes as specialty tables:
+//! - Both tables and indexes use ObjectId at the storage layer
+//! - Transaction layer treats them uniformly
+//! - Database layer maintains semantic distinction and handles index maintenance
+//! - Index updates are explicit and visible in transaction write sets
 
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableInfo, TableOptions, TableKind, IndexKind, IndexField, IndexConsistency};
+use crate::table::{TableInfo, TableOptions, TableKind, IndexKind, IndexField, IndexConsistency, TableEngineKind};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
-use crate::types::ObjectId;
+use crate::types::{ObjectId, ValueBuf, ScanBounds};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig, WriteOpType};
@@ -67,9 +83,7 @@ impl<FS: FileSystem> Database<FS> {
     pub fn new(fs: &FS, wal_path: &str) -> Result<Self, DatabaseError> {
         let wal_config = WalWriterConfig::default();
         let wal = WalWriter::create(fs, wal_path, wal_config)
-            .map_err(|e| DatabaseError {
-                message: format!("Failed to create WAL: {}", e),
-            })?;
+            .map_err(|e| DatabaseError::wal_failed(format!("Failed to create WAL: {}", e)))?;
         
         Ok(Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
@@ -85,9 +99,7 @@ impl<FS: FileSystem> Database<FS> {
     pub fn open(fs: &FS, wal_path: &str) -> Result<Self, DatabaseError> {
         let wal_config = WalWriterConfig::default();
         let wal = WalWriter::open(fs, wal_path, wal_config)
-            .map_err(|e| DatabaseError {
-                message: format!("Failed to open WAL: {}", e),
-            })?;
+            .map_err(|e| DatabaseError::wal_failed(format!("Failed to open WAL: {}", e)))?;
         
         // Get current LSN from WAL
         let current_lsn = wal.current_lsn();
@@ -117,9 +129,7 @@ impl<FS: FileSystem> Database<FS> {
         
         // Write BEGIN record to WAL
         self.wal.write_begin(txn_id)
-            .map_err(|e| DatabaseError {
-                message: format!("Failed to write BEGIN to WAL: {}", e),
-            })?;
+            .map_err(|e| DatabaseError::wal_failed(format!("Failed to write BEGIN to WAL: {}", e)))?;
         
         Ok(Transaction::new(
             txn_id,
@@ -140,9 +150,7 @@ impl<FS: FileSystem> Database<FS> {
         
         // Write BEGIN record to WAL
         self.wal.write_begin(txn_id)
-            .map_err(|e| DatabaseError {
-                message: format!("Failed to write BEGIN to WAL: {}", e),
-            })?;
+            .map_err(|e| DatabaseError::wal_failed(format!("Failed to write BEGIN to WAL: {}", e)))?;
         
         Ok(Transaction::new(
             txn_id,
@@ -165,9 +173,7 @@ impl<FS: FileSystem> Database<FS> {
         
         // Write BEGIN record to WAL
         self.wal.write_begin(txn_id)
-            .map_err(|e| DatabaseError {
-                message: format!("Failed to write BEGIN to WAL: {}", e),
-            })?;
+            .map_err(|e| DatabaseError::wal_failed(format!("Failed to write BEGIN to WAL: {}", e)))?;
         
         // TODO: Validate that LSN is still available
         Ok(Transaction::new(
@@ -194,9 +200,7 @@ impl<FS: FileSystem> Database<FS> {
         
         // Check if table already exists
         if catalog.contains_key(name) {
-            return Err(DatabaseError {
-                message: format!("Table '{}' already exists", name),
-            });
+            return Err(DatabaseError::table_already_exists(name));
         }
 
         // Allocate new table ID
@@ -252,9 +256,7 @@ impl<FS: FileSystem> Database<FS> {
             
             Ok(())
         } else {
-            Err(DatabaseError {
-                message: format!("Table {:?} not found", table),
-            })
+            Err(DatabaseError::not_found(table))
         }
     }
 
@@ -325,9 +327,7 @@ impl<FS: FileSystem> Database<FS> {
         
         // Check if index already exists
         if catalog.contains_key(name) {
-            return Err(DatabaseError {
-                message: format!("Index '{}' already exists", name),
-            });
+            return Err(DatabaseError::index_already_exists(name));
         }
         
         // Allocate new index ID (same as table ID since they're unified)
@@ -388,9 +388,7 @@ impl<FS: FileSystem> Database<FS> {
             catalog.remove(&name);
             Ok(())
         } else {
-            Err(DatabaseError {
-                message: format!("Index {:?} not found", index),
-            })
+            Err(DatabaseError::not_found(index))
         }
     }
 
@@ -444,17 +442,516 @@ impl<FS: FileSystem> Database<FS> {
             point_in_time_recovery: false,
         }
     }
+
+    // =========================================================================
+    // Phase 4: Enhanced CRUD Operations with Index Maintenance
+    // =========================================================================
+
+    /// Insert a key-value pair into a table with automatic index maintenance.
+    ///
+    /// This is a convenience method that:
+    /// 1. Begins a write transaction
+    /// 2. Inserts the key-value pair into the table
+    /// 3. Updates all indexes on the table
+    /// 4. Commits the transaction atomically
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The table does not exist
+    /// - The key already exists (use `upsert` for update-or-insert)
+    /// - Index maintenance fails
+    /// - Transaction commit fails
+    pub fn insert(
+        &self,
+        table: ObjectId,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), DatabaseError> {
+        // Validate table exists and is a regular table
+        if !self.is_table(table)? {
+            return Err(DatabaseError::not_a_table(table));
+        }
+
+        let mut txn = self.begin_write(Durability::SyncOnCommit)?;
+
+        // Check if key already exists
+        if txn.get(table, key)?.is_some() {
+            return Err(DatabaseError::key_already_exists(table, key));
+        }
+
+        // Insert into table
+        txn.put(table, key, value)?;
+
+        // Update all indexes on this table
+        self.update_indexes_for_insert(&mut txn, table, key, value)?;
+
+        // Commit transaction
+        txn.commit()
+            .map_err(|e| DatabaseError::transaction_failed(format!("Insert commit failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Update an existing key-value pair in a table with automatic index maintenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The table does not exist
+    /// - The key does not exist (use `upsert` for insert-or-update)
+    /// - Index maintenance fails
+    /// - Transaction commit fails
+    pub fn update(
+        &self,
+        table: ObjectId,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), DatabaseError> {
+        // Validate table exists and is a regular table
+        if !self.is_table(table)? {
+            return Err(DatabaseError::not_a_table(table));
+        }
+
+        let mut txn = self.begin_write(Durability::SyncOnCommit)?;
+
+        // Get old value for index maintenance
+        let old_value = txn.get(table, key)?
+            .ok_or_else(|| DatabaseError::key_not_found(table, key))?;
+
+        // Update in table
+        txn.put(table, key, value)?;
+
+        // Update indexes: remove old entries, add new entries
+        self.update_indexes_for_update(&mut txn, table, key, old_value.as_ref(), value)?;
+
+        // Commit transaction
+        txn.commit()
+            .map_err(|e| DatabaseError::transaction_failed(format!("Update commit failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Insert or update a key-value pair in a table with automatic index maintenance.
+    ///
+    /// This is a convenience method that inserts if the key doesn't exist,
+    /// or updates if it does.
+    pub fn upsert(
+        &self,
+        table: ObjectId,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<bool, DatabaseError> {
+        // Validate table exists and is a regular table
+        if !self.is_table(table)? {
+            return Err(DatabaseError::not_a_table(table));
+        }
+
+        let mut txn = self.begin_write(Durability::SyncOnCommit)?;
+
+        // Check if key exists
+        let old_value = txn.get(table, key)?;
+        let is_update = old_value.is_some();
+
+        // Put the new value
+        txn.put(table, key, value)?;
+
+        // Update indexes appropriately
+        if let Some(old_val) = old_value {
+            self.update_indexes_for_update(&mut txn, table, key, old_val.as_ref(), value)?;
+        } else {
+            self.update_indexes_for_insert(&mut txn, table, key, value)?;
+        }
+
+        // Commit transaction
+        txn.commit()
+            .map_err(|e| DatabaseError::transaction_failed(format!("Upsert commit failed: {}", e)))?;
+
+        Ok(is_update)
+    }
+
+    /// Get a value from a table.
+    ///
+    /// This is a convenience method that begins a read transaction and
+    /// retrieves the value.
+    pub fn get(
+        &self,
+        table: ObjectId,
+        key: &[u8],
+    ) -> Result<Option<ValueBuf>, DatabaseError> {
+        // Validate table exists
+        if !self.is_table(table)? {
+            return Err(DatabaseError::not_a_table(table));
+        }
+
+        let txn = self.begin_read()?;
+        txn.get(table, key)
+            .map_err(|e| DatabaseError::transaction_failed(format!("Get failed: {}", e)))
+    }
+
+    /// Delete a key from a table with automatic index maintenance.
+    ///
+    /// Returns true if the key existed and was deleted, false if it didn't exist.
+    pub fn delete(
+        &self,
+        table: ObjectId,
+        key: &[u8],
+    ) -> Result<bool, DatabaseError> {
+        // Validate table exists and is a regular table
+        if !self.is_table(table)? {
+            return Err(DatabaseError::not_a_table(table));
+        }
+
+        let mut txn = self.begin_write(Durability::SyncOnCommit)?;
+
+        // Get current value for index maintenance
+        let old_value = txn.get(table, key)?;
+
+        if old_value.is_none() {
+            return Ok(false);
+        }
+
+        // Delete from table
+        let deleted = txn.delete(table, key)?;
+
+        // Delete from indexes
+        if let Some(old_val) = old_value {
+            self.update_indexes_for_delete(&mut txn, table, key, old_val.as_ref())?;
+        }
+
+        // Commit transaction
+        txn.commit()
+            .map_err(|e| DatabaseError::transaction_failed(format!("Delete commit failed: {}", e)))?;
+
+        Ok(deleted)
+    }
+
+    /// Open a table handle for ergonomic access.
+    ///
+    /// Returns a `TableHandle` that provides convenient methods for
+    /// working with the table.
+    pub fn table(&self, table: ObjectId) -> Result<TableHandle<'_, FS>, DatabaseError> {
+        // Validate table exists and is a regular table
+        if !self.is_table(table)? {
+            return Err(DatabaseError::not_a_table(table));
+        }
+
+        Ok(TableHandle {
+            db: self,
+            table_id: table,
+        })
+    }
+
+    // =========================================================================
+    // Internal Index Maintenance Helpers
+    // =========================================================================
+
+    /// Update indexes when inserting a new row.
+    fn update_indexes_for_insert<FS2: FileSystem>(
+        &self,
+        txn: &mut Transaction<FS2>,
+        table: ObjectId,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), DatabaseError> {
+        let indexes = self.list_indexes(table)?;
+        
+        for index_info in indexes {
+            // Extract index key from table key/value
+            let index_key = self.extract_index_key(&index_info, key, value)?;
+            
+            // Index value is typically the table key (for lookups)
+            txn.put(index_info.id, &index_key, key)
+                .map_err(|e| DatabaseError::index_maintenance_failed(
+                    index_info.id,
+                    format!("Failed to insert into index: {}", e)
+                ))?;
+        }
+        
+        Ok(())
+    }
+
+    /// Update indexes when updating an existing row.
+    fn update_indexes_for_update<FS2: FileSystem>(
+        &self,
+        txn: &mut Transaction<FS2>,
+        table: ObjectId,
+        key: &[u8],
+        old_value: &[u8],
+        new_value: &[u8],
+    ) -> Result<(), DatabaseError> {
+        let indexes = self.list_indexes(table)?;
+        
+        for index_info in indexes {
+            // Extract old and new index keys
+            let old_index_key = self.extract_index_key(&index_info, key, old_value)?;
+            let new_index_key = self.extract_index_key(&index_info, key, new_value)?;
+            
+            // If index key changed, delete old and insert new
+            if old_index_key != new_index_key {
+                txn.delete(index_info.id, &old_index_key)
+                    .map_err(|e| DatabaseError::index_maintenance_failed(
+                        index_info.id,
+                        format!("Failed to delete old index entry: {}", e)
+                    ))?;
+                
+                txn.put(index_info.id, &new_index_key, key)
+                    .map_err(|e| DatabaseError::index_maintenance_failed(
+                        index_info.id,
+                        format!("Failed to insert new index entry: {}", e)
+                    ))?;
+            }
+            // If index key unchanged, no update needed
+        }
+        
+        Ok(())
+    }
+
+    /// Update indexes when deleting a row.
+    fn update_indexes_for_delete<FS2: FileSystem>(
+        &self,
+        txn: &mut Transaction<FS2>,
+        table: ObjectId,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), DatabaseError> {
+        let indexes = self.list_indexes(table)?;
+        
+        for index_info in indexes {
+            // Extract index key
+            let index_key = self.extract_index_key(&index_info, key, value)?;
+            
+            // Delete from index
+            txn.delete(index_info.id, &index_key)
+                .map_err(|e| DatabaseError::index_maintenance_failed(
+                    index_info.id,
+                    format!("Failed to delete from index: {}", e)
+                ))?;
+        }
+        
+        Ok(())
+    }
+
+    /// Extract index key from table key and value.
+    ///
+    /// This is a simplified implementation. In a full system, this would:
+    /// - Parse the value according to a schema
+    /// - Extract the indexed fields
+    /// - Encode them according to the index's key encoding
+    ///
+    /// For now, we use a simple approach based on index fields.
+    fn extract_index_key(
+        &self,
+        index_info: &TableInfo,
+        table_key: &[u8],
+        table_value: &[u8],
+    ) -> Result<Vec<u8>, DatabaseError> {
+        // TODO: Implement proper index key extraction based on schema
+        // For now, use a simple concatenation approach
+        
+        if index_info.options.index_fields.is_empty() {
+            // If no fields specified, use table key as index key
+            Ok(table_key.to_vec())
+        } else {
+            // In a real implementation, we would:
+            // 1. Parse table_value according to schema
+            // 2. Extract fields specified in index_info.options.index_fields
+            // 3. Encode them according to index_info.options.key_encoding
+            //
+            // For now, just use table_key as a placeholder
+            Ok(table_key.to_vec())
+        }
+    }
 }
 
-/// Database error type.
+/// Table handle for ergonomic access to a specific table.
+///
+/// Provides convenient methods for CRUD operations without needing to
+/// pass the table ID repeatedly.
+pub struct TableHandle<'db, FS: FileSystem> {
+    db: &'db Database<FS>,
+    table_id: ObjectId,
+}
+
+impl<'db, FS: FileSystem> TableHandle<'db, FS> {
+    /// Get the table ID.
+    pub fn id(&self) -> ObjectId {
+        self.table_id
+    }
+
+    /// Get table metadata.
+    pub fn info(&self) -> Result<Option<TableInfo>, DatabaseError> {
+        self.db.get_object_info(self.table_id)
+    }
+
+    /// Insert a key-value pair.
+    pub fn insert(&self, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
+        self.db.insert(self.table_id, key, value)
+    }
+
+    /// Update an existing key-value pair.
+    pub fn update(&self, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
+        self.db.update(self.table_id, key, value)
+    }
+
+    /// Insert or update a key-value pair.
+    pub fn upsert(&self, key: &[u8], value: &[u8]) -> Result<bool, DatabaseError> {
+        self.db.upsert(self.table_id, key, value)
+    }
+
+    /// Get a value.
+    pub fn get(&self, key: &[u8]) -> Result<Option<ValueBuf>, DatabaseError> {
+        self.db.get(self.table_id, key)
+    }
+
+    /// Delete a key.
+    pub fn delete(&self, key: &[u8]) -> Result<bool, DatabaseError> {
+        self.db.delete(self.table_id, key)
+    }
+
+    /// Check if a key exists.
+    pub fn contains(&self, key: &[u8]) -> Result<bool, DatabaseError> {
+        Ok(self.get(key)?.is_some())
+    }
+
+    /// List all indexes on this table.
+    pub fn list_indexes(&self) -> Result<Vec<TableInfo>, DatabaseError> {
+        self.db.list_indexes(self.table_id)
+    }
+}
+
+/// Database error type with enhanced context.
 #[derive(Debug)]
 pub struct DatabaseError {
+    pub kind: DatabaseErrorKind,
     pub message: String,
+}
+
+/// Database error kinds for better error handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatabaseErrorKind {
+    /// Table or index not found
+    NotFound,
+    /// Object exists but is not a table
+    NotATable,
+    /// Object exists but is not an index
+    NotAnIndex,
+    /// Key already exists (for insert operations)
+    KeyAlreadyExists,
+    /// Key not found (for update operations)
+    KeyNotFound,
+    /// Table already exists
+    TableAlreadyExists,
+    /// Index already exists
+    IndexAlreadyExists,
+    /// Index maintenance failed
+    IndexMaintenanceFailed,
+    /// Transaction operation failed
+    TransactionFailed,
+    /// WAL operation failed
+    WalFailed,
+    /// Invalid operation or state
+    InvalidOperation,
+    /// Other error
+    Other,
+}
+
+impl DatabaseError {
+    pub fn not_found(object: ObjectId) -> Self {
+        Self {
+            kind: DatabaseErrorKind::NotFound,
+            message: format!("Object {:?} not found", object),
+        }
+    }
+
+    pub fn not_a_table(object: ObjectId) -> Self {
+        Self {
+            kind: DatabaseErrorKind::NotATable,
+            message: format!("Object {:?} is not a table", object),
+        }
+    }
+
+    pub fn not_an_index(object: ObjectId) -> Self {
+        Self {
+            kind: DatabaseErrorKind::NotAnIndex,
+            message: format!("Object {:?} is not an index", object),
+        }
+    }
+
+    pub fn key_already_exists(table: ObjectId, key: &[u8]) -> Self {
+        Self {
+            kind: DatabaseErrorKind::KeyAlreadyExists,
+            message: format!(
+                "Key {:?} already exists in table {:?}",
+                key, table
+            ),
+        }
+    }
+
+    pub fn key_not_found(table: ObjectId, key: &[u8]) -> Self {
+        Self {
+            kind: DatabaseErrorKind::KeyNotFound,
+            message: format!(
+                "Key {:?} not found in table {:?}",
+                key, table
+            ),
+        }
+    }
+
+    pub fn table_already_exists(name: &str) -> Self {
+        Self {
+            kind: DatabaseErrorKind::TableAlreadyExists,
+            message: format!("Table '{}' already exists", name),
+        }
+    }
+
+    pub fn index_already_exists(name: &str) -> Self {
+        Self {
+            kind: DatabaseErrorKind::IndexAlreadyExists,
+            message: format!("Index '{}' already exists", name),
+        }
+    }
+
+    pub fn index_maintenance_failed(index: ObjectId, details: String) -> Self {
+        Self {
+            kind: DatabaseErrorKind::IndexMaintenanceFailed,
+            message: format!("Index {:?} maintenance failed: {}", index, details),
+        }
+    }
+
+    pub fn transaction_failed(details: String) -> Self {
+        Self {
+            kind: DatabaseErrorKind::TransactionFailed,
+            message: format!("Transaction failed: {}", details),
+        }
+    }
+
+    pub fn wal_failed(details: String) -> Self {
+        Self {
+            kind: DatabaseErrorKind::WalFailed,
+            message: format!("WAL operation failed: {}", details),
+        }
+    }
+
+    pub fn invalid_operation(details: String) -> Self {
+        Self {
+            kind: DatabaseErrorKind::InvalidOperation,
+            message: format!("Invalid operation: {}", details),
+        }
+    }
+
+    pub fn other(message: String) -> Self {
+        Self {
+            kind: DatabaseErrorKind::Other,
+            message,
+        }
+    }
 }
 
 impl Default for DatabaseError {
     fn default() -> Self {
         Self {
+            kind: DatabaseErrorKind::Other,
             message: "Unknown database error".to_string(),
         }
     }
@@ -462,8 +959,14 @@ impl Default for DatabaseError {
 
 impl std::fmt::Display for DatabaseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Database error: {}", self.message)
+        write!(f, "{}", self.message)
     }
 }
 
 impl std::error::Error for DatabaseError {}
+
+impl From<crate::txn::TransactionError> for DatabaseError {
+    fn from(err: crate::txn::TransactionError) -> Self {
+        DatabaseError::transaction_failed(err.to_string())
+    }
+}
