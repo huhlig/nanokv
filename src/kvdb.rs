@@ -36,15 +36,15 @@
 //! - Database layer maintains semantic distinction and handles index maintenance
 //! - Index updates are explicit and visible in transaction write sets
 
-use crate::pager::{PageId, Pager, PagerConfig};
+use crate::pager::{Page, PageId, PageType, Pager, PagerConfig};
 use crate::snap::{Snapshot, SnapshotId};
 use crate::table::{TableInfo, TableOptions, IndexMetadata, IndexField, IndexConsistency, TableEngineKind};
 use crate::table_registry::TableEngineRegistry;
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
-use crate::types::{ObjectId, ValueBuf, ScanBounds};
+use crate::types::{ObjectId, ValueBuf};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
 use crate::vfs::FileSystem;
-use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig, WriteOpType};
+use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -100,7 +100,7 @@ impl<FS: FileSystem> Database<FS> {
         
         let engine_registry = Arc::new(TableEngineRegistry::new(pager.clone()));
         
-        Ok(Self {
+        let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(Mutex::new(1)),
             current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
@@ -109,7 +109,12 @@ impl<FS: FileSystem> Database<FS> {
             pager,
             engine_registry,
             table_storage: Arc::new(RwLock::new(HashMap::new())),
-        })
+        };
+        
+        // Initialize empty catalog page
+        db.persist_catalog()?;
+        
+        Ok(db)
     }
     
     /// Open an existing database instance.
@@ -128,7 +133,7 @@ impl<FS: FileSystem> Database<FS> {
         
         let engine_registry = Arc::new(TableEngineRegistry::new(pager.clone()));
         
-        Ok(Self {
+        let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(Mutex::new(1)),
             current_lsn: Arc::new(RwLock::new(current_lsn)),
@@ -137,7 +142,12 @@ impl<FS: FileSystem> Database<FS> {
             pager,
             engine_registry,
             table_storage: Arc::new(RwLock::new(HashMap::new())),
-        })
+        };
+        
+        // Recover catalog from disk
+        db.recover_catalog()?;
+        
+        Ok(db)
     }
 
     /// Allocate a new transaction ID.
@@ -213,6 +223,103 @@ impl<FS: FileSystem> Database<FS> {
         ))
     }
 
+    // =========================================================================
+    // Catalog Persistence
+    // =========================================================================
+
+    /// Persist the catalog to disk.
+    ///
+    /// The catalog is serialized as JSON and written to the catalog page.
+    /// Format:
+    /// - Version (u32): Catalog format version
+    /// - Count (u32): Number of tables
+    /// - JSON data: Serialized Vec<TableInfo>
+    fn persist_catalog(&self) -> Result<(), DatabaseError> {
+        let catalog = self.table_catalog.read().unwrap();
+        
+        // Collect all table info into a vector
+        let tables: Vec<TableInfo> = catalog.values().cloned().collect();
+        
+        // Serialize to JSON
+        let json_data = serde_json::to_vec(&tables)
+            .map_err(|e| DatabaseError::other(format!("Failed to serialize catalog: {}", e)))?;
+        
+        // Catalog page is always page 2 (page 0 = header, page 1 = superblock, page 2 = catalog)
+        let catalog_page_id = PageId::from(2);
+        
+        // Prepare page data with version and count header
+        let version: u32 = 1; // Catalog format version
+        let count: u32 = tables.len() as u32;
+        
+        let mut page_data = Vec::with_capacity(8 + json_data.len());
+        page_data.extend_from_slice(&version.to_le_bytes());
+        page_data.extend_from_slice(&count.to_le_bytes());
+        page_data.extend_from_slice(&json_data);
+        
+        // Create page with catalog data
+        let mut page = Page::new(catalog_page_id, PageType::Catalog, page_data.len());
+        page.data = page_data;
+        
+        // Write to catalog page
+        self.pager.write_page(&page)
+            .map_err(|e| DatabaseError::pager_failed(format!("Failed to write catalog page: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Recover the catalog from disk.
+    ///
+    /// Reads the catalog page and deserializes the table metadata.
+    fn recover_catalog(&self) -> Result<(), DatabaseError> {
+        // Catalog page is always page 2 (page 0 = header, page 1 = superblock, page 2 = catalog)
+        let catalog_page_id = PageId::from(2);
+        
+        // Read catalog page
+        let page = self.pager.read_page(catalog_page_id)
+            .map_err(|e| DatabaseError::pager_failed(format!("Failed to read catalog page: {}", e)))?;
+        
+        // Check if page is empty (new database)
+        if page.data.is_empty() || page.data.len() < 8 {
+            return Ok(()); // Empty catalog is valid for new databases
+        }
+        
+        // Parse header
+        let version = u32::from_le_bytes(page.data[0..4].try_into().unwrap());
+        let count = u32::from_le_bytes(page.data[4..8].try_into().unwrap());
+        
+        // Validate version
+        if version != 1 {
+            return Err(DatabaseError::other(format!(
+                "Unsupported catalog version: {}",
+                version
+            )));
+        }
+        
+        // Deserialize JSON data
+        let json_data = &page.data[8..];
+        let tables: Vec<TableInfo> = serde_json::from_slice(json_data)
+            .map_err(|e| DatabaseError::other(format!("Failed to deserialize catalog: {}", e)))?;
+        
+        // Validate count
+        if tables.len() != count as usize {
+            return Err(DatabaseError::other(format!(
+                "Catalog count mismatch: expected {}, got {}",
+                count,
+                tables.len()
+            )));
+        }
+        
+        // Populate catalog
+        let mut catalog = self.table_catalog.write().unwrap();
+        catalog.clear();
+        
+        for table_info in tables {
+            catalog.insert(table_info.name.clone(), table_info);
+        }
+        
+        Ok(())
+    }
+
     /// Create a logical table using a chosen physical engine.
     ///
     /// This operation is transactional - the table becomes visible only after
@@ -248,6 +355,12 @@ impl<FS: FileSystem> Database<FS> {
         // Add to catalog
         catalog.insert(name.to_string(), table_info);
         
+        // Release lock before persisting to avoid deadlock
+        drop(catalog);
+        
+        // Persist catalog to disk immediately
+        self.persist_catalog()?;
+        
         Ok(table_id)
     }
 
@@ -279,6 +392,12 @@ impl<FS: FileSystem> Database<FS> {
             for index_name in index_names {
                 catalog.remove(&index_name);
             }
+            
+            // Release lock before persisting to avoid deadlock
+            drop(catalog);
+            
+            // Persist catalog to disk immediately
+            self.persist_catalog()?;
             
             Ok(())
         } else {
@@ -394,6 +513,12 @@ impl<FS: FileSystem> Database<FS> {
         // Add to unified catalog
         catalog.insert(name.to_string(), index_info);
         
+        // Release lock before persisting to avoid deadlock
+        drop(catalog);
+        
+        // Persist catalog to disk immediately
+        self.persist_catalog()?;
+        
         Ok(index_id)
     }
 
@@ -414,6 +539,13 @@ impl<FS: FileSystem> Database<FS> {
         
         if let Some(name) = index_name {
             catalog.remove(&name);
+            
+            // Release lock before persisting to avoid deadlock
+            drop(catalog);
+            
+            // Persist catalog to disk immediately
+            self.persist_catalog()?;
+            
             Ok(())
         } else {
             Err(DatabaseError::not_found(index))

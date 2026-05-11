@@ -43,7 +43,7 @@ use std::borrow::Cow;
 /// This metadata tracks the relationship between a table serving as an index
 /// and its parent table. The storage layer is completely agnostic to this.
 /// Regular tables that don't serve as indexes have None for this field.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IndexMetadata {
     /// The parent table this index belongs to
     pub parent_table: ObjectId,
@@ -61,7 +61,7 @@ pub struct IndexMetadata {
 ///
 /// In the unified architecture, the engine determines the table's capabilities.
 /// Capabilities are discovered via trait implementations, not enums.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TableOptions {
     pub engine: TableEngineKind,
     pub key_encoding: KeyEncoding,
@@ -72,7 +72,7 @@ pub struct TableOptions {
 }
 
 /// Index field specification (moved from index module for unification).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IndexField {
     pub name: String,
     pub encoding: KeyEncoding,
@@ -80,7 +80,7 @@ pub struct IndexField {
 }
 
 /// Index consistency model (moved from index module for unification).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum IndexConsistency {
     /// Index updates are part of the same transaction commit.
     Synchronous,
@@ -97,7 +97,7 @@ pub enum IndexConsistency {
 /// In the unified architecture, this represents ALL tables.
 /// The `options.engine` field determines the table's implementation and capabilities.
 /// The optional `index_metadata` field indicates if this table serves as an index.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TableInfo {
     pub id: ObjectId,
     pub name: String,
@@ -115,7 +115,7 @@ pub struct TableInfo {
 ///
 /// Dense ordered engines (BTree, LsmTree, Memory) implement DenseOrdered trait.
 /// Specialty engines (Bloom, SparseOrdered, etc.) implement their specific traits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TableEngineKind {
     /// B-Tree (paged, dense ordered)
     BTree,

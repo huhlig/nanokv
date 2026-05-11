@@ -48,7 +48,7 @@ pub use self::pin_table::{PinGuard, PinTable};
 pub use self::superblock::Superblock;
 
 /// Physical location within the database file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PhysicalLocation {
     pub page_id: PageId,
     pub offset: u32,

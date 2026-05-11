@@ -160,7 +160,7 @@ pub struct Entry {
 }
 
 /// Key encoding strategy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum KeyEncoding {
     RawBytes,
     LexicographicTuple,
@@ -171,7 +171,7 @@ pub enum KeyEncoding {
 }
 
 /// Compression algorithm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CompressionKind {
     None,
     Lz4,
@@ -181,7 +181,7 @@ pub enum CompressionKind {
 }
 
 /// Encryption algorithm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EncryptionKind {
     None,
     AesGcm,

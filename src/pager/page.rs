@@ -69,6 +69,8 @@ pub enum PageType {
     LsmMeta = 6,
     /// LSM data page
     LsmData = 7,
+    /// Catalog page (table metadata)
+    Catalog = 8,
 }
 
 impl PageType {
@@ -83,6 +85,7 @@ impl PageType {
             5 => Some(PageType::Overflow),
             6 => Some(PageType::LsmMeta),
             7 => Some(PageType::LsmData),
+            8 => Some(PageType::Catalog),
             _ => None,
         }
     }

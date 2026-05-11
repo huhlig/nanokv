@@ -38,7 +38,8 @@ const VERSION: u16 = 1;
 /// - Bytes 24-31: Free pages (u64)
 /// - Bytes 32-39: Superblock page ID (u64)
 /// - Bytes 40-47: First free list page ID (u64)
-/// - Bytes 48-79: Reserved (32 bytes)
+/// - Bytes 48-55: Catalog page ID (u64)
+/// - Bytes 56-79: Reserved (24 bytes)
 /// - Bytes 80-111: Database UUID (32 bytes)
 /// - Bytes 112-143: Creation timestamp (32 bytes)
 /// - Bytes 144-175: Last modified timestamp (32 bytes)
@@ -61,6 +62,8 @@ pub struct FileHeader {
     pub superblock_page_id: u64,
     /// First free list page ID
     pub first_free_list_page_id: u64,
+    /// Catalog page ID (typically page 2)
+    pub catalog_page_id: u64,
     /// Database UUID (for replication/backup identification)
     pub database_uuid: [u8; 32],
     /// Creation timestamp (Unix timestamp as bytes)
@@ -104,10 +107,11 @@ impl FileHeader {
             page_size,
             compression,
             encryption,
-            total_pages: 2, // Header page (0) + Superblock page (1)
+            total_pages: 3, // Header page (0) + Superblock page (1) + Catalog page (2)
             free_pages: 0,
             superblock_page_id: 1,
             first_free_list_page_id: 0, // 0 means no free list yet
+            catalog_page_id: 2,
             database_uuid: uuid,
             created_at: timestamp,
             modified_at: timestamp,
@@ -144,6 +148,9 @@ impl FileHeader {
 
         // First free list page ID (8 bytes)
         bytes[40..48].copy_from_slice(&self.first_free_list_page_id.to_le_bytes());
+
+        // Catalog page ID (8 bytes)
+        bytes[48..56].copy_from_slice(&self.catalog_page_id.to_le_bytes());
 
         // Database UUID (32 bytes)
         bytes[80..112].copy_from_slice(&self.database_uuid);
@@ -216,6 +223,7 @@ impl FileHeader {
         let free_pages = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
         let superblock_page_id = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
         let first_free_list_page_id = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+        let catalog_page_id = u64::from_le_bytes(bytes[48..56].try_into().unwrap());
 
         // Parse UUID and timestamps
         let database_uuid: [u8; 32] = bytes[80..112].try_into().unwrap();
@@ -231,6 +239,7 @@ impl FileHeader {
             free_pages,
             superblock_page_id,
             first_free_list_page_id,
+            catalog_page_id,
             database_uuid,
             created_at,
             modified_at,
