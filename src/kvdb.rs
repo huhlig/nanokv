@@ -77,12 +77,8 @@ pub struct Database<FS: FileSystem> {
     /// Pager for disk I/O
     pager: Arc<Pager<FS>>,
     
-    /// Table engine registry
+    /// Table engine registry for managing storage engine instances
     engine_registry: Arc<TableEngineRegistry<FS>>,
-    
-    /// Legacy table storage (for backward compatibility during migration)
-    /// TODO: Remove once all operations use engine registry
-    table_storage: Arc<RwLock<HashMap<ObjectId, HashMap<Vec<u8>, Vec<u8>>>>>,
 }
 
 impl<FS: FileSystem> Database<FS> {
@@ -108,7 +104,6 @@ impl<FS: FileSystem> Database<FS> {
             wal: Arc::new(wal),
             pager,
             engine_registry,
-            table_storage: Arc::new(RwLock::new(HashMap::new())),
         };
         
         // Initialize empty catalog page
@@ -141,7 +136,6 @@ impl<FS: FileSystem> Database<FS> {
             wal: Arc::new(wal),
             pager,
             engine_registry,
-            table_storage: Arc::new(RwLock::new(HashMap::new())),
         };
         
         // Recover catalog from disk
@@ -173,7 +167,7 @@ impl<FS: FileSystem> Database<FS> {
             IsolationLevel::ReadCommitted,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
-            Arc::clone(&self.table_storage),
+            Arc::clone(&self.engine_registry),
             Arc::clone(&self.current_lsn),
         ))
     }
@@ -194,7 +188,7 @@ impl<FS: FileSystem> Database<FS> {
             IsolationLevel::ReadCommitted,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
-            Arc::clone(&self.table_storage),
+            Arc::clone(&self.engine_registry),
             Arc::clone(&self.current_lsn),
         ))
     }
@@ -218,7 +212,7 @@ impl<FS: FileSystem> Database<FS> {
             IsolationLevel::ReadCommitted,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
-            Arc::clone(&self.table_storage),
+            Arc::clone(&self.engine_registry),
             Arc::clone(&self.current_lsn),
         ))
     }
@@ -347,12 +341,20 @@ impl<FS: FileSystem> Database<FS> {
         // Get current LSN for creation timestamp
         let created_lsn = *self.current_lsn.read().unwrap();
         
+        // Create the storage engine instance
+        let engine = self.engine_registry.create_engine(table_id, name.to_string(), &options)
+            .map_err(|e| DatabaseError::other(format!("Failed to create storage engine: {}", e)))?;
+        
+        // Register the engine
+        self.engine_registry.register(engine)
+            .map_err(|e| DatabaseError::other(format!("Failed to register storage engine: {}", e)))?;
+        
         // Create table info
         let table_info = TableInfo {
             id: table_id,
             name: name.to_string(),
             options,
-            root: None, // No root page yet
+            root: None, // Root page is managed by the engine
             created_lsn,
             index_metadata: None, // Regular table, not an index
         };
