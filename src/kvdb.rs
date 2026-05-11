@@ -245,7 +245,12 @@ impl<FS: FileSystem> Database<FS> {
             .map_err(|e| DatabaseError::other(format!("Failed to serialize catalog: {}", e)))?;
         
         // Catalog page is always page 2 (page 0 = header, page 1 = superblock, page 2 = catalog)
+        // We use a fixed page ID rather than allocating to ensure consistency
         let catalog_page_id = PageId::from(2);
+        
+        // Try to allocate the catalog page if it doesn't exist yet
+        // This will fail if page already exists, which is fine - we'll just write to it
+        let _ = self.pager.allocate_page(PageType::Catalog);
         
         // Prepare page data with version and count header
         let version: u32 = 1; // Catalog format version
