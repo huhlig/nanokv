@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// Helper to create a test database
 fn create_test_db() -> Database<MemoryFileSystem> {
     let fs = MemoryFileSystem::new();
-    Database::new(&fs, "test.wal").expect("Failed to create database")
+    Database::new(&fs, "test.wal", "test.db").expect("Failed to create database")
 }
 
 /// Helper to create default table options
@@ -532,6 +532,237 @@ fn test_crud_sequence() {
     assert_eq!(db.get(table_id, b"user1").unwrap().unwrap().as_ref(), b"Alice");
     assert_eq!(db.get(table_id, b"user2").unwrap().unwrap().as_ref(), b"Bob Smith");
     assert!(db.get(table_id, b"user3").unwrap().is_none());
+}
+
+// =============================================================================
+// LSM Engine Tests
+// =============================================================================
+
+/// Helper to create LSM table options
+fn lsm_table_options() -> TableOptions {
+    TableOptions {
+        engine: TableEngineKind::LsmTree,
+        key_encoding: KeyEncoding::RawBytes,
+        compression: None,
+        encryption: None,
+        page_size: None,
+        format_version: 1,
+    }
+}
+
+#[test]
+fn test_create_lsm_table() {
+    let db = create_test_db();
+    
+    let table_id = db.create_table("events", lsm_table_options())
+        .expect("Failed to create LSM table");
+    
+    // Verify table exists
+    assert!(db.is_table(table_id).unwrap());
+    
+    // Verify table info
+    let info = db.get_object_info(table_id).unwrap().expect("Table not found");
+    assert_eq!(info.name, "events");
+    assert_eq!(info.options.engine, TableEngineKind::LsmTree);
+}
+
+#[test]
+fn test_lsm_insert_and_get() {
+    let db = create_test_db();
+    let table_id = db.create_table("events", lsm_table_options()).unwrap();
+    
+    // Insert multiple key-value pairs
+    db.insert(table_id, b"event1", b"User login").unwrap();
+    db.insert(table_id, b"event2", b"Page view").unwrap();
+    db.insert(table_id, b"event3", b"User logout").unwrap();
+    
+    // Verify all values
+    assert_eq!(db.get(table_id, b"event1").unwrap().unwrap().as_ref(), b"User login");
+    assert_eq!(db.get(table_id, b"event2").unwrap().unwrap().as_ref(), b"Page view");
+    assert_eq!(db.get(table_id, b"event3").unwrap().unwrap().as_ref(), b"User logout");
+}
+
+#[test]
+fn test_lsm_update() {
+    let db = create_test_db();
+    let table_id = db.create_table("events", lsm_table_options()).unwrap();
+    
+    // Insert initial value
+    db.insert(table_id, b"event1", b"User login").unwrap();
+    
+    // Update value
+    db.update(table_id, b"event1", b"Admin login").unwrap();
+    
+    // Verify updated value
+    assert_eq!(db.get(table_id, b"event1").unwrap().unwrap().as_ref(), b"Admin login");
+}
+
+#[test]
+fn test_lsm_delete() {
+    let db = create_test_db();
+    let table_id = db.create_table("events", lsm_table_options()).unwrap();
+    
+    // Insert value
+    db.insert(table_id, b"event1", b"User login").unwrap();
+    
+    // Verify exists
+    assert!(db.get(table_id, b"event1").unwrap().is_some());
+    
+    // Delete
+    let deleted = db.delete(table_id, b"event1").unwrap();
+    assert!(deleted);
+    
+    // Verify deleted
+    assert!(db.get(table_id, b"event1").unwrap().is_none());
+}
+
+#[test]
+fn test_lsm_write_heavy_workload() {
+    let db = create_test_db();
+    let table_id = db.create_table("logs", lsm_table_options()).unwrap();
+    
+    // LSM trees are optimized for write-heavy workloads
+    // Insert many records
+    for i in 0..100 {
+        let key = format!("log{:04}", i);
+        let value = format!("Log entry {}", i);
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .expect("Failed to insert");
+    }
+    
+    // Verify random reads
+    assert_eq!(
+        db.get(table_id, b"log0000").unwrap().unwrap().as_ref(),
+        b"Log entry 0"
+    );
+    assert_eq!(
+        db.get(table_id, b"log0050").unwrap().unwrap().as_ref(),
+        b"Log entry 50"
+    );
+    assert_eq!(
+        db.get(table_id, b"log0099").unwrap().unwrap().as_ref(),
+        b"Log entry 99"
+    );
+}
+
+#[test]
+fn test_lsm_upsert() {
+    let db = create_test_db();
+    let table_id = db.create_table("events", lsm_table_options()).unwrap();
+    
+    // Upsert (insert)
+    let is_update = db.upsert(table_id, b"event1", b"User login").unwrap();
+    assert!(!is_update);
+    
+    // Upsert (update)
+    let is_update = db.upsert(table_id, b"event1", b"Admin login").unwrap();
+    assert!(is_update);
+    
+    // Verify final value
+    assert_eq!(db.get(table_id, b"event1").unwrap().unwrap().as_ref(), b"Admin login");
+}
+
+#[test]
+fn test_lsm_multiple_tables() {
+    let db = create_test_db();
+    
+    // Create multiple LSM tables
+    let logs_id = db.create_table("logs", lsm_table_options()).unwrap();
+    let events_id = db.create_table("events", lsm_table_options()).unwrap();
+    
+    // Insert into both
+    db.insert(logs_id, b"log1", b"System started").unwrap();
+    db.insert(events_id, b"event1", b"User login").unwrap();
+    
+    // Verify isolation
+    assert!(db.get(logs_id, b"log1").unwrap().is_some());
+    assert!(db.get(logs_id, b"event1").unwrap().is_none());
+    assert!(db.get(events_id, b"event1").unwrap().is_some());
+    assert!(db.get(events_id, b"log1").unwrap().is_none());
+}
+
+#[test]
+fn test_lsm_mixed_engines() {
+    let db = create_test_db();
+    
+    // Create tables with different engines
+    let memory_table = db.create_table("cache", default_table_options()).unwrap();
+    let lsm_table = db.create_table("logs", lsm_table_options()).unwrap();
+    
+    // Insert into both
+    db.insert(memory_table, b"key1", b"cached_value").unwrap();
+    db.insert(lsm_table, b"log1", b"log_entry").unwrap();
+    
+    // Verify both work correctly
+    assert_eq!(db.get(memory_table, b"key1").unwrap().unwrap().as_ref(), b"cached_value");
+    assert_eq!(db.get(lsm_table, b"log1").unwrap().unwrap().as_ref(), b"log_entry");
+    
+    // Verify table info shows correct engines
+    let memory_info = db.get_object_info(memory_table).unwrap().unwrap();
+    let lsm_info = db.get_object_info(lsm_table).unwrap().unwrap();
+    assert_eq!(memory_info.options.engine, TableEngineKind::Memory);
+    assert_eq!(lsm_info.options.engine, TableEngineKind::LsmTree);
+}
+
+#[test]
+fn test_lsm_sequential_writes() {
+    let db = create_test_db();
+    let table_id = db.create_table("timeseries", lsm_table_options()).unwrap();
+    
+    // LSM trees excel at sequential writes (append-only workloads)
+    for i in 0..50 {
+        let timestamp = format!("ts{:010}", i);
+        let value = format!("value_{}", i);
+        db.insert(table_id, timestamp.as_bytes(), value.as_bytes()).unwrap();
+    }
+    
+    // Verify first and last entries
+    assert_eq!(
+        db.get(table_id, b"ts0000000000").unwrap().unwrap().as_ref(),
+        b"value_0"
+    );
+    assert_eq!(
+        db.get(table_id, b"ts0000000049").unwrap().unwrap().as_ref(),
+        b"value_49"
+    );
+}
+
+#[test]
+fn test_lsm_overwrite_pattern() {
+    let db = create_test_db();
+    let table_id = db.create_table("counters", lsm_table_options()).unwrap();
+    
+    // Insert initial value
+    db.insert(table_id, b"counter1", b"0").unwrap();
+    
+    // Repeatedly update (LSM handles this with tombstones and compaction)
+    for i in 1..=10 {
+        let value = format!("{}", i);
+        db.update(table_id, b"counter1", value.as_bytes()).unwrap();
+    }
+    
+    // Verify final value
+    assert_eq!(db.get(table_id, b"counter1").unwrap().unwrap().as_ref(), b"10");
+}
+
+#[test]
+fn test_lsm_table_handle() {
+    let db = create_test_db();
+    let table_id = db.create_table("events", lsm_table_options()).unwrap();
+    
+    // Get table handle
+    let table = db.table(table_id).expect("Failed to get table handle");
+    
+    // Use handle for operations
+    table.insert(b"event1", b"User login").unwrap();
+    table.insert(b"event2", b"Page view").unwrap();
+    
+    assert_eq!(table.get(b"event1").unwrap().unwrap().as_ref(), b"User login");
+    assert!(table.contains(b"event1").unwrap());
+    assert!(table.contains(b"event2").unwrap());
+    
+    table.delete(b"event1").unwrap();
+    assert!(!table.contains(b"event1").unwrap());
 }
 
 // Made with Bob
