@@ -16,6 +16,7 @@
 pub mod blob;
 pub mod btree;
 mod error;
+pub mod hash;
 pub mod lsm;
 mod traits;
 
@@ -28,6 +29,7 @@ use crate::vfs::FileSystem;
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
+pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
 pub use self::lsm::{
     BloomFilter, BloomFilterBuilder, CompactionConfig, CompactionStrategy, LevelConfig,
     LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
@@ -63,6 +65,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     PagedBTree(Arc<PagedBTree<FS>>),
     LsmTree(Arc<crate::table::lsm::LsmTree<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
+    MemoryHashTable(Arc<MemoryHashTable>),
     MemoryBlob(Arc<MemoryBlob>),
     // Note: PagedBlob is not included as it doesn't take FS generic parameter
     // TODO: Refactor PagedBlob to take Pager parameter
@@ -75,6 +78,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
         }
     }
@@ -85,6 +89,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
         }
     }
@@ -95,6 +100,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::kind(engine.as_ref()),
+            Self::MemoryHashTable(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::kind(engine.as_ref()),
         }
     }
@@ -106,6 +112,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(_) => None, // TODO: Make get_root_page_id public or add accessor
             Self::LsmTree(_) => None, // LSM has manifest, not single root
             Self::MemoryBTree(_) => None,
+            Self::MemoryHashTable(_) => None,
             Self::MemoryBlob(_) => None,
         }
     }
@@ -117,6 +124,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::PagedBTree(engine) => Self::PagedBTree(Arc::clone(engine)),
             Self::LsmTree(engine) => Self::LsmTree(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
+            Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),
         }
     }
@@ -198,6 +206,11 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 let memory_btree = MemoryBTree::new(table_id, name);
                 Ok((TableEngineInstance::MemoryBTree(Arc::new(memory_btree)), None))
             }
+            TableEngineKind::Hash => {
+                // Create in-memory hash table - no root page
+                let hash_table = MemoryHashTable::new(table_id, name);
+                Ok((TableEngineInstance::MemoryHashTable(Arc::new(hash_table)), None))
+            }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry (doesn't take FS generic)
                 // TODO: Refactor PagedBlob to work with registry
@@ -243,6 +256,11 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 // Memory tables don't persist, create new
                 let memory_btree = MemoryBTree::new(table_id, name);
                 Ok(TableEngineInstance::MemoryBTree(Arc::new(memory_btree)))
+            }
+            TableEngineKind::Hash => {
+                // Hash tables don't persist, create new
+                let hash_table = MemoryHashTable::new(table_id, name);
+                Ok(TableEngineInstance::MemoryHashTable(Arc::new(hash_table)))
             }
             _ => Err(RegistryError::UnsupportedEngine(options.engine)),
         }

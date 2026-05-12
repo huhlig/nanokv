@@ -386,6 +386,15 @@ impl<FS: FileSystem> Transaction<FS> {
                         TransactionError::Other(format!("Memory BTree get failed: {}", e))
                     })?
                 }
+                TableEngineInstance::MemoryHashTable(hash) => {
+                    // Hash tables have a reader method
+                    let reader = hash.reader(self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Failed to get Hash table reader: {}", e))
+                    })?;
+                    reader.get(key, self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Hash table get failed: {}", e))
+                    })?
+                }
                 TableEngineInstance::MemoryBlob(blob) => {
                     // Blob tables don't use reader/writer pattern, access directly
                     blob.get(key).map_err(|e| {
@@ -510,6 +519,14 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("Memory BTree contains failed: {}", e))
                         })?
                     }
+                    TableEngineInstance::MemoryHashTable(hash) => {
+                        let reader = hash.reader(self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Failed to get Hash table reader: {}", e))
+                        })?;
+                        reader.get(key, self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Hash table get failed: {}", e))
+                        })?.is_some()
+                    }
                     TableEngineInstance::MemoryBlob(blob) => {
                         // Blob tables don't use reader pattern, check directly
                         blob.get(key)
@@ -617,6 +634,11 @@ impl<FS: FileSystem> Transaction<FS> {
                             ))
                         })?;
                     }
+                }
+                TableEngineInstance::MemoryHashTable(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for hash tables".to_string(),
+                    ));
                 }
                 TableEngineInstance::MemoryBlob(_) => {
                     return Err(TransactionError::Other(
@@ -808,6 +830,28 @@ impl<FS: FileSystem> Transaction<FS> {
                                 "Memory BTree commit_versions failed: {}",
                                 e
                             ))
+                        })?;
+                    }
+                    TableEngineInstance::MemoryHashTable(hash) => {
+                        let mut writer = hash.writer(self.txn_id, self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Failed to get Hash table writer: {}", e))
+                        })?;
+
+                        match value_opt {
+                            Some(value) => {
+                                MutableTable::put(&mut writer, key, value).map_err(|e| {
+                                    TransactionError::Other(format!("Hash table put failed: {}", e))
+                                })?;
+                            }
+                            None => {
+                                MutableTable::delete(&mut writer, key).map_err(|e| {
+                                    TransactionError::Other(format!("Hash table delete failed: {}", e))
+                                })?;
+                            }
+                        }
+
+                        Flushable::flush(&mut writer).map_err(|e| {
+                            TransactionError::Other(format!("Hash table flush failed: {}", e))
                         })?;
                     }
                     TableEngineInstance::MemoryBlob(blob) => {

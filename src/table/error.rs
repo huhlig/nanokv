@@ -349,6 +349,11 @@ impl TableError {
         }
     }
 
+    /// Create an operation not supported error
+    pub fn operation_not_supported(details: impl Into<String>) -> Self {
+        Self::Other(format!("Operation not supported: {}", details.into()))
+    }
+
     /// Create a FlushFailed error with context
     pub fn flush_failed(
         memtable_size: usize,
