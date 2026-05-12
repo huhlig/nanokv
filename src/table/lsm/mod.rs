@@ -43,7 +43,6 @@
 //! - Compression: Optional per-block compression
 //! - Encryption: Optional per-block encryption
 
-mod bloom;
 mod compaction;
 mod config;
 mod iterator;
@@ -51,7 +50,7 @@ mod manifest;
 mod memtable;
 mod sstable;
 
-pub use self::bloom::{BloomFilter, BloomFilterBuilder};
+pub use crate::table::bloom::{BloomFilter, BloomFilterBuilder};
 pub use self::compaction::{
     CompactionExecutor, CompactionJob, CompactionManager, CompactionPicker, CompactionStats,
 };

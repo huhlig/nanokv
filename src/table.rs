@@ -29,12 +29,12 @@ use crate::table::lsm::LsmTree;
 use crate::types::TableId;
 use crate::vfs::FileSystem;
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
-pub use self::bloom::PagedBloomFilter;
+pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
 pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
 pub use self::lsm::{
-    BloomFilter, BloomFilterBuilder, CompactionConfig, CompactionStrategy, LevelConfig,
+    CompactionConfig, CompactionStrategy, LevelConfig,
     LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
 };
 pub use self::traits::{
