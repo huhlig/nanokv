@@ -24,7 +24,7 @@
 
 use nanokv::kvdb::{Database, DatabaseError, DatabaseErrorKind};
 use nanokv::table::{TableOptions, TableEngineKind};
-use nanokv::types::{ObjectId, KeyEncoding, Durability};
+use nanokv::types::{TableId, KeyEncoding, Durability};
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
 
@@ -343,7 +343,7 @@ fn test_table_handle_info() {
 #[test]
 fn test_operation_on_nonexistent_table() {
     let db = create_test_db();
-    let fake_table_id = ObjectId::from(999);
+    let fake_table_id = TableId::from(999);
     
     // Try operations on non-existent table
     let result = db.insert(fake_table_id, b"key", b"value");

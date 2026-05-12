@@ -28,7 +28,7 @@
 use crate::table::{
     Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
 };
-use crate::types::{ObjectId, ValueBuf};
+use crate::types::{TableId, ValueBuf};
 use std::path::PathBuf;
 
 /// File-based blob storage table.
@@ -36,14 +36,14 @@ use std::path::PathBuf;
 /// Stores each blob as a separate file in a directory. This is suitable for
 /// very large blobs that benefit from direct file system access.
 pub struct FileBlob {
-    id: ObjectId,
+    id: TableId,
     name: String,
     base_path: PathBuf,
 }
 
 impl FileBlob {
     /// Create a new file-based blob storage table.
-    pub fn new(id: ObjectId, name: String, base_path: PathBuf) -> Self {
+    pub fn new(id: TableId, name: String, base_path: PathBuf) -> Self {
         Self {
             id,
             name,
@@ -74,7 +74,7 @@ impl FileBlob {
 }
 
 impl Table for FileBlob {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.id
     }
 

@@ -18,7 +18,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nanokv::pager::{CompressionType, EncryptionType};
-use nanokv::types::ObjectId;
+use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
@@ -142,7 +142,7 @@ fn bench_write_operations(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -172,7 +172,7 @@ fn bench_write_operations(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -198,7 +198,7 @@ fn bench_write_operations(c: &mut Criterion) {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    ObjectId::from(1),
+                    TableId::from(1),
                     WriteOpType::Delete,
                     key,
                     vec![],
@@ -232,7 +232,7 @@ fn bench_flush_operations(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 TransactionId::from(1),
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 b"value".to_vec(),
@@ -260,7 +260,7 @@ fn bench_flush_operations(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 TransactionId::from(1),
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 b"value".to_vec(),
@@ -299,7 +299,7 @@ fn bench_wal_reader(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(i),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
@@ -334,7 +334,7 @@ fn bench_wal_reader(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(i),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
@@ -380,7 +380,7 @@ fn bench_recovery(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(i),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
@@ -413,7 +413,7 @@ fn bench_recovery(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(i),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             b"value".to_vec(),
@@ -491,7 +491,7 @@ fn bench_complete_transactions(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 txn_id,
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 b"value".to_vec(),
@@ -520,7 +520,7 @@ fn bench_complete_transactions(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 txn_id,
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 b"value".to_vec(),
@@ -585,7 +585,7 @@ fn bench_compression(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 TransactionId::from(1),
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 key,
                                 value.clone(),
@@ -618,7 +618,7 @@ fn bench_compression(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 TransactionId::from(i),
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 value.clone(),
@@ -685,7 +685,7 @@ fn bench_encryption(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 TransactionId::from(1),
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 key,
                                 value.clone(),
@@ -718,7 +718,7 @@ fn bench_encryption(c: &mut Criterion) {
                         writer
                             .write_operation(
                                 TransactionId::from(i),
-                                ObjectId::from(1),
+                                TableId::from(1),
                                 WriteOpType::Put,
                                 format!("key_{}", i).into_bytes(),
                                 value.clone(),
@@ -795,7 +795,7 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -830,7 +830,7 @@ fn bench_compression_and_encryption(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(i),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             format!("key_{}", i).into_bytes(),
                             value.clone(),
@@ -874,7 +874,7 @@ fn bench_group_commit_single_thread(c: &mut Criterion) {
             writer
                 .write_operation(
                     txn_id,
-                    ObjectId::from(1),
+                    TableId::from(1),
                     WriteOpType::Put,
                     b"key".to_vec(),
                     b"value".to_vec(),
@@ -898,7 +898,7 @@ fn bench_group_commit_single_thread(c: &mut Criterion) {
             writer
                 .write_operation(
                     txn_id,
-                    ObjectId::from(1),
+                    TableId::from(1),
                     WriteOpType::Put,
                     b"key".to_vec(),
                     b"value".to_vec(),
@@ -937,7 +937,7 @@ fn bench_group_commit_concurrent(c: &mut Criterion) {
                                 writer_clone
                                     .write_operation(
                                         txn_id,
-                                        ObjectId::from(1),
+                                        TableId::from(1),
                                         WriteOpType::Put,
                                         format!("key{}", txn_id).into_bytes(),
                                         b"value".to_vec(),
@@ -977,7 +977,7 @@ fn bench_group_commit_concurrent(c: &mut Criterion) {
                                 writer_clone
                                     .write_operation(
                                         txn_id,
-                                        ObjectId::from(1),
+                                        TableId::from(1),
                                         WriteOpType::Put,
                                         format!("key{}", txn_id).into_bytes(),
                                         b"value".to_vec(),
@@ -1018,7 +1018,7 @@ fn bench_group_commit_throughput(c: &mut Criterion) {
                 writer
                     .write_operation(
                         txn_id,
-                        ObjectId::from(1),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key{}", txn_id).into_bytes(),
                         b"value".to_vec(),
@@ -1043,7 +1043,7 @@ fn bench_group_commit_throughput(c: &mut Criterion) {
                 writer
                     .write_operation(
                         txn_id,
-                        ObjectId::from(1),
+                        TableId::from(1),
                         WriteOpType::Put,
                         format!("key{}", txn_id).into_bytes(),
                         b"value".to_vec(),
@@ -1084,7 +1084,7 @@ fn bench_group_commit_configs(c: &mut Criterion) {
                             writer_clone
                                 .write_operation(
                                     txn_id,
-                                    ObjectId::from(1),
+                                    TableId::from(1),
                                     WriteOpType::Put,
                                     format!("key{}", txn_id).into_bytes(),
                                     b"value".to_vec(),

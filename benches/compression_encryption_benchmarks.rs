@@ -18,7 +18,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nanokv::pager::{CompressionType, EncryptionType, Page, PageType, Pager, PagerConfig};
-use nanokv::types::ObjectId;
+use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalWriter, WalWriterConfig, WriteOpType};
@@ -447,7 +447,7 @@ fn bench_wal_compression(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -477,7 +477,7 @@ fn bench_wal_compression(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -506,7 +506,7 @@ fn bench_wal_compression(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -553,7 +553,7 @@ fn bench_wal_encryption(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -582,7 +582,7 @@ fn bench_wal_encryption(c: &mut Criterion) {
                     writer
                         .write_operation(
                             TransactionId::from(1),
-                            ObjectId::from(1),
+                            TableId::from(1),
                             WriteOpType::Put,
                             key,
                             value.clone(),
@@ -627,7 +627,7 @@ fn bench_wal_combined(c: &mut Criterion) {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    ObjectId::from(1),
+                    TableId::from(1),
                     WriteOpType::Put,
                     key,
                     value.clone(),
@@ -655,7 +655,7 @@ fn bench_wal_combined(c: &mut Criterion) {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    ObjectId::from(1),
+                    TableId::from(1),
                     WriteOpType::Put,
                     key,
                     value.clone(),

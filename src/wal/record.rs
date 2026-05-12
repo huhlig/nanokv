@@ -18,7 +18,7 @@
 
 use crate::pager::{CompressionType, EncryptionType};
 use crate::txn::TransactionId;
-use crate::types::ObjectId;
+use crate::types::TableId;
 use crate::wal::{WalError, WalResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -102,6 +102,8 @@ pub enum WriteOpType {
     Put = 1,
     /// Delete a key
     Delete = 2,
+    /// Insert a key into a bloom filter
+    BloomInsert = 3,
 }
 
 impl WriteOpType {
@@ -110,6 +112,7 @@ impl WriteOpType {
         match value {
             1 => Ok(WriteOpType::Put),
             2 => Ok(WriteOpType::Delete),
+            3 => Ok(WriteOpType::BloomInsert),
             _ => Err(WalError::InvalidRecord {
                 lsn: LogSequenceNumber::from(0),
                 details: format!("Invalid write op type: {}", value),
@@ -136,7 +139,7 @@ pub enum RecordData {
         /// Transaction ID
         txn_id: TransactionId,
         /// Table ID
-        table_id: ObjectId,
+        table_id: TableId,
         /// Operation type
         op_type: WriteOpType,
         /// Key
@@ -634,7 +637,7 @@ impl WalRecord {
                         details: "Invalid Write record: missing table ID".to_string(),
                     });
                 }
-                let table_id = ObjectId::from(u64::from_le_bytes(
+                let table_id = TableId::from(u64::from_le_bytes(
                     bytes[cursor..cursor + 8].try_into().unwrap(),
                 ));
                 cursor += 8;
@@ -805,10 +808,33 @@ mod tests {
             LogSequenceNumber::from(2),
             RecordData::Write {
                 txn_id: TransactionId::from(42),
-                table_id: ObjectId::from(1),
+                table_id: TableId::from(1),
                 op_type: WriteOpType::Put,
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),
+            },
+            CompressionType::None,
+            EncryptionType::None,
+        );
+        let bytes = record.to_bytes(None).unwrap();
+        let deserialized = WalRecord::from_bytes(&bytes, None).unwrap();
+
+        assert_eq!(record.lsn, deserialized.lsn);
+        assert_eq!(record.data, deserialized.data);
+        assert_eq!(record.compression, deserialized.compression);
+        assert_eq!(record.encryption, deserialized.encryption);
+    }
+
+    #[test]
+    fn test_bloom_insert_record_serialization() {
+        let record = WalRecord::new(
+            LogSequenceNumber::from(5),
+            RecordData::Write {
+                txn_id: TransactionId::from(42),
+                table_id: TableId::from(7),
+                op_type: WriteOpType::BloomInsert,
+                key: b"bloom-key".to_vec(),
+                value: vec![],
             },
             CompressionType::None,
             EncryptionType::None,

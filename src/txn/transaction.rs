@@ -14,9 +14,12 @@
 // limitations under the License.
 //
 
-use crate::table::{PointLookup, SearchableTable, TableCursor, TableEngineRegistry};
+use crate::table::{
+    ApproximateMembership, PointLookup, SearchableTable, SpecialtyTableCapabilities,
+    SpecialtyTableStats, TableCursor, TableEngineRegistry, VerificationReport,
+};
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
-use crate::types::{Durability, IsolationLevel, ObjectId, ScanBounds, ValueBuf};
+use crate::types::{Durability, IsolationLevel, TableId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WriteOpType};
 use std::collections::{HashMap, HashSet};
@@ -104,23 +107,23 @@ pub trait TransactionOps {
     ///
     /// Both tables and indexes are treated uniformly using ObjectId.
     /// The transaction layer does not distinguish between them.
-    fn get(&self, object: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
+    fn get(&self, object: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>>;
 
     /// Put a key-value pair into an object (table or index).
     ///
     /// For indexes, the caller is responsible for maintaining consistency
     /// with the parent table. The transaction layer does not automatically
     /// update indexes when table data changes.
-    fn put(&mut self, object: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
+    fn put(&mut self, object: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()>;
 
     /// Delete a key from an object (table or index).
     ///
     /// For indexes, the caller is responsible for maintaining consistency
     /// with the parent table.
-    fn delete(&mut self, object: ObjectId, key: &[u8]) -> TransactionResult<bool>;
+    fn delete(&mut self, object: TableId, key: &[u8]) -> TransactionResult<bool>;
 
     /// Delete a range of keys from an object (table or index).
-    fn range_delete(&mut self, object: ObjectId, bounds: ScanBounds) -> TransactionResult<u64>;
+    fn range_delete(&mut self, object: TableId, bounds: ScanBounds) -> TransactionResult<u64>;
 
     /// Commit the transaction.
     fn commit(self) -> TransactionResult<CommitInfo>;
@@ -170,12 +173,15 @@ pub struct Transaction<FS: FileSystem> {
 
     // For Serializable isolation: track all keys read to detect read-write conflicts
     // Only populated when isolation == Serializable
-    read_set: HashSet<(ObjectId, Vec<u8>)>,
+    read_set: HashSet<(TableId, Vec<u8>)>,
 
     // Track all writes for commit/rollback
     // (ObjectId, Key) -> Option<Value> mapping of all mutations in this transaction
     // None represents a delete (tombstone), Some(value) represents a put
-    write_set: HashMap<(ObjectId, Vec<u8>), Option<Vec<u8>>>,
+    write_set: HashMap<(TableId, Vec<u8>), Option<Vec<u8>>>,
+
+    // Track specialty-table bloom inserts for commit/rollback visibility
+    bloom_write_set: HashSet<(TableId, Vec<u8>)>,
 
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
@@ -188,6 +194,10 @@ pub struct Transaction<FS: FileSystem> {
 
     // Current LSN (shared with Database)
     current_lsn: Arc<RwLock<LogSequenceNumber>>,
+
+    // Current table context for specialty table operations
+    current_table_id: Option<TableId>,
+    current_table_name: Option<String>,
 }
 
 impl<FS: FileSystem> Transaction<FS> {
@@ -209,10 +219,13 @@ impl<FS: FileSystem> Transaction<FS> {
             state: TransactionState::Active,
             read_set: HashSet::new(),
             write_set: HashMap::new(),
+            bloom_write_set: HashSet::new(),
             conflict_detector,
             wal,
             engine_registry,
             current_lsn,
+            current_table_id: None,
+            current_table_name: None,
         }
     }
 
@@ -268,7 +281,7 @@ impl<FS: FileSystem> Transaction<FS> {
     ///
     /// Called by get() to track reads for Serializable isolation.
     /// Only tracks reads when isolation level is Serializable.
-    pub fn record_read(&mut self, object_id: ObjectId, key: Vec<u8>) {
+    pub fn record_read(&mut self, object_id: TableId, key: Vec<u8>) {
         if self.isolation == IsolationLevel::Serializable {
             self.read_set.insert((object_id, key));
         }
@@ -277,15 +290,20 @@ impl<FS: FileSystem> Transaction<FS> {
     /// Record a write operation for commit/rollback.
     ///
     /// Called by put() to track writes for commit/rollback.
-    pub fn record_write(&mut self, object_id: ObjectId, key: Vec<u8>, value: Vec<u8>) {
+    pub fn record_write(&mut self, object_id: TableId, key: Vec<u8>, value: Vec<u8>) {
         self.write_set.insert((object_id, key), Some(value));
     }
 
     /// Record a delete operation for commit/rollback.
     ///
     /// Called by delete() to track deletes for commit/rollback.
-    pub fn record_delete(&mut self, object_id: ObjectId, key: Vec<u8>) {
+    pub fn record_delete(&mut self, object_id: TableId, key: Vec<u8>) {
         self.write_set.insert((object_id, key), None);
+    }
+
+    /// Record a bloom filter insert for commit/rollback.
+    pub fn record_bloom_insert(&mut self, object_id: TableId, key: Vec<u8>) {
+        self.bloom_write_set.insert((object_id, key));
     }
 
     /// Prepare the transaction for commit (two-phase commit).
@@ -325,13 +343,47 @@ impl<FS: FileSystem> Transaction<FS> {
         self.snapshot_lsn
     }
 
+    /// Get the current table context for specialty table operations.
+    pub fn current_table(&self) -> Option<(TableId, &str)> {
+        self.current_table_id
+            .zip(self.current_table_name.as_deref())
+    }
+
+    /// Set the current table context for specialty table operations.
+    pub fn with_table(&mut self, table_id: TableId) -> &mut Self {
+        self.current_table_id = Some(table_id);
+        self.current_table_name = self
+            .engine_registry
+            .get(table_id)
+            .map(|engine| engine.name().to_string());
+        self
+    }
+
+    /// Clear the current table context for specialty table operations.
+    pub fn clear_table_context(&mut self) {
+        self.current_table_id = None;
+        self.current_table_name = None;
+    }
+
+    /// Execute a scoped set of bloom filter operations using the transaction as
+    /// an `ApproximateMembership` implementation.
+    pub fn with_bloom<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
+    where
+        F: FnOnce(&mut dyn ApproximateMembership) -> crate::table::TableResult<R>,
+    {
+        self.with_table(table_id);
+        let result = f(self);
+        self.clear_table_context();
+        result.map_err(|e| TransactionError::Other(e.to_string()))
+    }
+
     /// Get a value from an object (table or index).
     ///
     /// This method first checks the transaction's write set for uncommitted changes,
     /// then reads from the underlying storage engine for committed data.
     ///
     /// Both tables and indexes are treated uniformly using ObjectId.
-    pub fn get(&self, object: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    pub fn get(&self, object: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -354,15 +406,14 @@ impl<FS: FileSystem> Transaction<FS> {
         if let Some(engine) = self.engine_registry.get(object_id) {
             use crate::table::{PointLookup, SearchableTable, TableEngineInstance};
 
-            // Get a reader for the snapshot and use it to read the value
+            // Get a reader for the snapshot and use trait-based dispatch
             let result = match &engine {
                 TableEngineInstance::PagedBTree(btree) => {
                     let reader = SearchableTable::reader(btree.as_ref(), self.snapshot_lsn)
                         .map_err(|e| {
                             TransactionError::Other(format!("Failed to get BTree reader: {}", e))
                         })?;
-                    reader
-                        .get(key, self.snapshot_lsn)
+                    PointLookup::get(&reader, key, self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("BTree get failed: {}", e)))?
                 }
                 TableEngineInstance::LsmTree(lsm) => {
@@ -370,8 +421,7 @@ impl<FS: FileSystem> Transaction<FS> {
                         SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
                             TransactionError::Other(format!("Failed to get LSM reader: {}", e))
                         })?;
-                    reader
-                        .get(key, self.snapshot_lsn)
+                    PointLookup::get(&reader, key, self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("LSM get failed: {}", e)))?
                 }
                 TableEngineInstance::MemoryBTree(mem) => {
@@ -382,16 +432,15 @@ impl<FS: FileSystem> Transaction<FS> {
                                 e
                             ))
                         })?;
-                    reader.get(key, self.snapshot_lsn).map_err(|e| {
+                    PointLookup::get(&reader, key, self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Memory BTree get failed: {}", e))
                     })?
                 }
                 TableEngineInstance::MemoryHashTable(hash) => {
-                    // Hash tables have a reader method
                     let reader = hash.reader(self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Failed to get Hash table reader: {}", e))
                     })?;
-                    reader.get(key, self.snapshot_lsn).map_err(|e| {
+                    PointLookup::get(&reader, key, self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Hash table get failed: {}", e))
                     })?
                 }
@@ -400,6 +449,17 @@ impl<FS: FileSystem> Transaction<FS> {
                     blob.get(key).map_err(|e| {
                         TransactionError::Other(format!("Memory Blob get failed: {}", e))
                     })?
+                }
+                TableEngineInstance::PagedBloomFilter(bloom) => {
+                    // Bloom filters support approximate membership check
+                    // Returns Some(empty) if probably present, None if definitely absent
+                    if bloom.contains(key).map_err(|e| {
+                        TransactionError::Other(format!("Bloom filter contains failed: {}", e))
+                    })? {
+                        Some(ValueBuf(vec![]))
+                    } else {
+                        None
+                    }
                 }
             };
             return Ok(result);
@@ -416,7 +476,7 @@ impl<FS: FileSystem> Transaction<FS> {
     ///
     /// For indexes, the caller is responsible for maintaining consistency with
     /// the parent table. The transaction layer does not automatically update indexes.
-    pub fn put(&mut self, object: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+    pub fn put(&mut self, object: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -457,7 +517,7 @@ impl<FS: FileSystem> Transaction<FS> {
     ///
     /// For indexes, the caller is responsible for maintaining consistency with
     /// the parent table.
-    pub fn delete(&mut self, object: ObjectId, key: &[u8]) -> TransactionResult<bool> {
+    pub fn delete(&mut self, object: TableId, key: &[u8]) -> TransactionResult<bool> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -494,7 +554,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                     e
                                 ))
                             })?;
-                        reader.contains(key, self.snapshot_lsn).map_err(|e| {
+                        PointLookup::contains(&reader, key, self.snapshot_lsn).map_err(|e| {
                             TransactionError::Other(format!("BTree contains failed: {}", e))
                         })?
                     }
@@ -503,7 +563,7 @@ impl<FS: FileSystem> Transaction<FS> {
                             .map_err(|e| {
                                 TransactionError::Other(format!("Failed to get LSM reader: {}", e))
                             })?;
-                        reader.contains(key, self.snapshot_lsn).map_err(|e| {
+                        PointLookup::contains(&reader, key, self.snapshot_lsn).map_err(|e| {
                             TransactionError::Other(format!("LSM contains failed: {}", e))
                         })?
                     }
@@ -515,7 +575,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                     e
                                 ))
                             })?;
-                        reader.contains(key, self.snapshot_lsn).map_err(|e| {
+                        PointLookup::contains(&reader, key, self.snapshot_lsn).map_err(|e| {
                             TransactionError::Other(format!("Memory BTree contains failed: {}", e))
                         })?
                     }
@@ -523,9 +583,9 @@ impl<FS: FileSystem> Transaction<FS> {
                         let reader = hash.reader(self.snapshot_lsn).map_err(|e| {
                             TransactionError::Other(format!("Failed to get Hash table reader: {}", e))
                         })?;
-                        reader.get(key, self.snapshot_lsn).map_err(|e| {
-                            TransactionError::Other(format!("Hash table get failed: {}", e))
-                        })?.is_some()
+                        PointLookup::contains(&reader, key, self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Hash table contains failed: {}", e))
+                        })?
                     }
                     TableEngineInstance::MemoryBlob(blob) => {
                         // Blob tables don't use reader pattern, check directly
@@ -534,6 +594,13 @@ impl<FS: FileSystem> Transaction<FS> {
                                 TransactionError::Other(format!("Memory Blob get failed: {}", e))
                             })?
                             .is_some()
+                    }
+                    TableEngineInstance::PagedBloomFilter(bloom) => {
+                        // Bloom filters support approximate membership check
+                        bloom.contains(key)
+                            .map_err(|e| {
+                                TransactionError::Other(format!("Bloom filter contains failed: {}", e))
+                            })?
                     }
                 }
             } else {
@@ -563,7 +630,7 @@ impl<FS: FileSystem> Transaction<FS> {
     /// Scans the object at the transaction snapshot, acquires per-key write locks,
     /// records delete operations in the WAL, and stores tombstones in the write set.
     /// Returns the number of keys matched by the snapshot-visible scan.
-    pub fn range_delete(&mut self, object: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
+    pub fn range_delete(&mut self, object: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
         if !self.is_active() {
             return Err(TransactionError::invalid_state(
@@ -585,8 +652,7 @@ impl<FS: FileSystem> Transaction<FS> {
                         .map_err(|e| {
                             TransactionError::Other(format!("Failed to get BTree reader: {}", e))
                         })?;
-                    let mut cursor = reader
-                        .scan(bounds.clone(), self.snapshot_lsn)
+                    let mut cursor = OrderedScan::scan(&reader, bounds.clone(), self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("BTree scan failed: {}", e)))?;
 
                     while cursor.valid() {
@@ -602,8 +668,7 @@ impl<FS: FileSystem> Transaction<FS> {
                     let reader = SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Failed to get LSM reader: {}", e))
                     })?;
-                    let mut cursor = reader
-                        .scan(bounds.clone(), self.snapshot_lsn)
+                    let mut cursor = OrderedScan::scan(&reader, bounds.clone(), self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("LSM scan failed: {}", e)))?;
 
                     while cursor.valid() {
@@ -619,7 +684,7 @@ impl<FS: FileSystem> Transaction<FS> {
                     let reader = SearchableTable::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Failed to get Memory BTree reader: {}", e))
                     })?;
-                    let mut cursor = reader.scan(bounds, self.snapshot_lsn).map_err(|e| {
+                    let mut cursor = OrderedScan::scan(&reader, bounds, self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Memory BTree scan failed: {}", e))
                     })?;
 
@@ -643,6 +708,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::MemoryBlob(_) => {
                     return Err(TransactionError::Other(
                         "range_delete is not supported for blob tables".to_string(),
+                    ));
+                }
+                TableEngineInstance::PagedBloomFilter(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for bloom filter tables".to_string(),
                     ));
                 }
             }
@@ -876,9 +946,35 @@ impl<FS: FileSystem> Transaction<FS> {
                         }
                         // No flush needed for blob tables (in-memory, no writer)
                     }
+                    TableEngineInstance::PagedBloomFilter(_) => {
+                        // Bloom filters don't support transactional put/delete operations
+                        // They should be updated through their specialized ApproximateMembership API
+                        return Err(TransactionError::Other(
+                            "transactional put/delete is not supported for bloom filter tables; use ApproximateMembership API"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
             // If engine not found, skip (table may have been dropped)
+        }
+
+        // Apply bloom filter inserts after generic KV writes.
+        for (object_id, key) in &self.bloom_write_set {
+            if let Some(engine) = self.engine_registry.get(*object_id) {
+                match &engine {
+                    crate::table::TableEngineInstance::PagedBloomFilter(bloom) => {
+                        bloom
+                            .insert(key)
+                            .map_err(|e| TransactionError::Other(format!("Bloom insert failed: {}", e)))?;
+                    }
+                    _ => {
+                        return Err(TransactionError::Other(
+                            "table is not a bloom filter".to_string(),
+                        ))
+                    }
+                }
+            }
         }
 
         // Update current LSN
@@ -933,6 +1029,132 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 }
 
+impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
+    fn table_id(&self) -> TableId {
+        self.current_table_id.unwrap_or(TableId::from(0))
+    }
+
+    fn name(&self) -> &str {
+        self.current_table_name.as_deref().unwrap_or("unknown")
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        let Some(table_id) = self.current_table_id else {
+            return SpecialtyTableCapabilities::default();
+        };
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedBloomFilter(bloom)) => {
+                ApproximateMembership::capabilities(bloom.as_ref())
+            }
+            _ => SpecialtyTableCapabilities::default(),
+        }
+    }
+
+    fn insert_key(&mut self, key: &[u8]) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for insert_key",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for bloom operation".to_string(),
+            )
+        })?;
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::BloomInsert,
+                key.to_vec(),
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_bloom_insert(table_id, key.to_vec());
+        Ok(())
+    }
+
+    fn might_contain(&self, key: &[u8]) -> crate::table::TableResult<bool> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for might_contain",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for bloom operation".to_string(),
+            )
+        })?;
+
+        if self.bloom_write_set.contains(&(table_id, key.to_vec())) {
+            return Ok(true);
+        }
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedBloomFilter(bloom)) => {
+                bloom.might_contain(key)
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a bloom filter".to_string(),
+            )),
+            None => Ok(false),
+        }
+    }
+
+    fn false_positive_rate(&self) -> Option<f64> {
+        let table_id = self.current_table_id?;
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedBloomFilter(bloom)) => {
+                Some(bloom.false_positive_rate())
+            }
+            _ => None,
+        }
+    }
+
+    fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for bloom operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedBloomFilter(bloom)) => bloom.stats(),
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a bloom filter".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+
+    fn verify(&self) -> crate::table::TableResult<VerificationReport> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for bloom operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedBloomFilter(bloom)) => bloom.verify(),
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a bloom filter".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+}
+
 /// Implement the TransactionOps trait for Transaction.
 impl<FS: FileSystem> TransactionOps for Transaction<FS> {
     fn id(&self) -> TransactionId {
@@ -947,19 +1169,19 @@ impl<FS: FileSystem> TransactionOps for Transaction<FS> {
         self.snapshot_lsn
     }
 
-    fn get(&self, object: ObjectId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn get(&self, object: TableId, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
         Transaction::get(self, object, key)
     }
 
-    fn put(&mut self, object: ObjectId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
+    fn put(&mut self, object: TableId, key: &[u8], value: &[u8]) -> TransactionResult<()> {
         Transaction::put(self, object, key, value)
     }
 
-    fn delete(&mut self, object: ObjectId, key: &[u8]) -> TransactionResult<bool> {
+    fn delete(&mut self, object: TableId, key: &[u8]) -> TransactionResult<bool> {
         Transaction::delete(self, object, key)
     }
 
-    fn range_delete(&mut self, object: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
+    fn range_delete(&mut self, object: TableId, bounds: ScanBounds) -> TransactionResult<u64> {
         Transaction::range_delete(self, object, bounds)
     }
 

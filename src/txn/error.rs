@@ -15,7 +15,7 @@
 //
 
 use crate::txn::TransactionId;
-use crate::types::ObjectId;
+use crate::types::TableId;
 
 /// Transaction Result Type
 pub type TransactionResult<T> = Result<T, TransactionError>;
@@ -34,7 +34,7 @@ pub enum TransactionError {
     /// Write-write conflict: two transactions trying to write the same key
     #[error("Write-write conflict on object {object_id}, key {key:?}: already locked by transaction {holder_txn_id}, requested by transaction {requester_txn_id}")]
     WriteWriteConflict {
-        object_id: ObjectId,
+        object_id: TableId,
         key: Vec<u8>,
         holder_txn_id: TransactionId,
         requester_txn_id: TransactionId,
@@ -43,7 +43,7 @@ pub enum TransactionError {
     /// Read-write conflict: a transaction read a key that was later modified
     #[error("Read-write conflict on object {object_id}, key {key:?}: read by transaction {reader_txn_id}, modified by transaction {writer_txn_id}")]
     ReadWriteConflict {
-        object_id: ObjectId,
+        object_id: TableId,
         key: Vec<u8>,
         reader_txn_id: TransactionId,
         writer_txn_id: TransactionId,
@@ -92,7 +92,7 @@ impl TransactionError {
 
     /// Create a write-write conflict error with full context
     pub fn write_write_conflict(
-        object_id: ObjectId,
+        object_id: TableId,
         key: Vec<u8>,
         holder_txn_id: TransactionId,
         requester_txn_id: TransactionId,
@@ -107,7 +107,7 @@ impl TransactionError {
 
     /// Create a read-write conflict error with full context
     pub fn read_write_conflict(
-        object_id: ObjectId,
+        object_id: TableId,
         key: Vec<u8>,
         reader_txn_id: TransactionId,
         writer_txn_id: TransactionId,

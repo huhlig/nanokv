@@ -16,7 +16,7 @@
 
 //! Tests for MVCC conflict detection
 
-use nanokv::types::ObjectId;
+use nanokv::types::TableId;
 use nanokv::txn::{ConflictDetector, TransactionError, TransactionId};
 use std::collections::HashSet;
 
@@ -25,7 +25,7 @@ fn test_no_conflict_different_keys() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks key "a"
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -42,7 +42,7 @@ fn test_write_write_conflict_same_key() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks key "a"
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -66,7 +66,7 @@ fn test_write_write_conflict_same_key() {
 fn test_same_transaction_can_relock() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks key "a"
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -84,7 +84,7 @@ fn test_release_locks() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks multiple keys
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -110,7 +110,7 @@ fn test_release_locks_selective() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Both transactions lock different keys
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -131,8 +131,8 @@ fn test_different_tables_no_conflict() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table1 = ObjectId::from(1);
-    let table2 = ObjectId::from(2);
+    let table1 = TableId::from(1);
+    let table2 = TableId::from(2);
 
     // Transaction 1 locks key "a" in table 1
     detector.acquire_write_lock(table1, b"a".to_vec(), txn1);
@@ -149,7 +149,7 @@ fn test_read_write_conflict_detection() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks key "a" for writing
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -179,7 +179,7 @@ fn test_read_write_no_conflict_different_keys() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks key "a" for writing
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -197,7 +197,7 @@ fn test_read_write_no_conflict_different_keys() {
 fn test_read_write_same_transaction_no_conflict() {
     let mut detector = ConflictDetector::new();
     let txn1 = TransactionId::from(1);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks key "a" for writing
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);
@@ -228,7 +228,7 @@ fn test_multiple_transactions_complex_scenario() {
     let txn1 = TransactionId::from(1);
     let txn2 = TransactionId::from(2);
     let txn3 = TransactionId::from(3);
-    let table = ObjectId::from(1);
+    let table = TableId::from(1);
 
     // Transaction 1 locks keys "a" and "b"
     detector.acquire_write_lock(table, b"a".to_vec(), txn1);

@@ -21,14 +21,14 @@
 //! Unlike the in-memory BloomFilter in lsm/bloom.rs, this implementation is
 //! designed for persistent storage and can handle filters larger than memory.
 
-use crate::pager::{PageId, PageType, Pager};
+use crate::pager::{Page, PageId, PageType, Pager};
 use crate::table::{
     ApproximateMembership, SpecialtyTableCapabilities, SpecialtyTableStats, Table,
     TableEngineKind, TableError, TableResult, VerificationReport,
 };
-use crate::types::ObjectId;
+use crate::types::TableId;
 use crate::vfs::FileSystem;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Paged Bloom filter table for persistent approximate membership testing.
 ///
@@ -37,7 +37,7 @@ use std::sync::Arc;
 /// with each chunk stored in a separate page.
 pub struct PagedBloomFilter<FS: FileSystem> {
     /// Table identifier
-    table_id: ObjectId,
+    table_id: TableId,
 
     /// Table name
     name: String,
@@ -55,7 +55,7 @@ pub struct PagedBloomFilter<FS: FileSystem> {
     num_hash_functions: usize,
 
     /// Number of items inserted
-    num_items: usize,
+    num_items: RwLock<usize>,
 
     /// Page IDs storing the bitmap (in order)
     bitmap_pages: Vec<PageId>,
@@ -98,7 +98,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
     /// * `bits_per_key` - Number of bits per key (affects false positive rate)
     /// * `num_hash_functions` - Number of hash functions (None = auto-calculate)
     pub fn new(
-        table_id: ObjectId,
+        table_id: TableId,
         name: String,
         pager: Arc<Pager<FS>>,
         num_items: usize,
@@ -116,8 +116,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             .allocate_page(PageType::BloomMeta)?;
 
         // Calculate bits per page (page size - header overhead)
-        let page_size = pager.page_size().as_usize();
-        let bits_per_page = (page_size - 64) * 8; // Reserve 64 bytes for page header
+        let bits_per_page = pager.page_size().data_size() * 8;
 
         // Calculate number of pages needed
         let num_pages = (num_bits + bits_per_page - 1) / bits_per_page;
@@ -130,9 +129,9 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             bitmap_pages.push(page_id);
 
             // Initialize page with zeros
-            let mut page = pager
-                .write_page(page_id)?;
-            page.data_mut().fill(0);
+            let mut page = Page::new(page_id, PageType::BloomData, pager.page_size().data_size());
+            page.data_mut().resize(pager.page_size().data_size(), 0);
+            pager.write_page(&page)?;
         }
 
         let mut filter = Self {
@@ -142,7 +141,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             root_page_id,
             num_bits,
             num_hash_functions,
-            num_items: 0,
+            num_items: RwLock::new(0),
             bitmap_pages,
             bits_per_page,
         };
@@ -155,7 +154,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
 
     /// Open an existing paged bloom filter.
     pub fn open(
-        table_id: ObjectId,
+        table_id: TableId,
         name: String,
         pager: Arc<Pager<FS>>,
         root_page_id: PageId,
@@ -168,17 +167,16 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
 
         // Validate magic number
         if metadata.magic != BLOOM_MAGIC {
-            return Err(TableError::CorruptedData(
-                "Invalid bloom filter magic number".to_string(),
+            return Err(TableError::corruption(
+                "bloom_filter_metadata",
+                "invalid_magic",
+                "Invalid bloom filter magic number",
             ));
         }
 
         // Validate version
         if metadata.version != BLOOM_VERSION {
-            return Err(TableError::UnsupportedVersion {
-                found: metadata.version,
-                expected: BLOOM_VERSION,
-            });
+            return Err(TableError::InvalidFormatVersion(metadata.version));
         }
 
         let num_bits = metadata.num_bits as usize;
@@ -187,8 +185,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         let num_bitmap_pages = metadata.num_bitmap_pages as usize;
 
         // Calculate bits per page
-        let page_size = pager.page_size().as_usize();
-        let bits_per_page = (page_size - 64) * 8;
+        let bits_per_page = pager.page_size().data_size() * 8;
 
         // Read bitmap page IDs from metadata page
         let page_ids_offset = std::mem::size_of::<BloomFilterMetadata>();
@@ -198,7 +195,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         for i in 0..num_bitmap_pages {
             let offset = i * std::mem::size_of::<PageId>();
             let page_id_bytes = &page_ids_data[offset..offset + std::mem::size_of::<PageId>()];
-            let page_id = PageId::from_le_bytes(page_id_bytes.try_into().unwrap());
+            let page_id = PageId::from(u64::from_le_bytes(page_id_bytes.try_into().unwrap()));
             bitmap_pages.push(page_id);
         }
 
@@ -209,14 +206,14 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             root_page_id,
             num_bits,
             num_hash_functions,
-            num_items,
+            num_items: RwLock::new(num_items),
             bitmap_pages,
             bits_per_page,
         })
     }
 
     /// Insert a key into the bloom filter.
-    pub fn insert(&mut self, key: &[u8]) -> TableResult<()> {
+    pub fn insert(&self, key: &[u8]) -> TableResult<()> {
         let (h1, h2) = self.hash_key(key);
 
         for i in 0..self.num_hash_functions {
@@ -224,7 +221,10 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             self.set_bit(bit_pos)?;
         }
 
-        self.num_items += 1;
+        {
+            let mut num_items = self.num_items.write().unwrap();
+            *num_items += 1;
+        }
         self.write_metadata()?;
 
         Ok(())
@@ -246,45 +246,48 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
 
     /// Calculate the expected false positive rate.
     pub fn false_positive_rate(&self) -> f64 {
-        if self.num_items == 0 {
+        let num_items = *self.num_items.read().unwrap();
+        if num_items == 0 {
             return 0.0;
         }
 
         let k = self.num_hash_functions as f64;
         let m = self.num_bits as f64;
-        let n = self.num_items as f64;
+        let n = num_items as f64;
 
         // FPR = (1 - e^(-kn/m))^k
         (1.0 - ((-k * n) / m).exp()).powf(k)
     }
 
     /// Clear all bits in the filter.
-    pub fn clear(&mut self) -> TableResult<()> {
+    pub fn clear(&self) -> TableResult<()> {
         for &page_id in &self.bitmap_pages {
-            let mut page = self
-                .pager
-                .write_page(page_id)?;
-            page.data_mut().fill(0);
+            let mut page = Page::new(page_id, PageType::BloomData, self.pager.page_size().data_size());
+            page.data_mut().resize(self.pager.page_size().data_size(), 0);
+            self.pager.write_page(&page)?;
         }
 
-        self.num_items = 0;
+        *self.num_items.write().unwrap() = 0;
         self.write_metadata()?;
 
         Ok(())
     }
 
     /// Write metadata to root page.
-    fn write_metadata(&mut self) -> TableResult<()> {
-        let mut page = self
-            .pager
-            .write_page(self.root_page_id)?;
+    fn write_metadata(&self) -> TableResult<()> {
+        let mut page = Page::new(
+            self.root_page_id,
+            PageType::BloomMeta,
+            self.pager.page_size().data_size(),
+        );
+        page.data_mut().resize(self.pager.page_size().data_size(), 0);
 
         let metadata = BloomFilterMetadata {
             magic: BLOOM_MAGIC,
             version: BLOOM_VERSION,
             num_bits: self.num_bits as u64,
             num_hash_functions: self.num_hash_functions as u32,
-            num_items: self.num_items as u64,
+            num_items: *self.num_items.read().unwrap() as u64,
             num_bitmap_pages: self.bitmap_pages.len() as u32,
             _reserved: [0; 32],
         };
@@ -298,10 +301,11 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         let page_ids_offset = std::mem::size_of::<BloomFilterMetadata>();
         for (i, &page_id) in self.bitmap_pages.iter().enumerate() {
             let offset = page_ids_offset + i * std::mem::size_of::<PageId>();
-            let page_id_bytes = page_id.to_le_bytes();
+            let page_id_bytes = page_id.to_bytes();
             page.data_mut()[offset..offset + page_id_bytes.len()].copy_from_slice(&page_id_bytes);
         }
 
+        self.pager.write_page(&page)?;
         Ok(())
     }
 
@@ -330,18 +334,20 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
     }
 
     /// Set a bit at the given position.
-    fn set_bit(&mut self, pos: usize) -> TableResult<()> {
+    fn set_bit(&self, pos: usize) -> TableResult<()> {
         let page_idx = pos / self.bits_per_page;
         let bit_in_page = pos % self.bits_per_page;
         let byte_in_page = bit_in_page / 8;
         let bit_in_byte = bit_in_page % 8;
 
         let page_id = self.bitmap_pages[page_idx];
-        let mut page = self
-            .pager
-            .write_page(page_id)?;
+        let mut page = self.pager.read_page(page_id)?;
+        if page.data().len() <= byte_in_page {
+            page.data_mut().resize(self.pager.page_size().data_size(), 0);
+        }
 
         page.data_mut()[byte_in_page] |= 1 << bit_in_byte;
+        self.pager.write_page(&page)?;
 
         Ok(())
     }
@@ -372,7 +378,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
 // =============================================================================
 
 impl<FS: FileSystem> Table for PagedBloomFilter<FS> {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.table_id
     }
 
@@ -402,9 +408,9 @@ impl<FS: FileSystem> Table for PagedBloomFilter<FS> {
     }
 
     fn stats(&self) -> TableResult<crate::table::TableStatistics> {
-        let size_bytes = self.bitmap_pages.len() * self.pager.page_size();
+        let size_bytes = self.bitmap_pages.len() * self.pager.page_size().to_u32() as usize;
         Ok(crate::table::TableStatistics {
-            row_count: Some(self.num_items as u64),
+            row_count: Some(*self.num_items.read().unwrap() as u64),
             total_size_bytes: Some(size_bytes as u64),
             key_stats: None,
             value_stats: None,
@@ -419,7 +425,7 @@ impl<FS: FileSystem> Table for PagedBloomFilter<FS> {
 // =============================================================================
 
 impl<FS: FileSystem> ApproximateMembership for PagedBloomFilter<FS> {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.table_id
     }
 
@@ -455,11 +461,11 @@ impl<FS: FileSystem> ApproximateMembership for PagedBloomFilter<FS> {
     }
 
     fn stats(&self) -> TableResult<SpecialtyTableStats> {
-        let size_bytes = self.bitmap_pages.len() * self.pager.page_size();
+        let size_bytes = self.bitmap_pages.len() * self.pager.page_size().to_u32() as usize;
         Ok(SpecialtyTableStats {
-            entry_count: Some(self.num_items as u64),
+            entry_count: Some(*self.num_items.read().unwrap() as u64),
             size_bytes: Some(size_bytes as u64),
-            distinct_keys: Some(self.num_items as u64),
+            distinct_keys: Some(*self.num_items.read().unwrap() as u64),
             stale_entries: Some(0),
             last_updated_lsn: None,
         })
@@ -488,7 +494,7 @@ impl<FS: FileSystem> ApproximateMembership for PagedBloomFilter<FS> {
         }
 
         // Warn if false positive rate is high
-        if self.num_items > 0 {
+        if *self.num_items.read().unwrap() > 0 {
             let fpr = self.false_positive_rate();
             if fpr > 0.1 {
                 report.warnings.push(crate::table::ConsistencyWarning {
@@ -508,11 +514,17 @@ impl<FS: FileSystem> ApproximateMembership for PagedBloomFilter<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pager::{PagerConfig, PageSize};
     use crate::vfs::MemoryFileSystem;
 
     fn create_test_pager() -> Arc<Pager<MemoryFileSystem>> {
         let fs = Arc::new(MemoryFileSystem::new());
-        let pager = Pager::create(fs, "test.db", 4096).unwrap();
+        let pager = Pager::create(
+            fs.as_ref(),
+            "test.db",
+            PagerConfig::new().with_page_size(PageSize::Size4KB),
+        )
+        .unwrap();
         Arc::new(pager)
     }
 
@@ -520,7 +532,7 @@ mod tests {
     fn test_create_and_insert() {
         let pager = create_test_pager();
         let mut filter = PagedBloomFilter::new(
-            ObjectId::from(1),
+            TableId::from(1),
             "test_bloom".to_string(),
             pager,
             100,
@@ -541,7 +553,7 @@ mod tests {
     #[test]
     fn test_persistence() {
         let pager = create_test_pager();
-        let table_id = ObjectId::from(1);
+        let table_id = TableId::from(1);
         let name = "test_bloom".to_string();
 
         // Create and populate filter
@@ -561,7 +573,7 @@ mod tests {
 
         assert!(filter.contains(b"key1").unwrap());
         assert!(filter.contains(b"key2").unwrap());
-        assert_eq!(filter.num_items, 2);
+        assert_eq!(*filter.num_items.read().unwrap(), 2);
     }
 
     #[test]
@@ -569,7 +581,7 @@ mod tests {
         let pager = create_test_pager();
         let num_items = 1000;
         let mut filter = PagedBloomFilter::new(
-            ObjectId::from(1),
+            TableId::from(1),
             "test_bloom".to_string(),
             pager,
             num_items,
@@ -606,7 +618,7 @@ mod tests {
     fn test_clear() {
         let pager = create_test_pager();
         let mut filter = PagedBloomFilter::new(
-            ObjectId::from(1),
+            TableId::from(1),
             "test_bloom".to_string(),
             pager,
             100,
@@ -619,7 +631,7 @@ mod tests {
         assert!(filter.contains(b"key1").unwrap());
 
         filter.clear().unwrap();
-        assert_eq!(filter.num_items, 0);
+        assert_eq!(*filter.num_items.read().unwrap(), 0);
     }
 }
 

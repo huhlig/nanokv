@@ -22,7 +22,7 @@
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::TableEngineRegistry;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
-use nanokv::types::{Durability, IsolationLevel, ObjectId};
+use nanokv::types::{Durability, IsolationLevel, TableId};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::sync::{Arc, Mutex, RwLock};
@@ -96,7 +96,7 @@ fn test_index_put_and_get() {
     );
 
     // Create an index ObjectId (indexes are just specialty tables)
-    let index_id = ObjectId::from(1000);
+    let index_id = TableId::from(1000);
 
     // Put a value into the index using unified API
     let key = b"index_key_1";
@@ -119,7 +119,7 @@ fn test_index_delete() {
     );
 
     // Create an index ObjectId
-    let index_id = ObjectId::from(2000);
+    let index_id = TableId::from(2000);
 
     // Put a value into the index
     let key = b"index_key_2";
@@ -147,8 +147,8 @@ fn test_index_and_table_operations_independent() {
     );
 
     // Create table and index ObjectIds (both use same type now)
-    let table_id = ObjectId::from(100);
-    let index_id = ObjectId::from(3000);
+    let table_id = TableId::from(100);
+    let index_id = TableId::from(3000);
 
     // Use the same key for both table and index
     let key = b"shared_key";
@@ -193,7 +193,7 @@ fn test_index_write_conflict_detection() {
     );
 
     // Create an index ObjectId
-    let index_id = ObjectId::from(4000);
+    let index_id = TableId::from(4000);
     let key = b"conflict_key";
 
     // First transaction writes to index using unified API
@@ -214,8 +214,8 @@ fn test_index_operations_in_write_set() {
     );
 
     // Create table and index ObjectIds
-    let table_id = ObjectId::from(200);
-    let index_id = ObjectId::from(5000);
+    let table_id = TableId::from(200);
+    let index_id = TableId::from(5000);
 
     // Perform multiple operations using unified API
     txn.put(table_id, b"table_key_1", b"table_value_1").unwrap();
@@ -239,8 +239,8 @@ fn test_no_automatic_index_maintenance() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(300);
-    let index_id = ObjectId::from(6000);
+    let table_id = TableId::from(300);
+    let index_id = TableId::from(6000);
 
     // Put a value into the table using unified API
     txn.put(table_id, b"key", b"value").unwrap();

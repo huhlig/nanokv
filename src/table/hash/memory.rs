@@ -34,7 +34,7 @@ use crate::table::{
     TableCapabilities, TableEngineKind, TableError, TableResult, TableStatistics, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{ObjectId, ScanBounds, ValueBuf};
+use crate::types::{TableId, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -48,7 +48,7 @@ use std::sync::{Arc, RwLock};
 /// This implementation provides direct access methods rather than
 /// the SearchableTable pattern used by ordered tables.
 pub struct MemoryHashTable {
-    id: ObjectId,
+    id: TableId,
     name: String,
     /// Shared hash table data protected by RwLock for concurrent reads
     data: Arc<RwLock<HashMap<Vec<u8>, VersionChain>>>,
@@ -60,18 +60,18 @@ pub struct MemoryHashTable {
 
 impl MemoryHashTable {
     /// Create a new in-memory hash table.
-    pub fn new(id: ObjectId, name: String) -> Self {
+    pub fn new(id: TableId, name: String) -> Self {
         Self::with_budget(id, name, 64 * 1024 * 1024) // 64MB default
     }
 
     /// Create a new in-memory hash table with a specific memory budget.
-    pub fn with_budget(id: ObjectId, name: String, memory_budget: usize) -> Self {
+    pub fn with_budget(id: TableId, name: String, memory_budget: usize) -> Self {
         Self::with_capacity_and_budget(id, name, 0, memory_budget)
     }
 
     /// Create a new in-memory hash table with initial capacity and memory budget.
     pub fn with_capacity_and_budget(
-        id: ObjectId,
+        id: TableId,
         name: String,
         capacity: usize,
         memory_budget: usize,
@@ -210,7 +210,7 @@ impl MemoryHashTable {
 }
 
 impl Table for MemoryHashTable {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.id
     }
 
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_hash_table_basic_operations() {
-        let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+        let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
         let mut writer = table.writer(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
 
         // Test put
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_hash_table_no_range_delete() {
-        let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+        let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
         let mut writer = table.writer(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
 
         // Range delete should fail

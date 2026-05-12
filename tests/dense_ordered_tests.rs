@@ -21,7 +21,7 @@
 
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::{DenseOrdered, MemoryBTree, PagedBTree, SpecialtyTableCursor};
-use nanokv::types::{Bound, KeyBuf, ObjectId, ScanBounds};
+use nanokv::types::{Bound, KeyBuf, TableId, ScanBounds};
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ use std::sync::Arc;
 // =============================================================================
 
 fn create_memory_index(name: &str) -> MemoryBTree {
-    MemoryBTree::new(ObjectId::from(1), name.to_string())
+    MemoryBTree::new(TableId::from(1), name.to_string())
 }
 
 fn create_paged_index(name: &str) -> (PagedBTree<MemoryFileSystem>, Arc<Pager<MemoryFileSystem>>) {
@@ -39,7 +39,7 @@ fn create_paged_index(name: &str) -> (PagedBTree<MemoryFileSystem>, Arc<Pager<Me
     // Disable cache for tests to avoid caching issues
     config.cache_capacity = 0;
     let pager = Arc::new(Pager::create(&*fs, "test.db", config).unwrap());
-    let btree = PagedBTree::new(ObjectId::from(1), name.to_string(), pager.clone()).unwrap();
+    let btree = PagedBTree::new(TableId::from(1), name.to_string(), pager.clone()).unwrap();
     (btree, pager)
 }
 

@@ -28,21 +28,21 @@
 use crate::table::{
     Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
 };
-use crate::types::{ObjectId, ValueBuf};
+use crate::types::{TableId, ValueBuf};
 
 /// Paged blob storage table.
 ///
 /// Stores blobs as linked pages in the pager. This is the primary implementation
 /// for disk-resident blob storage that uses the page cache and WAL.
 pub struct PagedBlob {
-    id: ObjectId,
+    id: TableId,
     name: String,
     page_size: usize,
 }
 
 impl PagedBlob {
     /// Create a new paged blob storage table.
-    pub fn new(id: ObjectId, name: String, page_size: usize) -> Self {
+    pub fn new(id: TableId, name: String, page_size: usize) -> Self {
         Self {
             id,
             name,
@@ -73,7 +73,7 @@ impl PagedBlob {
 }
 
 impl Table for PagedBlob {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.id
     }
 

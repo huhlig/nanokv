@@ -21,21 +21,21 @@ use nanokv::table::{
     TableCapabilities, TableEngineKind, TableReader, TableWriter, WriteBatch,
 };
 use nanokv::txn::TransactionId;
-use nanokv::types::{ObjectId, ScanBounds, ValueBuf};
+use nanokv::types::{TableId, ScanBounds, ValueBuf};
 use nanokv::wal::LogSequenceNumber;
 
 #[test]
 fn test_hash_table_creation() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     
-    assert_eq!(table.table_id(), ObjectId::from(1));
+    assert_eq!(table.table_id(), TableId::from(1));
     assert_eq!(table.name(), "test_hash");
     assert_eq!(table.kind(), TableEngineKind::Hash);
 }
 
 #[test]
 fn test_hash_table_capabilities() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let caps = table.capabilities();
     
     // Hash tables support point lookups but NOT ordered operations
@@ -51,7 +51,7 @@ fn test_hash_table_capabilities() {
 
 #[test]
 fn test_hash_table_basic_put_get() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -69,7 +69,7 @@ fn test_hash_table_basic_put_get() {
 
 #[test]
 fn test_hash_table_update() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     
     // Initial put
     let mut writer = table
@@ -93,7 +93,7 @@ fn test_hash_table_update() {
 
 #[test]
 fn test_hash_table_delete() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     
     // Put a value
     let mut writer = table
@@ -117,7 +117,7 @@ fn test_hash_table_delete() {
 
 #[test]
 fn test_hash_table_delete_nonexistent() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -128,7 +128,7 @@ fn test_hash_table_delete_nonexistent() {
 
 #[test]
 fn test_hash_table_batch_get() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -152,7 +152,7 @@ fn test_hash_table_batch_get() {
 
 #[test]
 fn test_hash_table_batch_operations() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -202,7 +202,7 @@ fn test_hash_table_batch_operations() {
 
 #[test]
 fn test_hash_table_no_range_delete() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -215,7 +215,7 @@ fn test_hash_table_no_range_delete() {
 #[test]
 fn test_hash_table_collision_handling() {
     // Rust's HashMap handles collisions internally with chaining
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -241,7 +241,7 @@ fn test_hash_table_collision_handling() {
 #[test]
 fn test_hash_table_hash_distribution() {
     // Test that keys are distributed across the hash table
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -268,7 +268,7 @@ fn test_hash_table_hash_distribution() {
 
 #[test]
 fn test_hash_table_large_values() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -286,7 +286,7 @@ fn test_hash_table_large_values() {
 
 #[test]
 fn test_hash_table_empty_key_value() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -302,7 +302,7 @@ fn test_hash_table_empty_key_value() {
 
 #[test]
 fn test_hash_table_statistics() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
@@ -325,7 +325,7 @@ fn test_hash_table_statistics() {
 #[test]
 fn test_hash_table_memory_tracking() {
     let table = MemoryHashTable::with_budget(
-        ObjectId::from(1),
+        TableId::from(1),
         "test_hash".to_string(),
         1024 * 1024, // 1MB budget
     );
@@ -353,7 +353,7 @@ fn test_hash_table_concurrent_readers() {
     use std::sync::Arc;
     use std::thread;
     
-    let table = Arc::new(MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string()));
+    let table = Arc::new(MemoryHashTable::new(TableId::from(1), "test_hash".to_string()));
     
     // Write some data
     {
@@ -392,7 +392,7 @@ fn test_hash_table_concurrent_readers() {
 
 #[test]
 fn test_hash_table_mvcc_visibility() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     
     // Transaction 1: Insert initial value
     let mut writer1 = table
@@ -421,7 +421,7 @@ fn test_hash_table_mvcc_visibility() {
 
 #[test]
 fn test_hash_table_approximate_len() {
-    let table = MemoryHashTable::new(ObjectId::from(1), "test_hash".to_string());
+    let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
     let mut writer = table
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();

@@ -23,7 +23,7 @@
 use nanokv::pager::{
     CompressionType, EncryptionType, Page, PageId, PageType, Pager, PagerConfig, PagerError,
 };
-use nanokv::types::ObjectId;
+use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
@@ -498,7 +498,7 @@ fn test_corrupted_wal_record_checksum() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -535,7 +535,7 @@ fn test_truncated_wal_file() {
         writer
             .write_operation(
                 txn_id,
-                ObjectId::from(1),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", txn_id).into_bytes(),
                 format!("value{}", txn_id).into_bytes(),

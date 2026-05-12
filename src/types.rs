@@ -380,9 +380,9 @@ pub enum EncryptionKind {
 /// representation for transaction operations.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct ObjectId(u64);
+pub struct TableId(u64);
 
-impl ObjectId {
+impl TableId {
     pub fn as_u64(&self) -> u64 {
         self.0
     }
@@ -392,13 +392,13 @@ impl ObjectId {
     }
 }
 
-impl std::fmt::Display for ObjectId {
+impl std::fmt::Display for TableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ObjectId({})", self.0)
     }
 }
 
-impl From<u64> for ObjectId {
+impl From<u64> for TableId {
     fn from(value: u64) -> Self {
         Self(value)
     }

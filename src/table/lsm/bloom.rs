@@ -27,7 +27,7 @@ use crate::table::{
     ApproximateMembership, SpecialtyTableCapabilities, SpecialtyTableStats, TableResult,
     VerificationReport,
 };
-use crate::types::ObjectId;
+use crate::types::TableId;
 
 /// Bloom filter for efficient membership testing.
 ///
@@ -256,10 +256,10 @@ impl BloomFilterBuilder {
 // =============================================================================
 
 impl ApproximateMembership for BloomFilter {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         // Bloom filters are typically embedded in other structures (like SSTables)
         // rather than standalone tables, so we use a placeholder ID
-        ObjectId::from(0)
+        TableId::from(0)
     }
 
     fn name(&self) -> &str {

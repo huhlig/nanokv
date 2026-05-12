@@ -21,7 +21,7 @@
 //! which keys and detects conflicts based on the isolation level.
 
 use crate::txn::{TransactionError, TransactionId, TransactionResult};
-use crate::types::ObjectId;
+use crate::types::TableId;
 use std::collections::{HashMap, HashSet};
 
 /// Types of conflicts that can occur between transactions:
@@ -44,7 +44,7 @@ pub enum ConflictType {
 /// 3. On commit/abort, call release_locks()
 pub struct ConflictDetector {
     // Maps (object_id, key) -> transaction ID that has write lock
-    write_locks: HashMap<(ObjectId, Vec<u8>), TransactionId>,
+    write_locks: HashMap<(TableId, Vec<u8>), TransactionId>,
 }
 
 impl ConflictDetector {
@@ -59,7 +59,7 @@ impl ConflictDetector {
     /// Returns an error if another transaction holds a write lock on the key.
     pub fn check_write_conflict(
         &self,
-        object_id: ObjectId,
+        object_id: TableId,
         key: &[u8],
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
@@ -80,7 +80,7 @@ impl ConflictDetector {
     /// Acquire a write lock on a key for the given transaction.
     ///
     /// Should be called after check_write_conflict() succeeds.
-    pub fn acquire_write_lock(&mut self, object_id: ObjectId, key: Vec<u8>, txn_id: TransactionId) {
+    pub fn acquire_write_lock(&mut self, object_id: TableId, key: Vec<u8>, txn_id: TransactionId) {
         self.write_locks.insert((object_id, key), txn_id);
     }
 
@@ -97,7 +97,7 @@ impl ConflictDetector {
     /// has been written by another transaction.
     pub fn check_read_write_conflicts(
         &self,
-        read_set: &HashSet<(ObjectId, Vec<u8>)>,
+        read_set: &HashSet<(TableId, Vec<u8>)>,
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
         for (object_id, key) in read_set {

@@ -18,8 +18,8 @@
 
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
-use nanokv::types::ObjectId;
-use nanokv::table::{Flushable, MutableTable, PointLookup, Table};
+use nanokv::types::TableId;
+use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, Table};
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
@@ -33,7 +33,7 @@ fn test_btree_node_split_on_insert() {
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
     // Create B-Tree
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     // Get a writer
     let tx_id = TransactionId::from(1);
@@ -68,7 +68,7 @@ fn test_btree_sequential_inserts() {
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     let tx_id = TransactionId::from(1);
     let snapshot_lsn = LogSequenceNumber::from(0);
@@ -99,7 +99,7 @@ fn test_btree_reverse_inserts() {
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     let tx_id = TransactionId::from(1);
     let snapshot_lsn = LogSequenceNumber::from(0);
@@ -130,7 +130,7 @@ fn test_btree_random_inserts() {
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     let tx_id = TransactionId::from(1);
     let snapshot_lsn = LogSequenceNumber::from(0);
@@ -163,7 +163,7 @@ fn test_btree_update_existing_keys() {
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     let tx_id = TransactionId::from(1);
     let snapshot_lsn = LogSequenceNumber::from(0);
@@ -206,7 +206,7 @@ fn test_btree_delete_keys() {
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     let tx_id = TransactionId::from(1);
     let snapshot_lsn = LogSequenceNumber::from(0);
@@ -248,7 +248,7 @@ fn test_btree_mixed_operations() {
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
 
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
 
     let tx_id = TransactionId::from(1);
     let snapshot_lsn = LogSequenceNumber::from(0);

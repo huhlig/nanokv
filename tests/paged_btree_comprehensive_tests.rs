@@ -30,7 +30,7 @@ use nanokv::table::{
     Flushable, MutableTable, OrderedScan, PointLookup, Table, TableCursor,
 };
 use nanokv::txn::TransactionId;
-use nanokv::types::{ObjectId, ScanBounds};
+use nanokv::types::{TableId, ScanBounds};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ fn create_test_tree() -> PagedBTree<MemoryFileSystem> {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap()
+    PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap()
 }
 
 fn insert_test_data(

@@ -28,7 +28,7 @@
 use crate::table::{
     Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
 };
-use crate::types::{ObjectId, ValueBuf};
+use crate::types::{TableId, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -47,7 +47,7 @@ const DEFAULT_INLINE_THRESHOLD: usize = 4 * 1024;
 /// Stores blobs in a HashMap with memory tracking and size limits.
 /// Suitable for ephemeral blob storage that doesn't need persistence.
 pub struct MemoryBlob {
-    id: ObjectId,
+    id: TableId,
     name: String,
     /// Shared blob data protected by RwLock for concurrent reads
     data: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -63,7 +63,7 @@ pub struct MemoryBlob {
 
 impl MemoryBlob {
     /// Create a new in-memory blob storage table.
-    pub fn new(id: ObjectId, name: String) -> Self {
+    pub fn new(id: TableId, name: String) -> Self {
         Self::with_config(
             id,
             name,
@@ -75,7 +75,7 @@ impl MemoryBlob {
 
     /// Create a new in-memory blob storage table with custom configuration.
     pub fn with_config(
-        id: ObjectId,
+        id: TableId,
         name: String,
         memory_budget: usize,
         max_blob_size: u64,
@@ -179,7 +179,7 @@ impl MemoryBlob {
 }
 
 impl Table for MemoryBlob {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.id
     }
 

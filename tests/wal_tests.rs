@@ -17,7 +17,7 @@
 //! Integration tests for WAL (Write-Ahead Log)
 
 use nanokv::pager::{CompressionType, EncryptionType};
-use nanokv::types::ObjectId;
+use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
 use nanokv::vfs::{File, FileSystem, LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
@@ -45,7 +45,7 @@ fn test_wal_basic_transaction_flow() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -55,7 +55,7 @@ fn test_wal_basic_transaction_flow() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:2".to_vec(),
             b"Bob".to_vec(),
@@ -85,7 +85,7 @@ fn test_wal_rollback_transaction() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -114,7 +114,7 @@ fn test_wal_crash_recovery_active_transaction() {
         writer
             .write_operation(
                 TransactionId::from(1),
-                ObjectId::from(1),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"user:1".to_vec(),
                 b"Alice".to_vec(),
@@ -148,7 +148,7 @@ fn test_wal_multiple_concurrent_transactions() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -158,7 +158,7 @@ fn test_wal_multiple_concurrent_transactions() {
     writer
         .write_operation(
             TransactionId::from(2),
-            ObjectId::from(2),
+            TableId::from(2),
             WriteOpType::Put,
             b"key2".to_vec(),
             b"value2".to_vec(),
@@ -168,7 +168,7 @@ fn test_wal_multiple_concurrent_transactions() {
     writer
         .write_operation(
             TransactionId::from(3),
-            ObjectId::from(3),
+            TableId::from(3),
             WriteOpType::Put,
             b"key3".to_vec(),
             b"value3".to_vec(),
@@ -201,7 +201,7 @@ fn test_wal_checkpoint_functionality() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".to_vec(),
@@ -214,7 +214,7 @@ fn test_wal_checkpoint_functionality() {
     writer
         .write_operation(
             TransactionId::from(2),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key2".to_vec(),
             b"value2".to_vec(),
@@ -233,7 +233,7 @@ fn test_wal_checkpoint_functionality() {
     writer
         .write_operation(
             TransactionId::from(3),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key3".to_vec(),
             b"value3".to_vec(),
@@ -264,7 +264,7 @@ fn test_wal_delete_operations() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -275,7 +275,7 @@ fn test_wal_delete_operations() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Delete,
             b"user:2".to_vec(),
             vec![],
@@ -307,7 +307,7 @@ fn test_wal_large_values() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(2),
+            TableId::from(2),
             WriteOpType::Put,
             b"blob:1".to_vec(),
             large_value.clone(),
@@ -335,7 +335,7 @@ fn test_wal_reader_sequential_read() {
         writer
             .write_operation(
                 TransactionId::from(1),
-                ObjectId::from(1),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"key".to_vec(),
                 b"value".to_vec(),
@@ -370,7 +370,7 @@ fn test_wal_with_local_filesystem() {
         writer
             .write_operation(
                 TransactionId::from(1),
-                ObjectId::from(1),
+                TableId::from(1),
                 WriteOpType::Put,
                 b"user:1".to_vec(),
                 b"Alice".to_vec(),
@@ -408,7 +408,7 @@ fn test_wal_buffered_writes() {
         writer
             .write_operation(
                 txn_id,
-                ObjectId::from(1),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).as_bytes().to_vec(),
                 format!("value{}", i).as_bytes().to_vec(),
@@ -438,7 +438,7 @@ fn test_wal_truncate() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key".to_vec(),
             b"value".to_vec(),
@@ -472,7 +472,7 @@ fn test_wal_error_handling() {
     // Try to write to non-existent transaction
     let result = writer.write_operation(
         TransactionId::from(999),
-        ObjectId::from(1),
+        TableId::from(1),
         WriteOpType::Put,
         b"key".to_vec(),
         b"value".to_vec(),
@@ -503,7 +503,7 @@ fn test_wal_with_lz4_compression() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             compressible_value.clone(),
@@ -538,7 +538,7 @@ fn test_wal_with_zstd_compression() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"msg:1".to_vec(),
             compressible_value.clone(),
@@ -575,7 +575,7 @@ fn test_wal_compression_recovery() {
         writer
             .write_operation(
                 txn_id,
-                ObjectId::from(1),
+                TableId::from(1),
                 WriteOpType::Put,
                 format!("key{}", i).as_bytes().to_vec(),
                 value,
@@ -637,7 +637,7 @@ fn test_wal_mixed_compression() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"uncompressed value".to_vec(),
@@ -669,7 +669,7 @@ fn test_wal_compression_with_large_values() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(2),
+            TableId::from(2),
             WriteOpType::Put,
             b"blob:1".to_vec(),
             large_value.clone(),
@@ -705,7 +705,7 @@ fn test_wal_compression_checkpoint() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key1".to_vec(),
             b"value1".repeat(100),
@@ -718,7 +718,7 @@ fn test_wal_compression_checkpoint() {
     writer
         .write_operation(
             TransactionId::from(2),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"key2".to_vec(),
             b"value2".repeat(100),
@@ -754,7 +754,7 @@ fn test_wal_with_aes256_gcm_encryption() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"secret-key".to_vec(),
             b"secret-value".to_vec(),
@@ -787,7 +787,7 @@ fn test_wal_decryption_with_correct_key() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"k1".to_vec(),
             b"very secret payload".to_vec(),
@@ -818,7 +818,7 @@ fn test_wal_decryption_failure_with_wrong_key() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"k2".to_vec(),
             b"classified".to_vec(),
@@ -847,7 +847,7 @@ fn test_wal_recovery_with_encrypted_records() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -859,7 +859,7 @@ fn test_wal_recovery_with_encrypted_records() {
     writer
         .write_operation(
             TransactionId::from(2),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:2".to_vec(),
             b"Bob".to_vec(),
@@ -892,7 +892,7 @@ fn test_wal_encryption_and_compression_combined() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"blob".to_vec(),
             payload.clone(),
@@ -981,7 +981,7 @@ fn test_wal_partial_record_write_stops_recovery_at_tail() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -993,7 +993,7 @@ fn test_wal_partial_record_write_stops_recovery_at_tail() {
     writer
         .write_operation(
             TransactionId::from(2),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:2".to_vec(),
             b"Bob".to_vec(),
@@ -1025,7 +1025,7 @@ fn test_wal_corrupted_lsn_sequence_does_not_drop_committed_data() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -1054,7 +1054,7 @@ fn test_wal_missing_middle_record_causes_recovery_error() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -1084,7 +1084,7 @@ fn test_wal_recovery_with_active_and_committed_transactions() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:1".to_vec(),
             b"Alice".to_vec(),
@@ -1096,7 +1096,7 @@ fn test_wal_recovery_with_active_and_committed_transactions() {
     writer
         .write_operation(
             TransactionId::from(2),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"user:2".to_vec(),
             b"Bob".to_vec(),
@@ -1107,7 +1107,7 @@ fn test_wal_recovery_with_active_and_committed_transactions() {
     writer
         .write_operation(
             TransactionId::from(3),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Delete,
             b"user:3".to_vec(),
             vec![],
@@ -1141,7 +1141,7 @@ fn test_wal_concurrent_corruption_scenario_reports_failure() {
             writer
                 .write_operation(
                     TransactionId::from(1),
-                    ObjectId::from(1),
+                    TableId::from(1),
                     WriteOpType::Put,
                     b"user:1".to_vec(),
                     vec![0xAA; 4096],
@@ -1186,7 +1186,7 @@ fn test_wal_encryption_key_rotation_failure_is_detected() {
     writer
         .write_operation(
             TransactionId::from(1),
-            ObjectId::from(1),
+            TableId::from(1),
             WriteOpType::Put,
             b"k1".to_vec(),
             b"encrypted payload".to_vec(),

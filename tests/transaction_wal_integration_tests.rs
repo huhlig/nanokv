@@ -20,7 +20,7 @@
 //! for durability and crash recovery.
 
 use nanokv::kvdb::{Database, DatabaseErrorKind};
-use nanokv::table::{TableEngineKind, TableOptions};
+use nanokv::table::{ApproximateMembership, TableEngineKind, TableOptions};
 use nanokv::types::{Bound, Durability, KeyBuf, KeyEncoding, ScanBounds};
 use nanokv::vfs::MemoryFileSystem;
 
@@ -28,6 +28,19 @@ use nanokv::vfs::MemoryFileSystem;
 fn default_table_options() -> TableOptions {
     TableOptions {
         engine: TableEngineKind::Memory, // Memory engine for fast tests
+        key_encoding: KeyEncoding::RawBytes,
+        compression: None,
+        encryption: None,
+        page_size: None,
+        format_version: 1,
+        max_inline_size: None,
+        max_value_size: None,
+    }
+}
+
+fn bloom_table_options() -> TableOptions {
+    TableOptions {
+        engine: TableEngineKind::Bloom,
         key_encoding: KeyEncoding::RawBytes,
         compression: None,
         encryption: None,
@@ -530,6 +543,86 @@ fn test_begin_read_at_future_lsn_rejected() {
     };
     assert_eq!(err.kind, DatabaseErrorKind::InvalidOperation);
     assert!(err.message.contains("not yet committed"));
+}
+
+#[test]
+fn test_transaction_bloom_insert_commit() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let bloom_id = db.create_table("bloom_table", bloom_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+
+        txn.with_bloom(bloom_id, |bloom| {
+            bloom.insert_key(b"member-1")?;
+            assert!(bloom.might_contain(b"member-1")?);
+            Ok(())
+        })
+        .unwrap();
+
+        txn.commit().unwrap();
+    }
+
+    let mut read_txn = db.begin_read().unwrap();
+    read_txn.with_bloom(bloom_id, |bloom| bloom.might_contain(b"member-1")).unwrap();
+}
+
+#[test]
+fn test_transaction_bloom_insert_rollback() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let bloom_id = db.create_table("bloom_table", bloom_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+
+        txn.with_bloom(bloom_id, |bloom| {
+            bloom.insert_key(b"member-rollback")?;
+            assert!(bloom.might_contain(b"member-rollback")?);
+            Ok(())
+        })
+        .unwrap();
+
+        txn.rollback().unwrap();
+    }
+
+    let mut read_txn = db.begin_read().unwrap();
+    let contains = read_txn
+        .with_bloom(bloom_id, |bloom| bloom.might_contain(b"member-rollback"))
+        .unwrap();
+    assert!(!contains);
+}
+
+#[test]
+fn test_transaction_mixed_kv_and_bloom_commit() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
+    let bloom_id = db.create_table("bloom_table", bloom_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        txn.put(table_id, b"key1", b"value1").unwrap();
+        txn.with_bloom(bloom_id, |bloom| {
+            bloom.insert_key(b"key1")?;
+            Ok(())
+        })
+        .unwrap();
+        txn.commit().unwrap();
+    }
+
+    let txn = db.begin_read().unwrap();
+    assert_eq!(txn.get(table_id, b"key1").unwrap().unwrap().0, b"value1");
+
+    let mut bloom_txn = db.begin_read().unwrap();
+    let contains = bloom_txn
+        .with_bloom(bloom_id, |bloom| bloom.might_contain(b"key1"))
+        .unwrap();
+    assert!(contains);
 }
 
 // Made with Bob

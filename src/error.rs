@@ -917,7 +917,7 @@ mod tests {
     use crate::pager::{CompressionType, EncryptionType, PageId};
     use crate::table::TableError;
     use crate::txn::TransactionId;
-    use crate::types::{ObjectId, ValueRef};
+    use crate::types::{TableId, ValueRef};
     use crate::wal::LogSequenceNumber;
     use tracing_test::traced_test;
 
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn classifies_transaction_conflicts_as_warnings() {
         let err = TransactionError::write_write_conflict(
-            ObjectId::from(9_u64),
+            TableId::from(9_u64),
             b"key".to_vec(),
             TransactionId::from(1),
             TransactionId::from(2),

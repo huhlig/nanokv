@@ -25,7 +25,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 use crate::pager::{PageId, Pager};
-use crate::types::ObjectId;
+use crate::table::lsm::LsmTree;
+use crate::types::TableId;
 use crate::vfs::FileSystem;
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::PagedBloomFilter;
@@ -65,7 +66,7 @@ pub use self::traits::{
 /// types in the same collection.
 pub enum TableEngineInstance<FS: FileSystem> {
     PagedBTree(Arc<PagedBTree<FS>>),
-    LsmTree(Arc<crate::table::lsm::LsmTree<FS>>),
+    LsmTree(Arc<LsmTree<FS>>),
     PagedBloomFilter(Arc<PagedBloomFilter<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
@@ -76,7 +77,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
 
 impl<FS: FileSystem> TableEngineInstance<FS> {
     /// Get the table ID.
-    pub fn table_id(&self) -> ObjectId {
+    pub fn table_id(&self) -> TableId {
         match self {
             Self::PagedBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -149,7 +150,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
 /// their lifecycle.
 pub struct TableEngineRegistry<FS: FileSystem> {
     /// Map of table/index ID to engine instance
-    engines: RwLock<HashMap<ObjectId, TableEngineInstance<FS>>>,
+    engines: RwLock<HashMap<TableId, TableEngineInstance<FS>>>,
 
     /// Pager for persistent engines
     pager: Arc<Pager<FS>>,
@@ -168,7 +169,7 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
     /// Returns the engine instance and its root page ID (if applicable).
     pub fn create_engine(
         &self,
-        table_id: ObjectId,
+        table_id: TableId,
         name: String,
         options: &TableOptions,
     ) -> Result<(TableEngineInstance<FS>, Option<PageId>), RegistryError> {
@@ -252,7 +253,7 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
     /// Open an existing table engine instance.
     pub fn open_engine(
         &self,
-        table_id: ObjectId,
+        table_id: TableId,
         name: String,
         options: &TableOptions,
         root_page_id: PageId,
@@ -325,13 +326,13 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
     }
 
     /// Get a table engine instance.
-    pub fn get(&self, table_id: ObjectId) -> Option<TableEngineInstance<FS>> {
+    pub fn get(&self, table_id: TableId) -> Option<TableEngineInstance<FS>> {
         let engines = self.engines.read().unwrap();
         engines.get(&table_id).cloned()
     }
 
     /// Remove a table engine instance.
-    pub fn remove(&self, table_id: ObjectId) -> Option<TableEngineInstance<FS>> {
+    pub fn remove(&self, table_id: TableId) -> Option<TableEngineInstance<FS>> {
         let mut engines = self.engines.write().unwrap();
         engines.remove(&table_id)
     }
@@ -349,7 +350,7 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
     }
 
     /// Check if an engine is registered.
-    pub fn contains(&self, table_id: ObjectId) -> bool {
+    pub fn contains(&self, table_id: TableId) -> bool {
         let engines = self.engines.read().unwrap();
         engines.contains_key(&table_id)
     }
@@ -379,9 +380,9 @@ pub enum RegistryError {
         details: String,
     },
     /// Engine already registered
-    EngineAlreadyRegistered(ObjectId),
+    EngineAlreadyRegistered(TableId),
     /// Engine not found
-    EngineNotFound(ObjectId),
+    EngineNotFound(TableId),
     /// Unsupported engine type
     UnsupportedEngine(TableEngineKind),
 }

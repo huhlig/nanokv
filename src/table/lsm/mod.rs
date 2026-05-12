@@ -83,7 +83,7 @@ use crate::table::{
     ValueStream, WriteBatch,
 };
 use crate::txn::TransactionId;
-use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
+use crate::types::{Bound, TableId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use metrics::{counter, histogram};
@@ -99,7 +99,7 @@ use tracing::{debug, instrument};
 /// read performance.
 pub struct LsmTree<FS: FileSystem> {
     /// Table identifier
-    table_id: ObjectId,
+    table_id: TableId,
 
     /// Table name
     name: String,
@@ -126,7 +126,7 @@ pub struct LsmTree<FS: FileSystem> {
 impl<FS: FileSystem> LsmTree<FS> {
     /// Create a new LSM tree.
     pub fn new(
-        table_id: ObjectId,
+        table_id: TableId,
         name: String,
         pager: Arc<Pager<FS>>,
         root_page_id: PageId,
@@ -159,7 +159,7 @@ impl<FS: FileSystem> LsmTree<FS> {
 
     /// Open an existing LSM tree.
     pub fn open(
-        table_id: ObjectId,
+        table_id: TableId,
         name: String,
         pager: Arc<Pager<FS>>,
         root_page_id: PageId,
@@ -568,7 +568,7 @@ impl<FS: FileSystem> LsmTree<FS> {
 }
 
 impl<FS: FileSystem> Table for LsmTree<FS> {
-    fn table_id(&self) -> ObjectId {
+    fn table_id(&self) -> TableId {
         self.table_id
     }
 

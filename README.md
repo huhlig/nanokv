@@ -9,7 +9,9 @@
 
 - **Single-file database**: All data in one file for easy deployment
 - **ACID transactions**: Full transaction support with snapshot isolation
-- **Multiple storage engines**: BTree (read-optimized) and LSM (write-optimized)
+- **Multiple storage engines**: 
+  - BTree [Memory/Paged] (read-optimized)
+  - LSM [Memory/Paged] (write-optimized)
 - **MVCC concurrency**: Non-blocking reads with version chains
 - **Write-ahead logging**: Crash recovery and durability
 - **Configurable pages**: 4KB to 64KB page sizes

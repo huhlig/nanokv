@@ -41,7 +41,7 @@ use crate::snap::{Snapshot, SnapshotId};
 use crate::table::{TableEngineRegistry, TableInfo, TableOptions};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
-use crate::types::{ObjectId, ValueBuf};
+use crate::types::{TableId, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::collections::HashMap;
@@ -411,7 +411,7 @@ impl<FS: FileSystem> Database<FS> {
         &self,
         name: &str,
         options: TableOptions,
-    ) -> Result<ObjectId, DatabaseError> {
+    ) -> Result<TableId, DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
 
         // Check if table already exists
@@ -420,7 +420,7 @@ impl<FS: FileSystem> Database<FS> {
         }
 
         // Allocate new table ID
-        let table_id = ObjectId::from(catalog.len() as u64 + 1);
+        let table_id = TableId::from(catalog.len() as u64 + 1);
 
         // Get current LSN for creation timestamp
         let created_lsn = *self.current_lsn.read().unwrap();
@@ -467,7 +467,7 @@ impl<FS: FileSystem> Database<FS> {
     ///
     /// This operation is transactional - the table becomes invisible only after
     /// the current LSN advances (simulating a commit).
-    pub fn drop_table(&self, table: ObjectId) -> Result<(), DatabaseError> {
+    pub fn drop_table(&self, table: TableId) -> Result<(), DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
 
         // Find and remove the table
@@ -492,13 +492,13 @@ impl<FS: FileSystem> Database<FS> {
     }
 
     /// Open an existing table by name.
-    pub fn open_table(&self, name: &str) -> Result<Option<ObjectId>, DatabaseError> {
+    pub fn open_table(&self, name: &str) -> Result<Option<TableId>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.get(name).map(|info| info.id))
     }
 
     /// Get table or index info by ObjectId.
-    pub fn get_object_info(&self, id: ObjectId) -> Result<Option<TableInfo>, DatabaseError> {
+    pub fn get_object_info(&self, id: TableId) -> Result<Option<TableInfo>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().find(|info| info.id == id).cloned())
     }
@@ -510,7 +510,7 @@ impl<FS: FileSystem> Database<FS> {
     }
 
     /// Check if an ObjectId refers to a table.
-    pub fn is_table(&self, id: ObjectId) -> Result<bool, DatabaseError> {
+    pub fn is_table(&self, id: TableId) -> Result<bool, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().any(|info| info.id == id))
     }
@@ -622,7 +622,7 @@ impl<FS: FileSystem> Database<FS> {
     /// - The key already exists (use `upsert` for update-or-insert)
     /// - Index maintenance fails
     /// - Transaction commit fails
-    pub fn insert(&self, table: ObjectId, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
+    pub fn insert(&self, table: TableId, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -655,7 +655,7 @@ impl<FS: FileSystem> Database<FS> {
     /// - The key does not exist (use `upsert` for insert-or-update)
     /// - Index maintenance fails
     /// - Transaction commit fails
-    pub fn update(&self, table: ObjectId, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
+    pub fn update(&self, table: TableId, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -683,7 +683,7 @@ impl<FS: FileSystem> Database<FS> {
     ///
     /// This is a convenience method that inserts if the key doesn't exist,
     /// or updates if it does.
-    pub fn upsert(&self, table: ObjectId, key: &[u8], value: &[u8]) -> Result<bool, DatabaseError> {
+    pub fn upsert(&self, table: TableId, key: &[u8], value: &[u8]) -> Result<bool, DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -710,7 +710,7 @@ impl<FS: FileSystem> Database<FS> {
     ///
     /// This is a convenience method that begins a read transaction and
     /// retrieves the value.
-    pub fn get(&self, table: ObjectId, key: &[u8]) -> Result<Option<ValueBuf>, DatabaseError> {
+    pub fn get(&self, table: TableId, key: &[u8]) -> Result<Option<ValueBuf>, DatabaseError> {
         // Validate table exists
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -724,7 +724,7 @@ impl<FS: FileSystem> Database<FS> {
     /// Delete a key from a table with automatic index maintenance.
     ///
     /// Returns true if the key existed and was deleted, false if it didn't exist.
-    pub fn delete(&self, table: ObjectId, key: &[u8]) -> Result<bool, DatabaseError> {
+    pub fn delete(&self, table: TableId, key: &[u8]) -> Result<bool, DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -754,7 +754,7 @@ impl<FS: FileSystem> Database<FS> {
     ///
     /// Returns a `TableHandle` that provides convenient methods for
     /// working with the table.
-    pub fn table(&self, table: ObjectId) -> Result<TableHandle<'_, FS>, DatabaseError> {
+    pub fn table(&self, table: TableId) -> Result<TableHandle<'_, FS>, DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -837,12 +837,12 @@ impl<FS: FileSystem> Drop for Database<FS> {
 /// pass the table ID repeatedly.
 pub struct TableHandle<'db, FS: FileSystem> {
     db: &'db Database<FS>,
-    table_id: ObjectId,
+    table_id: TableId,
 }
 
 impl<'db, FS: FileSystem> TableHandle<'db, FS> {
     /// Get the table ID.
-    pub fn id(&self) -> ObjectId {
+    pub fn id(&self) -> TableId {
         self.table_id
     }
 
@@ -921,35 +921,35 @@ pub enum DatabaseErrorKind {
 }
 
 impl DatabaseError {
-    pub fn not_found(object: ObjectId) -> Self {
+    pub fn not_found(object: TableId) -> Self {
         Self {
             kind: DatabaseErrorKind::NotFound,
             message: format!("Object {:?} not found", object),
         }
     }
 
-    pub fn not_a_table(object: ObjectId) -> Self {
+    pub fn not_a_table(object: TableId) -> Self {
         Self {
             kind: DatabaseErrorKind::NotATable,
             message: format!("Object {:?} is not a table", object),
         }
     }
 
-    pub fn not_an_index(object: ObjectId) -> Self {
+    pub fn not_an_index(object: TableId) -> Self {
         Self {
             kind: DatabaseErrorKind::NotAnIndex,
             message: format!("Object {:?} is not an index", object),
         }
     }
 
-    pub fn key_already_exists(table: ObjectId, key: &[u8]) -> Self {
+    pub fn key_already_exists(table: TableId, key: &[u8]) -> Self {
         Self {
             kind: DatabaseErrorKind::KeyAlreadyExists,
             message: format!("Key {:?} already exists in table {:?}", key, table),
         }
     }
 
-    pub fn key_not_found(table: ObjectId, key: &[u8]) -> Self {
+    pub fn key_not_found(table: TableId, key: &[u8]) -> Self {
         Self {
             kind: DatabaseErrorKind::KeyNotFound,
             message: format!("Key {:?} not found in table {:?}", key, table),
@@ -970,7 +970,7 @@ impl DatabaseError {
         }
     }
 
-    pub fn index_maintenance_failed(index: ObjectId, details: String) -> Self {
+    pub fn index_maintenance_failed(index: TableId, details: String) -> Self {
         Self {
             kind: DatabaseErrorKind::IndexMaintenanceFailed,
             message: format!("Index {:?} maintenance failed: {}", index, details),

@@ -27,7 +27,7 @@ use nanokv::pager::{OverflowChainStream, Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
 use nanokv::table::{Flushable, MutableTable, PointLookup, Table, ValueStream};
 use nanokv::txn::TransactionId;
-use nanokv::types::{ObjectId, ValueRef};
+use nanokv::types::{TableId, ValueRef};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
 use std::sync::Arc;
@@ -69,7 +69,7 @@ fn test_end_to_end_streaming_workflow() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager.clone()).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager.clone()).unwrap();
     
     // Step 1: Write large value using streaming
     let large_data = vec![0xAB; 100 * 1024]; // 100KB
@@ -110,7 +110,7 @@ fn test_mixed_inline_and_streaming_values() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
     
     let tx_id = TransactionId::from(1);
     let mut writer = table.writer(tx_id, LogSequenceNumber::from(0)).unwrap();
@@ -198,7 +198,7 @@ fn test_concurrent_streaming_operations() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
     
     // Simulate concurrent transactions
     let tx1 = TransactionId::from(1);
@@ -244,7 +244,7 @@ fn test_memory_efficiency() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
     
     // Write multiple large values
     let tx_id = TransactionId::from(1);
@@ -275,7 +275,7 @@ fn test_streaming_with_updates() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
     
     // Initial write
     let data1 = vec![0xAA; 50 * 1024];
@@ -317,7 +317,7 @@ fn test_streaming_with_deletes() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
     
     // Write multiple large values
     let mut writer1 = table.writer(TransactionId::from(1), LogSequenceNumber::from(10)).unwrap();
@@ -352,7 +352,7 @@ fn test_large_value_patterns() {
     let fs = MemoryFileSystem::new();
     let config = PagerConfig::default();
     let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-    let table = PagedBTree::new(ObjectId::from(1), "test_table".to_string(), pager).unwrap();
+    let table = PagedBTree::new(TableId::from(1), "test_table".to_string(), pager).unwrap();
     
     // Create value with repeating pattern
     let mut pattern_data = Vec::new();

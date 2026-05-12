@@ -22,7 +22,7 @@
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::TableEngineRegistry;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
-use nanokv::types::{Durability, IsolationLevel, ObjectId};
+use nanokv::types::{Durability, IsolationLevel, TableId};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::sync::{Arc, Mutex, RwLock};
@@ -81,7 +81,7 @@ fn test_transaction_put() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     let key = b"key1";
     let value = b"value1";
 
@@ -102,7 +102,7 @@ fn test_transaction_delete() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     let key = b"key1";
     let value = b"value1";
 
@@ -126,7 +126,7 @@ fn test_transaction_delete_nonexistent() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     let key = b"nonexistent";
 
     // Delete of non-existent key should return false
@@ -142,7 +142,7 @@ fn test_transaction_get_from_write_set() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Put multiple values
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -182,7 +182,7 @@ fn test_transaction_update() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     let key = b"key1";
 
     // Put initial value
@@ -215,7 +215,7 @@ fn test_transaction_commit() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
 
     // Commit should succeed
@@ -233,7 +233,7 @@ fn test_transaction_rollback() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
 
     // Rollback should succeed
@@ -269,7 +269,7 @@ fn test_operations_after_commit_fail() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
 
     // Commit the transaction
@@ -288,9 +288,9 @@ fn test_transaction_multiple_tables() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table1 = ObjectId::from(1);
-    let table2 = ObjectId::from(2);
-    let table3 = ObjectId::from(3);
+    let table1 = TableId::from(1);
+    let table2 = TableId::from(2);
+    let table3 = TableId::from(3);
 
     // Write to multiple tables
     tx.put(table1, b"key1", b"value1").unwrap();
@@ -352,7 +352,7 @@ fn test_transaction_read_tracking_serializable() {
         IsolationLevel::Serializable,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Record reads manually (in real implementation, this would be done by get())
     tx.record_read(table_id, b"key1".to_vec());
@@ -372,7 +372,7 @@ fn test_transaction_read_tracking_read_committed() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Record reads - should be no-op for ReadCommitted
     tx.record_read(table_id, b"key1".to_vec());
@@ -391,7 +391,7 @@ fn test_transaction_large_write_set() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Write 1000 key-value pairs
     for i in 0..1000 {
@@ -424,7 +424,7 @@ fn test_transaction_mixed_operations() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Mix of puts, updates, and deletes
     tx.put(table_id, b"key1", b"value1").unwrap();
@@ -464,7 +464,7 @@ fn test_transaction_prepare_phase() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
     tx.put(table_id, b"key1", b"value1").unwrap();
 
     // Prepare should succeed
@@ -525,7 +525,7 @@ fn test_transaction_record_write() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Record writes directly
     tx.record_write(table_id, b"key1".to_vec(), b"value1".to_vec());
@@ -550,7 +550,7 @@ fn test_transaction_record_delete() {
         IsolationLevel::ReadCommitted,
     );
 
-    let table_id = ObjectId::from(1);
+    let table_id = TableId::from(1);
 
     // Put then delete
     tx.record_write(table_id, b"key1".to_vec(), b"value1".to_vec());
