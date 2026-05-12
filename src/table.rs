@@ -14,6 +14,7 @@
 // limitations under the License.
 //
 pub mod blob;
+pub mod bloom;
 pub mod btree;
 mod error;
 pub mod hash;
@@ -27,6 +28,7 @@ use crate::pager::{PageId, Pager};
 use crate::types::ObjectId;
 use crate::vfs::FileSystem;
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
+pub use self::bloom::PagedBloomFilter;
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
 pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
@@ -64,6 +66,7 @@ pub use self::traits::{
 pub enum TableEngineInstance<FS: FileSystem> {
     PagedBTree(Arc<PagedBTree<FS>>),
     LsmTree(Arc<crate::table::lsm::LsmTree<FS>>),
+    PagedBloomFilter(Arc<PagedBloomFilter<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
     MemoryBlob(Arc<MemoryBlob>),
@@ -77,6 +80,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
         match self {
             Self::PagedBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::PagedBloomFilter(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -88,6 +92,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
         match self {
             Self::PagedBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::PagedBloomFilter(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
@@ -99,6 +104,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
         match self {
             Self::PagedBTree(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::kind(engine.as_ref()),
+            Self::PagedBloomFilter(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::kind(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::kind(engine.as_ref()),
@@ -111,6 +117,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
         match self {
             Self::PagedBTree(_) => None, // TODO: Make get_root_page_id public or add accessor
             Self::LsmTree(_) => None, // LSM has manifest, not single root
+            Self::PagedBloomFilter(engine) => Some(engine.root_page_id()),
             Self::MemoryBTree(_) => None,
             Self::MemoryHashTable(_) => None,
             Self::MemoryBlob(_) => None,
@@ -123,6 +130,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
         match self {
             Self::PagedBTree(engine) => Self::PagedBTree(Arc::clone(engine)),
             Self::LsmTree(engine) => Self::LsmTree(Arc::clone(engine)),
+            Self::PagedBloomFilter(engine) => Self::PagedBloomFilter(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),
@@ -201,6 +209,27 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     })?;
                 Ok((TableEngineInstance::LsmTree(Arc::new(lsm)), Some(root_page_id)))
             }
+            TableEngineKind::Bloom => {
+                // Create Bloom filter with default parameters
+                // TODO: Extract parameters from options
+                let num_items = 10000; // Default expected items
+                let bits_per_key = 10; // ~1% false positive rate
+                
+                let bloom = PagedBloomFilter::new(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    num_items,
+                    bits_per_key,
+                    None,
+                )
+                    .map_err(|e| RegistryError::EngineCreationFailed {
+                        engine: options.engine,
+                        details: format!("Failed to create Bloom filter: {}", e),
+                    })?;
+                let root_page_id = bloom.root_page_id();
+                Ok((TableEngineInstance::PagedBloomFilter(Arc::new(bloom)), Some(root_page_id)))
+            }
             TableEngineKind::Memory => {
                 // Create in-memory BTree - no root page
                 let memory_btree = MemoryBTree::new(table_id, name);
@@ -247,6 +276,19 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                         details: format!("Failed to open LSM tree: {}", e),
                     })?;
                 Ok(TableEngineInstance::LsmTree(Arc::new(lsm)))
+            }
+            TableEngineKind::Bloom => {
+                let bloom = PagedBloomFilter::open(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    root_page_id,
+                )
+                    .map_err(|e| RegistryError::EngineOpenFailed {
+                        engine: options.engine,
+                        details: format!("Failed to open Bloom filter: {}", e),
+                    })?;
+                Ok(TableEngineInstance::PagedBloomFilter(Arc::new(bloom)))
             }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry

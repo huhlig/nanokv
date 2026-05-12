@@ -81,7 +81,11 @@ pub enum PageType {
     Catalog = 12,
     /// Overflow page (for large values)
     Overflow = 13,
-    /// Bloom filter page
+    /// Bloom filter metadata page
+    BloomMeta = 14,
+    /// Bloom filter data page
+    BloomData = 15,
+    /// Bloom filter page (legacy, use BloomMeta/BloomData)
     BloomFilter = 16,
     /// Inverted index page
     InvertedIndex = 17,
