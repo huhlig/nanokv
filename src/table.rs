@@ -38,7 +38,7 @@ pub use self::traits::{
     ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
     Histogram, HistogramBucket, KeyStatistics,
     Maintainable, MemoryAware, Migratable, MutableTable, Mutation, OrderedKvTable, OrderedScan,
-    PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, SliceValueStream,
+    PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, SearchableTable, Severity, SliceValueStream,
     StatisticsProvider, Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableInfo,
     TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
     VacuumReport, ValueStatistics, ValueStream, VerificationReport, VerifyScope, WorkBudget, WriteBatch,

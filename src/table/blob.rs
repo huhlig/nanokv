@@ -32,8 +32,8 @@ mod file;
 mod memory;
 mod paged;
 
-pub use self::file::{FileBlob, FileBlobReader, FileBlobWriter};
-pub use self::memory::{MemoryBlob, MemoryBlobReader, MemoryBlobWriter};
-pub use self::paged::{PagedBlob, PagedBlobReader, PagedBlobWriter};
+pub use self::file::FileBlob;
+pub use self::memory::MemoryBlob;
+pub use self::paged::PagedBlob;
 
 // Made with Bob

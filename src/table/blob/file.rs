@@ -16,30 +16,25 @@
 
 //! File-based blob storage implementation.
 //!
-//! This module provides a direct file-based blob storage implementation:
-//! - Each blob is stored as a separate file on disk
-//! - Suitable for very large blobs (GB+ sizes)
-//! - Bypasses the page cache for direct I/O
-//! - Can leverage filesystem features (compression, deduplication, etc.)
+//! This module provides a file-system-based blob storage implementation:
+//! - Each blob is stored as a separate file
+//! - Suitable for very large blobs (GB+)
+//! - Leverages OS file system caching
+//! - Can use filesystem compression/encryption
 //!
 //! The implementation uses a directory structure to organize blob files,
-//! with a B-Tree index mapping keys to file paths.
+//! with metadata stored separately for fast lookups.
 
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup,
-    Table, TableCapabilities, TableCursor,
-    TableEngineKind, TableReader, TableResult, TableStatistics, TableWriter,
-    WriteBatch,
+    Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
 };
-use crate::txn::TransactionId;
-use crate::types::{ObjectId, ScanBounds, ValueBuf};
-use crate::wal::LogSequenceNumber;
+use crate::types::{ObjectId, ValueBuf};
 use std::path::PathBuf;
 
 /// File-based blob storage table.
 ///
-/// Stores each blob as a separate file on disk. This is suitable for very large
-/// blobs that would be inefficient to store in pages.
+/// Stores each blob as a separate file in a directory. This is suitable for
+/// very large blobs that benefit from direct file system access.
 pub struct FileBlob {
     id: ObjectId,
     name: String,
@@ -55,12 +50,30 @@ impl FileBlob {
             base_path,
         }
     }
+
+    /// Get a value by key (stub implementation).
+    pub fn get(&self, _key: &[u8]) -> TableResult<Option<ValueBuf>> {
+        Err(crate::table::TableError::Other(
+            "FileBlob get not yet implemented".to_string(),
+        ))
+    }
+
+    /// Put a key-value pair (stub implementation).
+    pub fn put(&self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
+        Err(crate::table::TableError::Other(
+            "FileBlob put not yet implemented".to_string(),
+        ))
+    }
+
+    /// Delete a key (stub implementation).
+    pub fn delete(&self, _key: &[u8]) -> TableResult<bool> {
+        Err(crate::table::TableError::Other(
+            "FileBlob delete not yet implemented".to_string(),
+        ))
+    }
 }
 
 impl Table for FileBlob {
-    type Reader<'a> = FileBlobReader<'a>;
-    type Writer<'a> = FileBlobWriter<'a>;
-
     fn table_id(&self) -> ObjectId {
         self.id
     }
@@ -90,190 +103,9 @@ impl Table for FileBlob {
         }
     }
 
-    fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>> {
-        Ok(FileBlobReader {
-            table: self,
-            snapshot_lsn,
-        })
-    }
-
-    fn writer(
-        &self,
-        tx_id: TransactionId,
-        snapshot_lsn: LogSequenceNumber,
-    ) -> TableResult<Self::Writer<'_>> {
-        Ok(FileBlobWriter {
-            table: self,
-            tx_id,
-            snapshot_lsn,
-        })
-    }
-
     fn stats(&self) -> TableResult<TableStatistics> {
         // TODO: Implement actual statistics gathering
         Ok(TableStatistics::default())
-    }
-}
-
-
-/// Reader for file-based blob storage.
-pub struct FileBlobReader<'a> {
-    table: &'a FileBlob,
-    snapshot_lsn: LogSequenceNumber,
-}
-
-// Stub implementations to satisfy Table trait requirements
-// TODO: Remove these when Table trait is refactored (see nanokv-vrq)
-
-impl<'a> PointLookup for FileBlobReader<'a> {
-    fn get(&self, _key: &[u8], _snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
-        // TODO: Implement actual file blob reading
-        todo!("Read blob from file")
-    }
-}
-
-impl<'a> OrderedScan for FileBlobReader<'a> {
-    type Cursor<'b> = FileBlobCursor where Self: 'b;
-
-    fn scan(&self, _bounds: ScanBounds, _snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support ordered scans".to_string(),
-        ))
-    }
-}
-
-impl<'a> TableReader for FileBlobReader<'a> {
-    fn snapshot_lsn(&self) -> LogSequenceNumber {
-        self.snapshot_lsn
-    }
-
-    fn approximate_len(&self) -> TableResult<Option<u64>> {
-        // TODO: Implement actual length calculation
-        Ok(Some(0))
-    }
-}
-
-/// Stub cursor for blob tables (not actually used).
-pub struct FileBlobCursor;
-
-impl TableCursor for FileBlobCursor {
-    fn valid(&self) -> bool {
-        false
-    }
-
-    fn key(&self) -> Option<&[u8]> {
-        None
-    }
-
-    fn value(&self) -> Option<&[u8]> {
-        None
-    }
-
-    fn next(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn prev(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn seek(&mut self, _key: &[u8]) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn seek_for_prev(&mut self, _key: &[u8]) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn first(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn last(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn snapshot_lsn(&self) -> LogSequenceNumber {
-        LogSequenceNumber::default()
-    }
-}
-
-/// Writer for file-based blob storage.
-pub struct FileBlobWriter<'a> {
-    table: &'a FileBlob,
-    tx_id: TransactionId,
-    snapshot_lsn: LogSequenceNumber,
-}
-
-impl<'a> TableWriter for FileBlobWriter<'a> {
-    fn tx_id(&self) -> TransactionId {
-        self.tx_id
-    }
-
-    fn snapshot_lsn(&self) -> LogSequenceNumber {
-        self.snapshot_lsn
-    }
-}
-
-impl<'a> MutableTable for FileBlobWriter<'a> {
-    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
-        // TODO: Implement actual file blob writing
-        todo!("Write blob to file")
-    }
-
-    fn delete(&mut self, _key: &[u8]) -> TableResult<bool> {
-        // TODO: Implement actual file blob deletion
-        todo!("Delete blob file")
-    }
-
-    fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support range delete".to_string(),
-        ))
-    }
-
-    fn max_inline_size(&self) -> Option<usize> {
-        // For file-based storage, use a larger threshold since we're optimized for large blobs
-        Some(64 * 1024) // 64KB
-    }
-
-    fn max_value_size(&self) -> Option<u64> {
-        // File-based storage can handle very large blobs
-        // Limited primarily by filesystem constraints
-        Some(u64::MAX)
-    }
-}
-
-impl<'a> BatchOps for FileBlobWriter<'a> {
-    fn batch_get(&self, _keys: &[&[u8]]) -> TableResult<Vec<Option<ValueBuf>>> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support batch operations".to_string(),
-        ))
-    }
-
-    fn apply_batch(&mut self, _batch: WriteBatch) -> TableResult<BatchReport> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support batch operations".to_string(),
-        ))
-    }
-}
-
-impl<'a> Flushable for FileBlobWriter<'a> {
-    fn flush(&mut self) -> TableResult<()> {
-        // File-based blobs flush through filesystem
-        Ok(())
     }
 }
 

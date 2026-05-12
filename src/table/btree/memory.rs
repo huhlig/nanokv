@@ -28,7 +28,7 @@
 use crate::snap::Snapshot;
 use crate::table::{
     BatchOps, BatchReport, DenseOrdered, Flushable, MutableTable, OrderedScan, PointLookup,
-    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
+    SearchableTable, SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
     TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
     TableStatistics, TableWriter, VerificationReport, WriteBatch,
 };
@@ -103,9 +103,6 @@ impl MemoryBTree {
 }
 
 impl Table for MemoryBTree {
-    type Reader<'a> = MemoryBTreeReader<'a>;
-    type Writer<'a> = MemoryBTreeWriter<'a>;
-
     fn table_id(&self) -> ObjectId {
         self.id
     }
@@ -135,6 +132,23 @@ impl Table for MemoryBTree {
         }
     }
 
+    fn stats(&self) -> TableResult<TableStatistics> {
+        let data = self.data.read().unwrap();
+        Ok(TableStatistics {
+            row_count: Some(data.len() as u64),
+            total_size_bytes: Some(self.get_memory_usage() as u64),
+            key_stats: None,
+            value_stats: None,
+            histogram: None,
+            last_updated_lsn: None,
+        })
+    }
+}
+
+impl SearchableTable for MemoryBTree {
+    type Reader<'a> = MemoryBTreeReader<'a>;
+    type Writer<'a> = MemoryBTreeWriter<'a>;
+
     fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>> {
         Ok(MemoryBTreeReader {
             table: self,
@@ -152,18 +166,6 @@ impl Table for MemoryBTree {
             tx_id,
             snapshot_lsn,
             pending_changes: Vec::new(),
-        })
-    }
-
-    fn stats(&self) -> TableResult<TableStatistics> {
-        let data = self.data.read().unwrap();
-        Ok(TableStatistics {
-            row_count: Some(data.len() as u64),
-            total_size_bytes: Some(self.get_memory_usage() as u64),
-            key_stats: None,
-            value_stats: None,
-            histogram: None,
-            last_updated_lsn: None,
         })
     }
 }

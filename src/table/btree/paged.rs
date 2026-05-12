@@ -32,9 +32,9 @@ use crate::pager::{Page, PageId, PageType, Pager};
 use crate::snap::Snapshot;
 use crate::table::{
     BatchOps, BatchReport, DenseOrdered, Flushable, MutableTable, OrderedScan, PointLookup,
-    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
-    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
-    TableStatistics, TableWriter, VerificationReport, WriteBatch,
+    SearchableTable, SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
+    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult, TableStatistics,
+    TableWriter, VerificationReport, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
 use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
@@ -142,7 +142,10 @@ impl BTreeNode {
 
         // Write node type (1 byte)
         match self {
-            BTreeNode::Internal { entries, rightmost_child } => {
+            BTreeNode::Internal {
+                entries,
+                rightmost_child,
+            } => {
                 bytes.push(0); // Internal node
 
                 // Write number of entries (4 bytes)
@@ -221,8 +224,9 @@ impl BTreeNode {
                         "Insufficient data for rightmost child",
                     ));
                 }
-                let rightmost_child =
-                    PageId::from(u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()));
+                let rightmost_child = PageId::from(u64::from_le_bytes(
+                    bytes[offset..offset + 8].try_into().unwrap(),
+                ));
                 offset += 8;
 
                 let mut entries = Vec::with_capacity(entry_count);
@@ -255,8 +259,9 @@ impl BTreeNode {
                             "Insufficient data for child page ID",
                         ));
                     }
-                    let child_page_id =
-                        PageId::from(u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()));
+                    let child_page_id = PageId::from(u64::from_le_bytes(
+                        bytes[offset..offset + 8].try_into().unwrap(),
+                    ));
                     offset += 8;
 
                     entries.push(InternalEntry { key, child_page_id });
@@ -287,8 +292,9 @@ impl BTreeNode {
                         "Insufficient data for next leaf",
                     ));
                 }
-                let next_leaf =
-                    PageId::from(u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()));
+                let next_leaf = PageId::from(u64::from_le_bytes(
+                    bytes[offset..offset + 8].try_into().unwrap(),
+                ));
                 offset += 8;
 
                 let mut entries = Vec::with_capacity(entry_count);
@@ -332,12 +338,14 @@ impl BTreeNode {
                             "Insufficient data for version chain",
                         ));
                     }
-                    let chain: VersionChain = bincode::deserialize(&bytes[offset..offset + chain_len])
-                        .map_err(|e| crate::table::TableError::corruption(
-                            "BTreeNode::from_bytes",
-                            "deserialization_error",
-                            format!("Failed to deserialize version chain: {}", e),
-                        ))?;
+                    let chain: VersionChain =
+                        bincode::deserialize(&bytes[offset..offset + chain_len]).map_err(|e| {
+                            crate::table::TableError::corruption(
+                                "BTreeNode::from_bytes",
+                                "deserialization_error",
+                                format!("Failed to deserialize version chain: {}", e),
+                            )
+                        })?;
                     offset += chain_len;
 
                     entries.push(LeafEntry { key, chain });
@@ -375,7 +383,11 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let root_node = BTreeNode::new_leaf();
 
         // Write root node to disk
-        let mut page = Page::new(root_page_id, PageType::BTreeLeaf, pager.page_size().data_size());
+        let mut page = Page::new(
+            root_page_id,
+            PageType::BTreeLeaf,
+            pager.page_size().data_size(),
+        );
         page.data_mut().extend_from_slice(&root_node.to_bytes());
         pager.write_page(&page)?;
 
@@ -413,12 +425,12 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let start = Instant::now();
         let page = self.pager.read_page(page_id)?;
         let result = BTreeNode::from_bytes(page.data());
-        
+
         if result.is_ok() {
             counter!("btree.node_read").increment(1);
             histogram!("btree.read_duration").record(start.elapsed().as_secs_f64());
         }
-        
+
         result
     }
 
@@ -427,7 +439,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
     fn write_node(&self, page_id: PageId, node: &BTreeNode) -> TableResult<()> {
         let start = Instant::now();
         debug!("Writing BTree node");
-        
+
         let page_type = match node.node_type() {
             NodeType::Internal => PageType::BTreeInternal,
             NodeType::Leaf => PageType::BTreeLeaf,
@@ -436,7 +448,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let mut page = Page::new(page_id, page_type, self.pager.page_size().data_size());
         page.data_mut().extend_from_slice(&node.to_bytes());
         self.pager.write_page(&page)?;
-        
+
         counter!("btree.node_write").increment(1);
         histogram!("btree.write_duration").record(start.elapsed().as_secs_f64());
         Ok(())
@@ -447,9 +459,9 @@ impl<FS: FileSystem> PagedBTree<FS> {
     fn search(&self, key: &[u8]) -> TableResult<(PageId, usize)> {
         let start = Instant::now();
         debug!("BTree search operation");
-        
+
         let (leaf_page_id, pos, _path) = self.search_with_path(key)?;
-        
+
         histogram!("btree.search_duration").record(start.elapsed().as_secs_f64());
         Ok((leaf_page_id, pos))
     }
@@ -464,7 +476,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
             let node = self.read_node(current_page_id)?;
 
             match node {
-                BTreeNode::Internal { entries, rightmost_child } => {
+                BTreeNode::Internal {
+                    entries,
+                    rightmost_child,
+                } => {
                     // Binary search for the appropriate child
                     // In our representation: entries[i].child_page_id contains keys < entries[i].key
                     // So for a key >= entries[i].key, we need to go to the next child
@@ -489,7 +504,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                             }
                         }
                     };
-                    
+
                     // Track this parent and which child we're going to
                     path.push((current_page_id, child_page_id));
                     current_page_id = child_page_id;
@@ -508,7 +523,11 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Get a value for a key at a specific snapshot.
-    fn get_internal(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
+    fn get_internal(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<ValueBuf>> {
         let (leaf_page_id, pos) = self.search(key)?;
         let node = self.read_node(leaf_page_id)?;
 
@@ -540,14 +559,17 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let mid = node.key_count() / 2;
 
         match node {
-            BTreeNode::Internal { entries, rightmost_child } => {
+            BTreeNode::Internal {
+                entries,
+                rightmost_child,
+            } => {
                 // Split internal node
                 let median_key = entries[mid].key.clone();
-                
+
                 // Left node keeps entries [0..mid]
                 let left_entries = entries[..mid].to_vec();
                 let left_rightmost = entries[mid].child_page_id;
-                
+
                 // Right node gets entries [mid+1..]
                 let right_entries = entries[mid + 1..].to_vec();
                 let right_rightmost = *rightmost_child;
@@ -574,10 +596,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
             BTreeNode::Leaf { entries, next_leaf } => {
                 // Split leaf node
                 let median_key = entries[mid].key.clone();
-                
+
                 // Left node keeps entries [0..mid]
                 let left_entries = entries[..mid].to_vec();
-                
+
                 // Right node gets entries [mid..]
                 let right_entries = entries[mid..].to_vec();
 
@@ -622,8 +644,14 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
         match (left_node, right_node) {
             (
-                BTreeNode::Internal { entries: left_entries, rightmost_child: left_rightmost },
-                BTreeNode::Internal { entries: right_entries, rightmost_child: right_rightmost },
+                BTreeNode::Internal {
+                    entries: left_entries,
+                    rightmost_child: left_rightmost,
+                },
+                BTreeNode::Internal {
+                    entries: right_entries,
+                    rightmost_child: right_rightmost,
+                },
             ) => {
                 // Check if merge is possible
                 if left_entries.len() + right_entries.len() + 1 > DEFAULT_ORDER {
@@ -631,7 +659,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 }
 
                 let mut merged_entries = left_entries;
-                
+
                 // Add separator key with left's rightmost child
                 merged_entries.push(InternalEntry {
                     key: separator_key.to_vec(),
@@ -654,8 +682,14 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 Ok(true)
             }
             (
-                BTreeNode::Leaf { entries: left_entries, .. },
-                BTreeNode::Leaf { entries: right_entries, next_leaf: right_next },
+                BTreeNode::Leaf {
+                    entries: left_entries,
+                    ..
+                },
+                BTreeNode::Leaf {
+                    entries: right_entries,
+                    next_leaf: right_next,
+                },
             ) => {
                 // Check if merge is possible
                 if left_entries.len() + right_entries.len() > DEFAULT_ORDER {
@@ -663,7 +697,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 }
 
                 let mut merged_entries = left_entries;
-                
+
                 // Add all right entries
                 merged_entries.extend(right_entries);
 
@@ -704,8 +738,14 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
         match (left_node, right_node) {
             (
-                BTreeNode::Internal { entries: left_entries, rightmost_child: left_rightmost },
-                BTreeNode::Internal { entries: right_entries, rightmost_child: right_rightmost },
+                BTreeNode::Internal {
+                    entries: left_entries,
+                    rightmost_child: left_rightmost,
+                },
+                BTreeNode::Internal {
+                    entries: right_entries,
+                    rightmost_child: right_rightmost,
+                },
             ) => {
                 let mut left_entries = left_entries;
                 let mut right_entries = right_entries;
@@ -714,7 +754,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 if left_count < target_left {
                     // Move keys from right to left
                     let to_move = target_left - left_count;
-                    
+
                     // Add separator with left's rightmost as child
                     left_entries.push(InternalEntry {
                         key: separator_key.to_vec(),
@@ -734,7 +774,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         let sep = entry.key.clone();
                         let new_left_rightmost = entry.child_page_id;
                         right_entries.remove(0);
-                        
+
                         // Update nodes
                         let new_left = BTreeNode::Internal {
                             entries: left_entries,
@@ -757,7 +797,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 } else {
                     // Move keys from left to right
                     let to_move = left_count - target_left;
-                    
+
                     // Take entries from end of left
                     let mut moved_entries = Vec::new();
                     for _ in 0..to_move {
@@ -799,8 +839,14 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 }
             }
             (
-                BTreeNode::Leaf { entries: left_entries, next_leaf: left_next },
-                BTreeNode::Leaf { entries: right_entries, next_leaf: right_next },
+                BTreeNode::Leaf {
+                    entries: left_entries,
+                    next_leaf: left_next,
+                },
+                BTreeNode::Leaf {
+                    entries: right_entries,
+                    next_leaf: right_next,
+                },
             ) => {
                 let mut left_entries = left_entries;
                 let mut right_entries = right_entries;
@@ -809,7 +855,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 if left_count < target_left {
                     // Move keys from right to left
                     let to_move = target_left - left_count;
-                    
+
                     for _ in 0..to_move {
                         if let Some(entry) = right_entries.first() {
                             left_entries.push(entry.clone());
@@ -837,7 +883,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 } else {
                     // Move keys from left to right
                     let to_move = left_count - target_left;
-                    
+
                     let mut moved_entries = Vec::new();
                     for _ in 0..to_move {
                         if let Some(entry) = left_entries.pop() {
@@ -851,7 +897,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
                     // New separator is the first moved key
                     let new_separator = moved_entries.first().map(|e| e.key.clone());
-                    
+
                     moved_entries.extend(right_entries);
 
                     // Update nodes
@@ -886,7 +932,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let (leaf_page_id, pos, path) = self.search_with_path(&key)?;
         let mut node = self.read_node(leaf_page_id)?;
 
-        if let BTreeNode::Leaf { ref mut entries, .. } = node {
+        if let BTreeNode::Leaf {
+            ref mut entries, ..
+        } = node
+        {
             // Check if key already exists
             if pos < entries.len() && entries[pos].key == key {
                 // Update existing entry's version chain by prepending new version
@@ -900,12 +949,18 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 let mut chain = VersionChain::new(value, tx_id);
                 // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
                 chain.commit(commit_lsn);
-                entries.insert(pos, LeafEntry { key: key.clone(), chain });
+                entries.insert(
+                    pos,
+                    LeafEntry {
+                        key: key.clone(),
+                        chain,
+                    },
+                );
             }
 
             // Write the updated node first
             self.write_node(leaf_page_id, &node)?;
-            
+
             // Check if node needs to be split after writing
             if node.is_full() {
                 self.split_and_propagate(leaf_page_id, &node, path)?;
@@ -917,12 +972,17 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
     /// Split a node and propagate the split up the tree.
     /// The path parameter contains (parent_page_id, child_page_id) tuples from root to the node being split.
-    fn split_and_propagate(&self, page_id: PageId, node: &BTreeNode, path: Vec<(PageId, PageId)>) -> TableResult<()> {
+    fn split_and_propagate(
+        &self,
+        page_id: PageId,
+        node: &BTreeNode,
+        path: Vec<(PageId, PageId)>,
+    ) -> TableResult<()> {
         let current_root = self.get_root_page_id();
-        
+
         // Split the node
         let (right_page_id, median_key) = self.split_node(page_id, node)?;
-        
+
         // If this is the root, create a new root
         if page_id == current_root {
             // Create new root
@@ -934,14 +994,14 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 }],
                 rightmost_child: right_page_id,
             };
-            
+
             self.write_node(new_root_page_id, &new_root)?;
-            
+
             // Update root pointer atomically
             self.set_root_page_id(new_root_page_id);
-            
+
             // TODO: Persist root pointer to superblock for durability
-            
+
             Ok(())
         } else {
             // Insert median key into parent
@@ -976,7 +1036,11 @@ impl<FS: FileSystem> PagedBTree<FS> {
         // Read the parent node
         let mut parent_node = self.read_node(parent_page_id)?;
 
-        if let BTreeNode::Internal { ref mut entries, ref mut rightmost_child } = parent_node {
+        if let BTreeNode::Internal {
+            ref mut entries,
+            ref mut rightmost_child,
+        } = parent_node
+        {
             // In our B-Tree structure:
             // - entries[i].child_page_id contains keys < entries[i].key
             // - Keys >= entries[i].key go to the next child (entries[i+1].child_page_id or rightmost_child)
@@ -987,7 +1051,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
             // - We need to insert median as a separator
             //
             // Strategy: Find where left_child is, insert median_key with right_child as the "next" pointer
-            
+
             // Check if left_child is the rightmost child
             if *rightmost_child == left_child {
                 // The split child was the rightmost child
@@ -1001,7 +1065,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
             } else {
                 // Find where left_child appears in the parent
                 let mut insert_pos = None;
-                
+
                 // Check each entry's child pointer
                 for (i, entry) in entries.iter().enumerate() {
                     if entry.child_page_id == left_child {
@@ -1013,7 +1077,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         break;
                     }
                 }
-                
+
                 // Also check if left_child is the "next" child after an entry
                 if insert_pos.is_none() {
                     for i in 0..entries.len() {
@@ -1030,18 +1094,23 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         }
                     }
                 }
-                
+
                 match insert_pos {
-                    Some(pos) if pos < entries.len() && entries[pos].child_page_id == left_child => {
+                    Some(pos)
+                        if pos < entries.len() && entries[pos].child_page_id == left_child =>
+                    {
                         // Case 1: left_child is at entries[pos].child_page_id
                         // entries[pos] = {key: K, child: left_child}
                         // This means left_child contains keys < K
                         // After split: left_child has keys < median, right_child has keys >= median
                         // We need to insert median at pos with left_child, and update entries[pos] to point to right_child
-                        entries.insert(pos, InternalEntry {
-                            key,
-                            child_page_id: left_child,
-                        });
+                        entries.insert(
+                            pos,
+                            InternalEntry {
+                                key,
+                                child_page_id: left_child,
+                            },
+                        );
                         // Now entries[pos+1] is the old entry, update its child to right_child
                         entries[pos + 1].child_page_id = right_child;
                     }
@@ -1050,10 +1119,13 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         // This means keys >= entries[pos-1].key go to left_child
                         // After split: we insert median at pos with left_child
                         // The next entry (or rightmost) should point to right_child
-                        entries.insert(pos, InternalEntry {
-                            key,
-                            child_page_id: left_child,
-                        });
+                        entries.insert(
+                            pos,
+                            InternalEntry {
+                                key,
+                                child_page_id: left_child,
+                            },
+                        );
                         // Update the next entry's child to right_child
                         if pos + 1 < entries.len() {
                             entries[pos + 1].child_page_id = right_child;
@@ -1065,7 +1137,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
                         return Err(crate::table::TableError::corruption(
                             "PagedBTree::merge_or_redistribute",
                             "missing_child",
-                            format!("Could not find left_child {:?} in parent {:?}", left_child, parent_page_id),
+                            format!(
+                                "Could not find left_child {:?} in parent {:?}",
+                                left_child, parent_page_id
+                            ),
                         ));
                     }
                 }
@@ -1094,7 +1169,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let (leaf_page_id, pos) = self.search(key)?;
         let mut node = self.read_node(leaf_page_id)?;
 
-        if let BTreeNode::Leaf { ref mut entries, .. } = node {
+        if let BTreeNode::Leaf {
+            ref mut entries, ..
+        } = node
+        {
             // Check if key exists
             if pos < entries.len() && entries[pos].key == key {
                 // Mark as deleted in version chain by prepending empty value
@@ -1122,9 +1200,6 @@ impl<FS: FileSystem> PagedBTree<FS> {
 }
 
 impl<FS: FileSystem> Table for PagedBTree<FS> {
-    type Reader<'a> = PagedBTreeReader<'a, FS> where Self: 'a;
-    type Writer<'a> = PagedBTreeWriter<'a, FS> where Self: 'a;
-
     fn table_id(&self) -> ObjectId {
         self.id
     }
@@ -1154,6 +1229,29 @@ impl<FS: FileSystem> Table for PagedBTree<FS> {
         }
     }
 
+    fn stats(&self) -> TableResult<TableStatistics> {
+        // TODO: Implement proper statistics collection
+        Ok(TableStatistics {
+            row_count: None,
+            total_size_bytes: None,
+            key_stats: None,
+            value_stats: None,
+            histogram: None,
+            last_updated_lsn: None,
+        })
+    }
+}
+
+impl<FS: FileSystem> SearchableTable for PagedBTree<FS> {
+    type Reader<'a>
+        = PagedBTreeReader<'a, FS>
+    where
+        Self: 'a;
+    type Writer<'a>
+        = PagedBTreeWriter<'a, FS>
+    where
+        Self: 'a;
+
     fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>> {
         Ok(PagedBTreeReader {
             table: self,
@@ -1173,18 +1271,6 @@ impl<FS: FileSystem> Table for PagedBTree<FS> {
             pending_changes: Vec::new(),
         })
     }
-
-    fn stats(&self) -> TableResult<TableStatistics> {
-        // TODO: Implement proper statistics collection
-        Ok(TableStatistics {
-            row_count: None,
-            total_size_bytes: None,
-            key_stats: None,
-            value_stats: None,
-            histogram: None,
-            last_updated_lsn: None,
-        })
-    }
 }
 
 // =============================================================================
@@ -1201,14 +1287,14 @@ impl<'a, FS: FileSystem> PointLookup for PagedBTreeReader<'a, FS> {
     fn get(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
         self.table.get_internal(key, snapshot_lsn)
     }
-    
+
     fn get_stream(
         &self,
         key: &[u8],
         snapshot_lsn: LogSequenceNumber,
     ) -> TableResult<Option<Box<dyn crate::table::ValueStream + '_>>> {
         use crate::table::SliceValueStream;
-        
+
         // For now, use default implementation that loads the full value
         // TODO: Implement true streaming with ValueRef and overflow chains
         // This requires modifying VersionChain to store ValueRef information
@@ -1222,7 +1308,10 @@ impl<'a, FS: FileSystem> PointLookup for PagedBTreeReader<'a, FS> {
 }
 
 impl<'a, FS: FileSystem> OrderedScan for PagedBTreeReader<'a, FS> {
-    type Cursor<'b> = PagedBTreeCursor<'b, FS> where Self: 'b;
+    type Cursor<'b>
+        = PagedBTreeCursor<'b, FS>
+    where
+        Self: 'b;
 
     fn scan(
         &self,
@@ -1260,13 +1349,17 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
         Ok((key.len() + value.len() + 16) as u64)
     }
 
-    fn put_stream(&mut self, key: &[u8], stream: &mut dyn crate::table::ValueStream) -> TableResult<u64> {
+    fn put_stream(
+        &mut self,
+        key: &[u8],
+        stream: &mut dyn crate::table::ValueStream,
+    ) -> TableResult<u64> {
         use crate::types::ValueRef;
-        
+
         // Check size hint to determine storage strategy
         let size_hint = stream.size_hint();
         let max_inline = self.max_inline_size().unwrap_or(4096);
-        
+
         // If small enough or no size hint, use default implementation (inline storage)
         if let Some(size) = size_hint {
             if size <= max_inline as u64 {
@@ -1286,7 +1379,7 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
             // No size hint, use default implementation
             return MutableTable::put_stream(self, key, stream);
         }
-        
+
         // Large value: stream to overflow pages
         let mut buffer = Vec::new();
         let mut temp_buf = vec![0u8; 8192];
@@ -1297,12 +1390,13 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
             }
             buffer.extend_from_slice(&temp_buf[..n]);
         }
-        
+
         // For now, allocate overflow chain during flush
         // Store the full value in pending_changes
         // TODO: Optimize to stream directly during flush
-        self.pending_changes.push((key.to_vec(), Some(buffer.clone())));
-        
+        self.pending_changes
+            .push((key.to_vec(), Some(buffer.clone())));
+
         Ok((key.len() + buffer.len() + 16) as u64)
     }
 
@@ -1319,7 +1413,7 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
         // TODO: Implement range delete
         todo!("Range delete not yet implemented for paged B-Tree")
     }
-    
+
     fn max_inline_size(&self) -> Option<usize> {
         // Use 4KB as default inline threshold
         // Values larger than this will use overflow pages
@@ -1390,7 +1484,7 @@ impl<'a, FS: FileSystem> Flushable for PagedBTreeWriter<'a, FS> {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -1493,7 +1587,9 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
         loop {
             let node = self.table.read_node(current_page_id)?;
             match node {
-                BTreeNode::Internal { rightmost_child, .. } => {
+                BTreeNode::Internal {
+                    rightmost_child, ..
+                } => {
                     // Follow rightmost child
                     current_page_id = rightmost_child;
                 }
@@ -1511,7 +1607,7 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
         if let BTreeNode::Leaf { entries, .. } = node {
             if self.current_position < entries.len() {
                 let entry = &entries[self.current_position];
-                
+
                 // Check bounds
                 if !self.is_in_bounds(&entry.key) {
                     self.exhausted = true;
@@ -1561,17 +1657,17 @@ impl<'a, FS: FileSystem> PagedBTreeCursor<'a, FS> {
                 // Try to advance within current leaf
                 while self.current_position < entries.len() {
                     self.load_current_entry()?;
-                    
+
                     // Check if we found a valid entry or hit bounds
                     if self.current_key.is_some() {
                         return Ok(());
                     }
-                    
+
                     // If exhausted (out of bounds), stop searching
                     if self.exhausted {
                         return Ok(());
                     }
-                    
+
                     self.current_position += 1;
                 }
 
@@ -1634,7 +1730,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
         if !self.initialized {
             return self.first();
         }
-        
+
         if self.exhausted {
             return Ok(());
         }
@@ -1649,7 +1745,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
         if !self.initialized {
             return self.last();
         }
-        
+
         if self.exhausted {
             return Ok(());
         }
@@ -1658,8 +1754,8 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn seek(&mut self, key: &[u8]) -> TableResult<()> {
-        self.initialized = true;  // Mark as initialized since we're explicitly positioning
-        
+        self.initialized = true; // Mark as initialized since we're explicitly positioning
+
         // Reset exhausted state
         self.exhausted = false;
 
@@ -1670,7 +1766,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
                 ScanBounds::Range { start, .. } => {
                     let before_or_at_start = match start {
                         Bound::Included(k) => key < k.0.as_slice(),
-                        Bound::Excluded(k) => key <= k.0.as_slice(),  // Include equal for excluded bounds
+                        Bound::Excluded(k) => key <= k.0.as_slice(), // Include equal for excluded bounds
                         Bound::Unbounded => false,
                     };
                     if before_or_at_start {
@@ -1686,7 +1782,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
                                 let (leaf_page_id, pos) = self.table.search(&start_key)?;
                                 self.current_page_id = leaf_page_id;
                                 self.current_position = pos;
-                                
+
                                 // Advance past the excluded key
                                 // Note: We don't call advance_to_next_visible first because it will
                                 // mark us as exhausted when it sees the excluded key is out of bounds.
@@ -1705,7 +1801,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
                 }
                 _ => {}
             }
-            
+
             // Key is after end bound
             self.exhausted = true;
             self.current_key = None;
@@ -1723,8 +1819,8 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn seek_for_prev(&mut self, key: &[u8]) -> TableResult<()> {
-        self.initialized = true;  // Mark as initialized since we're explicitly positioning
-        
+        self.initialized = true; // Mark as initialized since we're explicitly positioning
+
         // Reset exhausted state
         self.exhausted = false;
 
@@ -1744,7 +1840,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
                 }
                 _ => {}
             }
-            
+
             // Key is before start bound
             self.exhausted = true;
             self.current_key = None;
@@ -1756,7 +1852,7 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
         let (leaf_page_id, pos) = self.table.search(key)?;
         self.current_page_id = leaf_page_id;
         self.current_position = pos;
-        
+
         // Check if we found exact match or need to go to previous
         let node = self.table.read_node(leaf_page_id)?;
         if let BTreeNode::Leaf { entries, .. } = node {
@@ -1773,8 +1869,8 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn first(&mut self) -> TableResult<()> {
-        self.initialized = true;  // Mark as initialized since we're explicitly positioning
-        
+        self.initialized = true; // Mark as initialized since we're explicitly positioning
+
         // Reset exhausted state
         self.exhausted = false;
 
@@ -1814,14 +1910,14 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 
     fn last(&mut self) -> TableResult<()> {
-        self.initialized = true;  // Mark as initialized since we're explicitly positioning
-        
+        self.initialized = true; // Mark as initialized since we're explicitly positioning
+
         // Reset exhausted state
         self.exhausted = false;
 
         // Navigate to rightmost leaf
         self.current_page_id = self.find_rightmost_leaf()?;
-        
+
         // Find last entry in the leaf
         let node = self.table.read_node(self.current_page_id)?;
         if let BTreeNode::Leaf { entries, .. } = node {
@@ -1831,11 +1927,11 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
                 self.current_value = None;
                 return Ok(());
             }
-            
+
             // Start from last entry and work backwards to find visible entry
             self.current_position = entries.len() - 1;
             self.load_current_entry()?;
-            
+
             // If not visible or out of bounds, retreat
             if self.current_key.is_none() {
                 self.retreat_to_prev_visible()?;
@@ -1858,7 +1954,11 @@ mod tests {
     fn test_node_serialization() {
         // Test internal node
         let mut internal = BTreeNode::new_internal();
-        if let BTreeNode::Internal { entries, rightmost_child } = &mut internal {
+        if let BTreeNode::Internal {
+            entries,
+            rightmost_child,
+        } = &mut internal
+        {
             entries.push(InternalEntry {
                 key: b"key1".to_vec(),
                 child_page_id: PageId::from(10),
@@ -1889,13 +1989,12 @@ mod tests {
 
 // Made with Bob
 
-
 // =============================================================================
 // DenseOrdered Specialty Table Implementation
 // =============================================================================
 
 /// Specialty cursor for index operations on paged B-Tree.
-/// 
+///
 /// For secondary indexes, the "index_key" is the indexed field value,
 /// and the "primary_key" is the pointer back to the main table record.
 pub struct PagedBTreeSpecialtyCursor<'a, FS: FileSystem> {
@@ -1929,7 +2028,10 @@ impl<'a, FS: FileSystem> SpecialtyTableCursor for PagedBTreeSpecialtyCursor<'a, 
 }
 
 impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
-    type Cursor<'a> = PagedBTreeSpecialtyCursor<'a, FS> where Self: 'a;
+    type Cursor<'a>
+        = PagedBTreeSpecialtyCursor<'a, FS>
+    where
+        Self: 'a;
 
     fn table_id(&self) -> ObjectId {
         self.id
@@ -1957,27 +2059,25 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
     fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
         // For a secondary index, we store: index_key -> primary_key
         // This allows lookups by the indexed field to find the primary key
-        
+
         // Use the internal insert method with a default transaction ID
         // and commit LSN of 1 (immediately committed for index operations)
         let tx_id = TransactionId::from(0);
         let commit_lsn = LogSequenceNumber::from(1);
-        self.insert_internal(
-            index_key.to_vec(),
-            primary_key.to_vec(),
-            tx_id,
-            commit_lsn,
-        )
+        self.insert_internal(index_key.to_vec(), primary_key.to_vec(), tx_id, commit_lsn)
     }
 
     fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
         // For secondary indexes, we need to delete the specific index_key -> primary_key mapping
         // First, verify that the entry exists and points to the expected primary key
-        
+
         let (leaf_page_id, pos) = self.search(index_key)?;
         let mut leaf_node = self.read_node(leaf_page_id)?;
-        
-        if let BTreeNode::Leaf { ref mut entries, .. } = leaf_node {
+
+        if let BTreeNode::Leaf {
+            ref mut entries, ..
+        } = leaf_node
+        {
             if pos < entries.len() && entries[pos].key == index_key {
                 // Check if the value matches the expected primary key
                 let snapshot = Snapshot::new(
@@ -1988,8 +2088,9 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
                     0,
                     Vec::new(),
                 );
-                
-                if let Some(stored_primary_key) = entries[pos].chain.find_visible_version(&snapshot) {
+
+                if let Some(stored_primary_key) = entries[pos].chain.find_visible_version(&snapshot)
+                {
                     if stored_primary_key == primary_key {
                         // Remove the entry
                         entries.remove(pos);
@@ -1999,7 +2100,7 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -2016,10 +2117,10 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
         // Traverse the tree to count entries
         let root_page_id = self.get_root_page_id();
         let entry_count = self.count_entries(root_page_id)?;
-        
+
         Ok(SpecialtyTableStats {
             entry_count: Some(entry_count),
-            size_bytes: None, // Would need to track page usage
+            size_bytes: None,                 // Would need to track page usage
             distinct_keys: Some(entry_count), // For B-Tree, each entry is distinct
             stale_entries: Some(0),
             last_updated_lsn: None,
@@ -2034,10 +2135,10 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
             errors: Vec::new(),
             warnings: Vec::new(),
         };
-        
+
         // Verify the tree structure recursively
         self.verify_node(root_page_id, &mut report)?;
-        
+
         Ok(report)
     }
 }
@@ -2046,9 +2147,12 @@ impl<FS: FileSystem> PagedBTree<FS> {
     /// Count total entries in the tree (helper for stats).
     fn count_entries(&self, page_id: PageId) -> TableResult<u64> {
         let node = self.read_node(page_id)?;
-        
+
         match node {
-            BTreeNode::Internal { entries, rightmost_child } => {
+            BTreeNode::Internal {
+                entries,
+                rightmost_child,
+            } => {
                 let mut count = 0;
                 for entry in &entries {
                     count += self.count_entries(entry.child_page_id)?;
@@ -2056,19 +2160,20 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 count += self.count_entries(rightmost_child)?;
                 Ok(count)
             }
-            BTreeNode::Leaf { entries, .. } => {
-                Ok(entries.len() as u64)
-            }
+            BTreeNode::Leaf { entries, .. } => Ok(entries.len() as u64),
         }
     }
-    
+
     /// Verify node structure recursively (helper for verify).
     fn verify_node(&self, page_id: PageId, report: &mut VerificationReport) -> TableResult<()> {
         let node = self.read_node(page_id)?;
         report.checked_items += 1;
-        
+
         match node {
-            BTreeNode::Internal { entries, rightmost_child } => {
+            BTreeNode::Internal {
+                entries,
+                rightmost_child,
+            } => {
                 // Verify internal node structure
                 for entry in &entries {
                     self.verify_node(entry.child_page_id, report)?;
@@ -2079,7 +2184,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 // Leaf node - nothing more to verify
             }
         }
-        
+
         Ok(())
     }
 }

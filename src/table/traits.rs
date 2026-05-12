@@ -476,26 +476,12 @@ pub trait Migratable {
     fn migrate(&mut self, from_version: u32) -> TableResult<()>;
 }
 
-/// Marker trait for a full ordered key-value table.
-pub trait OrderedKvTable: PointLookup + OrderedScan + MutableTable + BatchOps + Flushable {}
-
-impl<T> OrderedKvTable for T where T: PointLookup + OrderedScan + MutableTable + BatchOps + Flushable
-{}
-
-/// Physical table implementation.
+/// Base table trait with just identity and metadata.
 ///
-/// This is the base trait for all table implementations (BTree, LSM, etc.).
-/// Each table type implements this trait along with capability-specific traits
-/// (PointLookup, OrderedScan, MutableTable, etc.) to declare its features.
+/// This is the minimal trait that all table implementations must provide,
+/// including specialty tables (Blob, ApproximateMembership, etc.) that don't
+/// support ordered scans or traditional reader/writer patterns.
 pub trait Table {
-    type Reader<'a>: TableReader
-    where
-        Self: 'a;
-
-    type Writer<'a>: TableWriter
-    where
-        Self: 'a;
-
     fn table_id(&self) -> ObjectId;
 
     fn name(&self) -> &str;
@@ -503,6 +489,24 @@ pub trait Table {
     fn kind(&self) -> TableEngineKind;
 
     fn capabilities(&self) -> TableCapabilities;
+
+    fn stats(&self) -> TableResult<TableStatistics>;
+}
+
+/// Searchable table with reader/writer access patterns.
+///
+/// This trait extends the base Table trait to add reader/writer abstractions
+/// for tables that support point lookups and ordered scans (BTree, LSM, etc.).
+/// Specialty tables that don't fit this pattern (Blob, Bloom filters, etc.)
+/// can implement just the base Table trait.
+pub trait SearchableTable: Table {
+    type Reader<'a>: TableReader
+    where
+        Self: 'a;
+
+    type Writer<'a>: TableWriter
+    where
+        Self: 'a;
 
     fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>>;
 
@@ -513,15 +517,19 @@ pub trait Table {
     /// - Read-before-delete operations need visibility checks
     /// - Conditional updates need snapshot isolation
     fn writer(&self, tx_id: TransactionId, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Writer<'_>>;
-
-    fn stats(&self) -> TableResult<TableStatistics>;
 }
 
-/// Backward compatibility alias.
-#[deprecated(since = "0.1.0", note = "Use `Table` instead")]
-pub trait TableEngine: Table {}
+/// Marker trait for a full ordered key-value table.
+pub trait OrderedKvTable: PointLookup + OrderedScan + MutableTable + BatchOps + Flushable {}
 
-impl<T: Table> TableEngine for T {}
+impl<T> OrderedKvTable for T where T: PointLookup + OrderedScan + MutableTable + BatchOps + Flushable
+{}
+
+/// Backward compatibility alias.
+#[deprecated(since = "0.1.0", note = "Use `SearchableTable` instead")]
+pub trait TableEngine: SearchableTable {}
+
+impl<T: SearchableTable> TableEngine for T {}
 
 /// Read view over a table engine.
 pub trait TableReader: PointLookup + OrderedScan {

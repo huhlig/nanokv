@@ -56,8 +56,8 @@ pub use self::compaction::{
     CompactionExecutor, CompactionJob, CompactionManager, CompactionPicker, CompactionStats,
 };
 pub use self::config::{
-    BloomFilterConfig, BlockCacheConfig, CacheEvictionPolicy, CompactionConfig,
-    CompactionStrategy, LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
+    BlockCacheConfig, BloomFilterConfig, CacheEvictionPolicy, CompactionConfig, CompactionStrategy,
+    LevelConfig, LsmConfig, MemtableConfig, MemtableType, SStableConfig,
 };
 pub use self::iterator::{
     Direction, LsmEntry, LsmIterator, MemtableIterator, MergeIterator, SStableIterator,
@@ -67,9 +67,9 @@ pub use self::memtable::Memtable;
 pub use self::sstable::{
     DataBlock, SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter,
 };
+use crate::table::SearchableTable;
 
 // Made with Bob
-
 
 // =============================================================================
 // LSM Tree Table Implementation
@@ -79,8 +79,8 @@ use crate::pager::{PageId, Pager};
 use crate::table::error::{TableError, TableResult};
 use crate::table::{
     BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
-    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableStatistics,
-    TableWriter, ValueStream, WriteBatch,
+    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableStatistics, TableWriter,
+    ValueStream, WriteBatch,
 };
 use crate::txn::TransactionId;
 use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
@@ -100,25 +100,25 @@ use tracing::{debug, instrument};
 pub struct LsmTree<FS: FileSystem> {
     /// Table identifier
     table_id: ObjectId,
-    
+
     /// Table name
     name: String,
-    
+
     /// Pager for disk I/O
     pager: Arc<Pager<FS>>,
-    
+
     /// Configuration
     config: LsmConfig,
-    
+
     /// Active memtable (accepts writes)
     active_memtable: Arc<RwLock<Memtable>>,
-    
+
     /// Immutable memtables (being flushed)
     immutable_memtables: Arc<RwLock<Vec<Memtable>>>,
-    
+
     /// Manifest for version management
     manifest: Arc<Manifest<FS>>,
-    
+
     /// Compaction manager
     compaction_manager: Arc<CompactionManager<FS>>,
 }
@@ -133,24 +133,18 @@ impl<FS: FileSystem> LsmTree<FS> {
         config: LsmConfig,
     ) -> TableResult<Self> {
         let num_levels = config.compaction.levels.len();
-        let manifest = Arc::new(Manifest::new(
-            pager.clone(),
-            root_page_id,
-            num_levels,
-        )?);
-        
-        let active_memtable = Arc::new(RwLock::new(Memtable::new(
-            config.memtable.max_size,
-        )));
-        
+        let manifest = Arc::new(Manifest::new(pager.clone(), root_page_id, num_levels)?);
+
+        let active_memtable = Arc::new(RwLock::new(Memtable::new(config.memtable.max_size)));
+
         let immutable_memtables = Arc::new(RwLock::new(Vec::new()));
-        
+
         let compaction_manager = Arc::new(CompactionManager::new(
             pager.clone(),
             manifest.clone(),
             config.compaction.clone(),
         ));
-        
+
         Ok(Self {
             table_id,
             name,
@@ -162,7 +156,7 @@ impl<FS: FileSystem> LsmTree<FS> {
             compaction_manager,
         })
     }
-    
+
     /// Open an existing LSM tree.
     pub fn open(
         table_id: ObjectId,
@@ -172,24 +166,18 @@ impl<FS: FileSystem> LsmTree<FS> {
         config: LsmConfig,
     ) -> TableResult<Self> {
         let num_levels = config.compaction.levels.len();
-        let manifest = Arc::new(Manifest::open(
-            pager.clone(),
-            root_page_id,
-            num_levels,
-        )?);
-        
-        let active_memtable = Arc::new(RwLock::new(Memtable::new(
-            config.memtable.max_size,
-        )));
-        
+        let manifest = Arc::new(Manifest::open(pager.clone(), root_page_id, num_levels)?);
+
+        let active_memtable = Arc::new(RwLock::new(Memtable::new(config.memtable.max_size)));
+
         let immutable_memtables = Arc::new(RwLock::new(Vec::new()));
-        
+
         let compaction_manager = Arc::new(CompactionManager::new(
             pager.clone(),
             manifest.clone(),
             config.compaction.clone(),
         ));
-        
+
         Ok(Self {
             table_id,
             name,
@@ -201,13 +189,17 @@ impl<FS: FileSystem> LsmTree<FS> {
             compaction_manager,
         })
     }
-    
+
     /// Get a value from the LSM tree at a specific snapshot.
     #[instrument(skip(self, key), fields(key_len = key.len()))]
-    fn get_internal(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<Vec<u8>>> {
+    fn get_internal(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Vec<u8>>> {
         let start = Instant::now();
         debug!("LSM get operation");
-        
+
         // 1. Check active memtable
         {
             let memtable = self.active_memtable.read().unwrap();
@@ -215,7 +207,7 @@ impl<FS: FileSystem> LsmTree<FS> {
                 return Ok(Some(value));
             }
         }
-        
+
         // 2. Check immutable memtables (newest to oldest)
         {
             let immutable = self.immutable_memtables.read().unwrap();
@@ -225,32 +217,32 @@ impl<FS: FileSystem> LsmTree<FS> {
                 }
             }
         }
-        
+
         // 3. Check SSTables (L0 to Ln)
         let version = self.manifest.current();
-        
+
         // Check each level
         for level in 0..version.num_levels() {
             let files = version.level_files(level as u32);
-            
+
             if level == 0 {
                 // L0 files may overlap, check all in reverse order (newest first)
                 for file in files.iter().rev() {
                     if !file.contains_key(key) {
                         continue;
                     }
-                    
+
                     let reader = SStableReader::open(
                         self.pager.clone(),
                         file.first_page_id,
                         self.config.sstable.clone(),
                     )?;
-                    
+
                     // Check bloom filter first
                     if !reader.may_contain(key) {
                         continue;
                     }
-                    
+
                     if let Some(value) = reader.get(key, snapshot_lsn)? {
                         return Ok(Some(value));
                     }
@@ -266,7 +258,7 @@ impl<FS: FileSystem> LsmTree<FS> {
                         std::cmp::Ordering::Equal
                     }
                 });
-                
+
                 if let Ok(idx) = file_idx {
                     let file = &files[idx];
                     let reader = SStableReader::open(
@@ -274,24 +266,24 @@ impl<FS: FileSystem> LsmTree<FS> {
                         file.first_page_id,
                         self.config.sstable.clone(),
                     )?;
-                    
+
                     // Check bloom filter first
                     if !reader.may_contain(key) {
                         continue;
                     }
-                    
+
                     if let Some(value) = reader.get(key, snapshot_lsn)? {
                         return Ok(Some(value));
                     }
                 }
             }
         }
-        
+
         histogram!("lsm.get_duration").record(start.elapsed().as_secs_f64());
         counter!("lsm.sstable_read").increment(1);
         Ok(None)
     }
-    
+
     /// Get a streaming reader for a value at a specific snapshot.
     ///
     /// For now, this uses the same implementation as get_internal and wraps
@@ -310,7 +302,7 @@ impl<FS: FileSystem> LsmTree<FS> {
             None => Ok(None),
         }
     }
-    
+
     /// Insert a key-value pair into the active memtable.
     #[instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     fn insert_internal(
@@ -322,9 +314,9 @@ impl<FS: FileSystem> LsmTree<FS> {
     ) -> TableResult<()> {
         let start = Instant::now();
         debug!("LSM insert operation");
-        
+
         let memtable = self.active_memtable.write().unwrap();
-        
+
         // Try to insert
         let result = match memtable.insert(key.clone(), value.clone(), tx_id, commit_lsn) {
             Ok(()) => Ok(()),
@@ -332,22 +324,22 @@ impl<FS: FileSystem> LsmTree<FS> {
                 // Memtable is full, need to rotate
                 drop(memtable);
                 self.rotate_memtable()?;
-                
+
                 // Retry insert on new memtable
                 let new_memtable = self.active_memtable.write().unwrap();
                 new_memtable.insert(key, value, tx_id, commit_lsn)
             }
             Err(e) => Err(e),
         };
-        
+
         if result.is_ok() {
             counter!("lsm.memtable_write").increment(1);
             histogram!("lsm.write_duration").record(start.elapsed().as_secs_f64());
         }
-        
+
         result
     }
-    
+
     /// Delete a key from the active memtable (inserts tombstone).
     fn delete_internal(
         &self,
@@ -356,7 +348,7 @@ impl<FS: FileSystem> LsmTree<FS> {
         commit_lsn: Option<LogSequenceNumber>,
     ) -> TableResult<()> {
         let memtable = self.active_memtable.write().unwrap();
-        
+
         // Try to delete (insert tombstone)
         match memtable.delete(key.clone(), tx_id, commit_lsn) {
             Ok(()) => Ok(()),
@@ -364,7 +356,7 @@ impl<FS: FileSystem> LsmTree<FS> {
                 // Memtable is full, need to rotate
                 drop(memtable);
                 self.rotate_memtable()?;
-                
+
                 // Retry delete on new memtable
                 let new_memtable = self.active_memtable.write().unwrap();
                 new_memtable.delete(key, tx_id, commit_lsn)
@@ -372,38 +364,36 @@ impl<FS: FileSystem> LsmTree<FS> {
             Err(e) => Err(e),
         }
     }
-    
+
     /// Rotate the active memtable to immutable state.
     #[instrument(skip(self))]
     fn rotate_memtable(&self) -> TableResult<()> {
         let start = Instant::now();
         debug!("Rotating memtable");
-        
+
         let mut active = self.active_memtable.write().unwrap();
         let mut immutable = self.immutable_memtables.write().unwrap();
-        
+
         // Make current memtable immutable
         active.make_immutable();
-        
+
         // Move to immutable list
-        let old_memtable = std::mem::replace(
-            &mut *active,
-            Memtable::new(self.config.memtable.max_size),
-        );
+        let old_memtable =
+            std::mem::replace(&mut *active, Memtable::new(self.config.memtable.max_size));
         immutable.push(old_memtable);
-        
+
         counter!("lsm.memtable_flush").increment(1);
         histogram!("lsm.flush_duration").record(start.elapsed().as_secs_f64());
         // Note: memtable size tracking would require adding a size() method to Memtable
-        
+
         // Background flush: The compaction manager's background thread will automatically
         // detect the immutable memtable and flush it to L0 SSTables. The compaction loop
         // continuously monitors for work and will pick up this memtable on its next iteration.
         // No explicit trigger is needed as the background thread is always running.
-        
+
         Ok(())
     }
-    
+
     /// Flush the active memtable to an SSTable.
     ///
     /// This method:
@@ -417,77 +407,77 @@ impl<FS: FileSystem> LsmTree<FS> {
     pub fn flush_memtable(&self) -> TableResult<()> {
         let start = Instant::now();
         debug!("Flushing active memtable to SSTable");
-        
+
         // Check if active memtable has any data
         let has_data = {
             let memtable = self.active_memtable.read().unwrap();
             !memtable.is_empty()
         };
-        
+
         if !has_data {
             debug!("Active memtable is empty, skipping flush");
             return Ok(());
         }
-        
+
         // Rotate memtable to make it immutable
         self.rotate_memtable()?;
-        
+
         // Now flush all immutable memtables
         self.flush_immutable_memtables()?;
-        
+
         histogram!("lsm.memtable_flush_duration").record(start.elapsed().as_secs_f64());
         Ok(())
     }
-    
+
     /// Flush all immutable memtables to SSTables.
     ///
     /// This is typically called by the background compaction thread,
     /// but can also be called explicitly during shutdown.
     fn flush_immutable_memtables(&self) -> TableResult<()> {
         let immutable = self.immutable_memtables.read().unwrap();
-        
+
         if immutable.is_empty() {
             return Ok(());
         }
-        
+
         // We need to flush each immutable memtable
         // For now, we'll flush them one at a time
         // In a production system, this could be parallelized
         let memtables_to_flush: Vec<_> = immutable.iter().cloned().collect();
         drop(immutable);
-        
+
         for memtable in memtables_to_flush {
             self.flush_single_memtable(&memtable)?;
         }
-        
+
         // Clear the immutable memtables list
         let mut immutable = self.immutable_memtables.write().unwrap();
         immutable.clear();
-        
+
         Ok(())
     }
-    
+
     /// Flush a single memtable to an SSTable.
     fn flush_single_memtable(&self, memtable: &Memtable) -> TableResult<()> {
         if !memtable.is_immutable() {
             return Err(TableError::MemtableNotImmutable);
         }
-        
+
         // Get all entries from the memtable
         let entries = memtable.entries()?;
-        
+
         if entries.is_empty() {
             return Ok(());
         }
-        
+
         // Allocate a new SSTable ID
         let sstable_id = SStableId::new(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos() as u64
+                .as_nanos() as u64,
         );
-        
+
         // Create SSTable writer
         let mut writer = SStableWriter::new(
             self.pager.clone(),
@@ -496,17 +486,17 @@ impl<FS: FileSystem> LsmTree<FS> {
             self.config.sstable.clone(),
             entries.len(), // estimated_entries
         );
-        
+
         // Write all entries to the SSTable
         for (key, chain) in entries {
             // Write the full version chain to preserve MVCC history
             writer.add(key, chain)?;
         }
-        
+
         // Finalize the SSTable with the memtable's max LSN
         let current_lsn = memtable.max_lsn().unwrap_or(LogSequenceNumber::from(0));
         let sstable_metadata = writer.finish(current_lsn)?;
-        
+
         // Convert SStableMetadata to FileMetadata for the manifest
         let file_metadata = FileMetadata {
             id: sstable_metadata.id,
@@ -519,15 +509,15 @@ impl<FS: FileSystem> LsmTree<FS> {
             first_page_id: sstable_metadata.first_page_id,
             num_pages: sstable_metadata.num_pages,
         };
-        
+
         // Add the new SSTable to the manifest
         let version_edit = VersionEdit::add_sstable(file_metadata);
-        
+
         self.manifest.apply_edit(version_edit)?;
-        
+
         Ok(())
     }
-    
+
     /// Create iterators for all data sources.
     fn create_iterators(
         &self,
@@ -536,7 +526,7 @@ impl<FS: FileSystem> LsmTree<FS> {
     ) -> TableResult<Vec<Box<dyn LsmIterator>>> {
         let mut iterators: Vec<Box<dyn LsmIterator>> = Vec::new();
         let mut priority = 0;
-        
+
         // Active memtable (highest priority)
         {
             let memtable = self.active_memtable.read().unwrap();
@@ -544,7 +534,7 @@ impl<FS: FileSystem> LsmTree<FS> {
             iterators.push(Box::new(iter));
             priority += 1;
         }
-        
+
         // Immutable memtables (reverse order = newest first)
         {
             let immutable = self.immutable_memtables.read().unwrap();
@@ -554,49 +544,42 @@ impl<FS: FileSystem> LsmTree<FS> {
                 priority += 1;
             }
         }
-        
+
         // SSTables (L0 to Ln)
         let version = self.manifest.current();
         for level in 0..version.num_levels() {
             let files = version.level_files(level as u32);
-            
+
             for file in files.iter().rev() {
                 let reader = Arc::new(SStableReader::open(
                     self.pager.clone(),
                     file.first_page_id,
                     self.config.sstable.clone(),
                 )?);
-                
-                let iter = SStableIterator::new(
-                    reader,
-                    direction,
-                    priority,
-                )?;
+
+                let iter = SStableIterator::new(reader, direction, priority)?;
                 iterators.push(Box::new(iter));
                 priority += 1;
             }
         }
-        
+
         Ok(iterators)
     }
 }
 
 impl<FS: FileSystem> Table for LsmTree<FS> {
-    type Reader<'a> = LsmReader<'a, FS> where Self: 'a;
-    type Writer<'a> = LsmWriter<'a, FS> where Self: 'a;
-    
     fn table_id(&self) -> ObjectId {
         self.table_id
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn kind(&self) -> TableEngineKind {
         TableEngineKind::LsmTree
     }
-    
+
     fn capabilities(&self) -> TableCapabilities {
         TableCapabilities {
             ordered: true,
@@ -613,14 +596,48 @@ impl<FS: FileSystem> Table for LsmTree<FS> {
             supports_encryption: self.config.sstable.encryption.is_some(),
         }
     }
-    
+
+    fn stats(&self) -> TableResult<TableStatistics> {
+        let version = self.manifest.current();
+        let mut total_entries = 0u64;
+        let mut total_size = 0u64;
+
+        for level in 0..version.num_levels() {
+            let files = version.level_files(level as u32);
+            for file in files {
+                total_entries += file.num_entries;
+                total_size += file.total_size;
+            }
+        }
+
+        Ok(TableStatistics {
+            row_count: Some(total_entries),
+            total_size_bytes: Some(total_size),
+            key_stats: None,
+            value_stats: None,
+            histogram: None,
+            last_updated_lsn: None,
+        })
+    }
+}
+
+impl<FS: FileSystem> SearchableTable for LsmTree<FS> {
+    type Reader<'a>
+        = LsmReader<'a, FS>
+    where
+        Self: 'a;
+    type Writer<'a>
+        = LsmWriter<'a, FS>
+    where
+        Self: 'a;
+
     fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>> {
         Ok(LsmReader {
             tree: self,
             snapshot_lsn,
         })
     }
-    
+
     fn writer(
         &self,
         tx_id: TransactionId,
@@ -631,29 +648,6 @@ impl<FS: FileSystem> Table for LsmTree<FS> {
             tx_id,
             snapshot_lsn,
             pending_changes: Vec::new(),
-        })
-    }
-    
-    fn stats(&self) -> TableResult<TableStatistics> {
-        let version = self.manifest.current();
-        let mut total_entries = 0u64;
-        let mut total_size = 0u64;
-        
-        for level in 0..version.num_levels() {
-            let files = version.level_files(level as u32);
-            for file in files {
-                total_entries += file.num_entries;
-                total_size += file.total_size;
-            }
-        }
-        
-        Ok(TableStatistics {
-            row_count: Some(total_entries),
-            total_size_bytes: Some(total_size),
-            key_stats: None,
-            value_stats: None,
-            histogram: None,
-            last_updated_lsn: None,
         })
     }
 }
@@ -674,7 +668,7 @@ impl<'a, FS: FileSystem> PointLookup for LsmReader<'a, FS> {
             .get_internal(key, snapshot_lsn)
             .map(|opt| opt.map(ValueBuf))
     }
-    
+
     fn get_stream(
         &self,
         key: &[u8],
@@ -685,8 +679,11 @@ impl<'a, FS: FileSystem> PointLookup for LsmReader<'a, FS> {
 }
 
 impl<'a, FS: FileSystem> OrderedScan for LsmReader<'a, FS> {
-    type Cursor<'b> = LsmCursor<'b, FS> where Self: 'b;
-    
+    type Cursor<'b>
+        = LsmCursor<'b, FS>
+    where
+        Self: 'b;
+
     fn scan(
         &self,
         bounds: ScanBounds,
@@ -700,7 +697,7 @@ impl<'a, FS: FileSystem> TableReader for LsmReader<'a, FS> {
     fn snapshot_lsn(&self) -> LogSequenceNumber {
         self.snapshot_lsn
     }
-    
+
     fn approximate_len(&self) -> TableResult<Option<u64>> {
         let stats = self.tree.stats()?;
         Ok(stats.row_count)
@@ -722,7 +719,7 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
         // Return approximate size: key + value + overhead
         Ok((key.len() + value.len() + 16) as u64)
     }
-    
+
     fn put_stream(&mut self, key: &[u8], stream: &mut dyn ValueStream) -> TableResult<u64> {
         // For LSM tree, we need to buffer the stream into memory for the memtable
         // The memtable is in-memory anyway, so we can't avoid this
@@ -730,7 +727,7 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
         if let Some(size_hint) = stream.size_hint() {
             buffer.reserve(size_hint as usize);
         }
-        
+
         let mut temp_buf = vec![0u8; 8192]; // 8KB chunks
         loop {
             let n = stream.read(&mut temp_buf)?;
@@ -739,10 +736,10 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
             }
             buffer.extend_from_slice(&temp_buf[..n]);
         }
-        
+
         self.put(key, &buffer)
     }
-    
+
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
         // Check if key exists
         let exists = self.tree.get_internal(key, self.snapshot_lsn)?.is_some();
@@ -751,15 +748,15 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
         }
         Ok(exists)
     }
-    
+
     fn range_delete(&mut self, bounds: ScanBounds) -> TableResult<u64> {
         // Range delete in LSM tree: insert tombstones for all keys in range
         let mut deleted_count = 0u64;
-        
+
         // Create a cursor to scan the range
         let reader = self.tree.reader(self.snapshot_lsn)?;
         let mut cursor = reader.scan(bounds.clone(), self.snapshot_lsn)?;
-        
+
         // Collect keys to delete (can't delete while iterating)
         let mut keys_to_delete = Vec::new();
         while cursor.valid() {
@@ -768,13 +765,13 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
             }
             cursor.next()?;
         }
-        
+
         // Insert tombstones for each key
         for key in keys_to_delete {
             self.pending_changes.push((key, None));
             deleted_count += 1;
         }
-        
+
         Ok(deleted_count)
     }
 }
@@ -791,11 +788,11 @@ impl<'a, FS: FileSystem> BatchOps for LsmWriter<'a, FS> {
         }
         Ok(results)
     }
-    
+
     fn apply_batch<'b>(&mut self, batch: WriteBatch<'b>) -> TableResult<BatchReport> {
         let mut report = BatchReport::default();
         report.attempted = batch.mutations.len() as u64;
-        
+
         for mutation in batch.mutations {
             match mutation {
                 crate::table::Mutation::Put { key, value } => {
@@ -820,7 +817,7 @@ impl<'a, FS: FileSystem> BatchOps for LsmWriter<'a, FS> {
                 }
             }
         }
-        
+
         Ok(report)
     }
 }
@@ -830,7 +827,7 @@ impl<'a, FS: FileSystem> Flushable for LsmWriter<'a, FS> {
         if self.pending_changes.is_empty() {
             return Ok(());
         }
-        
+
         // Apply all pending changes
         for (key, value_opt) in self.pending_changes.drain(..) {
             match value_opt {
@@ -846,7 +843,7 @@ impl<'a, FS: FileSystem> Flushable for LsmWriter<'a, FS> {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -855,7 +852,7 @@ impl<'a, FS: FileSystem> TableWriter for LsmWriter<'a, FS> {
     fn tx_id(&self) -> TransactionId {
         self.tx_id
     }
-    
+
     fn snapshot_lsn(&self) -> LogSequenceNumber {
         self.snapshot_lsn
     }
@@ -894,7 +891,7 @@ impl<'a, FS: FileSystem> LsmCursor<'a, FS> {
             initialized: false,
         })
     }
-    
+
     fn is_in_bounds(&self, key: &[u8]) -> bool {
         match &self.bounds {
             ScanBounds::All => true,
@@ -914,16 +911,18 @@ impl<'a, FS: FileSystem> LsmCursor<'a, FS> {
             }
         }
     }
-    
+
     fn ensure_initialized(&mut self) -> TableResult<()> {
         if self.initialized {
             return Ok(());
         }
-        
+
         // Create merge iterator
-        let iterators = self.tree.create_iterators(Direction::Forward, self.snapshot_lsn)?;
+        let iterators = self
+            .tree
+            .create_iterators(Direction::Forward, self.snapshot_lsn)?;
         let mut merge_iter = MergeIterator::new(iterators, Direction::Forward, self.snapshot_lsn)?;
-        
+
         // Position at start of bounds
         match &self.bounds {
             ScanBounds::All => {
@@ -932,30 +931,28 @@ impl<'a, FS: FileSystem> LsmCursor<'a, FS> {
             ScanBounds::Prefix(prefix) => {
                 merge_iter.seek(&prefix.0)?;
             }
-            ScanBounds::Range { start, .. } => {
-                match start {
-                    Bound::Included(k) | Bound::Excluded(k) => {
-                        merge_iter.seek(&k.0)?;
-                    }
-                    Bound::Unbounded => {
-                        merge_iter.seek_to_first()?;
-                    }
+            ScanBounds::Range { start, .. } => match start {
+                Bound::Included(k) | Bound::Excluded(k) => {
+                    merge_iter.seek(&k.0)?;
                 }
-            }
+                Bound::Unbounded => {
+                    merge_iter.seek_to_first()?;
+                }
+            },
         }
-        
+
         self.merge_iterator = Some(merge_iter);
         self.initialized = true;
         self.load_current()
     }
-    
+
     fn load_current(&mut self) -> TableResult<()> {
         let merge_iter = self.merge_iterator.as_mut().unwrap();
-        
+
         if let Some((key, value)) = merge_iter.current() {
             let key_vec = key.to_vec();
             let value_vec = value.to_vec();
-            
+
             if self.is_in_bounds(&key_vec) {
                 self.current_key = Some(key_vec);
                 self.current_value = Some(value_vec);
@@ -970,7 +967,7 @@ impl<'a, FS: FileSystem> LsmCursor<'a, FS> {
             self.current_value = None;
             self.exhausted = true;
         }
-        
+
         Ok(())
     }
 }
@@ -1000,40 +997,42 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
     fn valid(&self) -> bool {
         !self.exhausted && self.current_key.is_some()
     }
-    
+
     fn key(&self) -> Option<&[u8]> {
         self.current_key.as_deref()
     }
-    
+
     fn value(&self) -> Option<&[u8]> {
         self.current_value.as_deref()
     }
-    
+
     fn next(&mut self) -> TableResult<()> {
         self.ensure_initialized()?;
-        
+
         if self.exhausted {
             return Ok(());
         }
-        
+
         let merge_iter = self.merge_iterator.as_mut().unwrap();
         merge_iter.next()?;
         self.load_current()
     }
-    
+
     fn prev(&mut self) -> TableResult<()> {
         self.ensure_initialized()?;
-        
+
         if self.exhausted {
             return Ok(());
         }
-        
+
         // For prev(), we need to switch to backward iteration if not already
         // This is a simplified implementation - ideally we'd maintain both directions
         // For now, we'll recreate the iterator in backward mode
-        let iterators = self.tree.create_iterators(Direction::Backward, self.snapshot_lsn)?;
+        let iterators = self
+            .tree
+            .create_iterators(Direction::Backward, self.snapshot_lsn)?;
         let mut merge_iter = MergeIterator::new(iterators, Direction::Backward, self.snapshot_lsn)?;
-        
+
         // If we have a current key, seek to it and move backward
         if let Some(ref current_key) = self.current_key {
             merge_iter.seek(current_key)?;
@@ -1043,53 +1042,57 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
             // Start from last
             merge_iter.seek_to_last()?;
         }
-        
+
         self.merge_iterator = Some(merge_iter);
         self.load_current()
     }
-    
+
     fn seek(&mut self, key: &[u8]) -> TableResult<()> {
         self.ensure_initialized()?;
-        
+
         let merge_iter = self.merge_iterator.as_mut().unwrap();
         merge_iter.seek(key)?;
         self.load_current()
     }
-    
+
     fn seek_for_prev(&mut self, key: &[u8]) -> TableResult<()> {
         self.ensure_initialized()?;
-        
+
         // Create backward iterator
-        let iterators = self.tree.create_iterators(Direction::Backward, self.snapshot_lsn)?;
+        let iterators = self
+            .tree
+            .create_iterators(Direction::Backward, self.snapshot_lsn)?;
         let mut merge_iter = MergeIterator::new(iterators, Direction::Backward, self.snapshot_lsn)?;
-        
+
         // Seek to the key (finds first entry <= key in backward mode)
         merge_iter.seek(key)?;
-        
+
         self.merge_iterator = Some(merge_iter);
         self.load_current()
     }
-    
+
     fn first(&mut self) -> TableResult<()> {
         self.ensure_initialized()?;
-        
+
         let merge_iter = self.merge_iterator.as_mut().unwrap();
         merge_iter.seek_to_first()?;
         self.load_current()
     }
-    
+
     fn last(&mut self) -> TableResult<()> {
         self.ensure_initialized()?;
-        
+
         // Create backward iterator and seek to last
-        let iterators = self.tree.create_iterators(Direction::Backward, self.snapshot_lsn)?;
+        let iterators = self
+            .tree
+            .create_iterators(Direction::Backward, self.snapshot_lsn)?;
         let mut merge_iter = MergeIterator::new(iterators, Direction::Backward, self.snapshot_lsn)?;
         merge_iter.seek_to_last()?;
-        
+
         self.merge_iterator = Some(merge_iter);
         self.load_current()
     }
-    
+
     fn snapshot_lsn(&self) -> LogSequenceNumber {
         self.snapshot_lsn
     }

@@ -26,13 +26,9 @@
 //! and optional size limits.
 
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup,
-    Table, TableCapabilities, TableCursor,
-    TableEngineKind, TableReader, TableResult, TableStatistics, TableWriter,
-    WriteBatch,
+    Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
 };
-use crate::txn::TransactionId;
-use crate::types::{KeyBuf, ObjectId, ScanBounds, ValueBuf};
+use crate::types::{ObjectId, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -115,12 +111,74 @@ impl MemoryBlob {
     fn estimate_entry_size(key: &[u8], value: &[u8]) -> usize {
         key.len() + value.len() + std::mem::size_of::<Vec<u8>>() * 2
     }
+
+    /// Get a value by key.
+    pub fn get(&self, key: &[u8]) -> TableResult<Option<ValueBuf>> {
+        let store = self.data.read().unwrap();
+        Ok(store.get(key).map(|v| ValueBuf(v.clone())))
+    }
+
+    /// Put a key-value pair.
+    pub fn put(&self, key: &[u8], value: &[u8]) -> TableResult<u64> {
+        // Check value size limit
+        if value.len() as u64 > self.max_blob_size {
+            return Err(crate::table::TableError::Other(format!(
+                "Value size {} exceeds maximum {}",
+                value.len(),
+                self.max_blob_size
+            )));
+        }
+
+        let mut store = self.data.write().unwrap();
+        
+        // Calculate memory delta
+        let new_size = Self::estimate_entry_size(key, value);
+        let old_size = store
+            .get(key)
+            .map(|v| Self::estimate_entry_size(key, v))
+            .unwrap_or(0);
+        let delta = new_size as isize - old_size as isize;
+
+        // Check memory budget
+        let new_usage = (self.get_memory_usage() as isize + delta) as usize;
+        if new_usage > self.memory_budget {
+            return Err(crate::table::TableError::Other(format!(
+                "Memory budget exceeded: {} > {}",
+                new_usage, self.memory_budget
+            )));
+        }
+
+        // Store the value
+        store.insert(key.to_vec(), value.to_vec());
+        self.update_memory_usage(delta);
+
+        Ok(value.len() as u64 + key.len() as u64 + 16) // +16 for overhead
+    }
+
+    /// Delete a key.
+    pub fn delete(&self, key: &[u8]) -> TableResult<bool> {
+        let mut store = self.data.write().unwrap();
+        if let Some(value) = store.remove(key) {
+            let size = Self::estimate_entry_size(key, &value);
+            self.update_memory_usage(-(size as isize));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get the maximum inline size.
+    pub fn max_inline_size(&self) -> usize {
+        self.inline_threshold
+    }
+
+    /// Get the maximum value size.
+    pub fn max_value_size(&self) -> u64 {
+        self.max_blob_size
+    }
 }
 
 impl Table for MemoryBlob {
-    type Reader<'a> = MemoryBlobReader<'a>;
-    type Writer<'a> = MemoryBlobWriter<'a>;
-
     fn table_id(&self) -> ObjectId {
         self.id
     }
@@ -150,25 +208,6 @@ impl Table for MemoryBlob {
         }
     }
 
-    fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>> {
-        Ok(MemoryBlobReader {
-            table: self,
-            snapshot_lsn,
-        })
-    }
-
-    fn writer(
-        &self,
-        tx_id: TransactionId,
-        snapshot_lsn: LogSequenceNumber,
-    ) -> TableResult<Self::Writer<'_>> {
-        Ok(MemoryBlobWriter {
-            table: self,
-            tx_id,
-            snapshot_lsn,
-        })
-    }
-
     fn stats(&self) -> TableResult<TableStatistics> {
         let data = self.data.read().unwrap();
         let memory_usage = self.get_memory_usage();
@@ -181,200 +220,6 @@ impl Table for MemoryBlob {
             histogram: None,
             last_updated_lsn: Some(LogSequenceNumber::default()),
         })
-    }
-}
-
-
-/// Reader for in-memory blob storage.
-pub struct MemoryBlobReader<'a> {
-    table: &'a MemoryBlob,
-    snapshot_lsn: LogSequenceNumber,
-}
-
-impl<'a> TableReader for MemoryBlobReader<'a> {
-    fn snapshot_lsn(&self) -> LogSequenceNumber {
-        self.snapshot_lsn
-    }
-
-    fn approximate_len(&self) -> TableResult<Option<u64>> {
-        Ok(Some(self.table.data.read().unwrap().len() as u64))
-    }
-}
-
-impl<'a> PointLookup for MemoryBlobReader<'a> {
-    fn get(&self, key: &[u8], _snapshot_lsn: crate::wal::LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
-        let store = self.table.data.read().unwrap();
-        Ok(store.get(key).map(|v| ValueBuf(v.clone())))
-    }
-}
-
-impl<'a> crate::table::OrderedScan for MemoryBlobReader<'a> {
-    type Cursor<'b> = MemoryBlobCursor where Self: 'b;
-
-    fn scan(&self, _bounds: crate::types::ScanBounds, _snapshot_lsn: crate::wal::LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support ordered scans".to_string(),
-        ))
-    }
-}
-
-/// Stub cursor for blob tables (not actually used).
-pub struct MemoryBlobCursor;
-
-impl crate::table::TableCursor for MemoryBlobCursor {
-    fn valid(&self) -> bool {
-        false
-    }
-
-    fn key(&self) -> Option<&[u8]> {
-        None
-    }
-
-    fn value(&self) -> Option<&[u8]> {
-        None
-    }
-
-    fn next(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn prev(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn seek(&mut self, _key: &[u8]) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn seek_for_prev(&mut self, _key: &[u8]) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn first(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn last(&mut self) -> TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support cursors".to_string(),
-        ))
-    }
-
-    fn snapshot_lsn(&self) -> crate::wal::LogSequenceNumber {
-        crate::wal::LogSequenceNumber::default()
-    }
-}
-
-/// Writer for in-memory blob storage.
-pub struct MemoryBlobWriter<'a> {
-    table: &'a MemoryBlob,
-    tx_id: TransactionId,
-    snapshot_lsn: LogSequenceNumber,
-}
-
-impl<'a> TableWriter for MemoryBlobWriter<'a> {
-    fn tx_id(&self) -> TransactionId {
-        self.tx_id
-    }
-
-    fn snapshot_lsn(&self) -> LogSequenceNumber {
-        self.snapshot_lsn
-    }
-}
-
-impl<'a> MutableTable for MemoryBlobWriter<'a> {
-    fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
-        // Check value size limit
-        if let Some(max_size) = self.max_value_size() {
-            if value.len() as u64 > max_size {
-                return Err(crate::table::TableError::Other(format!(
-                    "Value size {} exceeds maximum {}",
-                    value.len(),
-                    max_size
-                )));
-            }
-        }
-
-        let mut store = self.table.data.write().unwrap();
-        
-        // Calculate memory delta
-        let new_size = MemoryBlob::estimate_entry_size(key, value);
-        let old_size = store
-            .get(key)
-            .map(|v| MemoryBlob::estimate_entry_size(key, v))
-            .unwrap_or(0);
-        let delta = new_size as isize - old_size as isize;
-
-        // Check memory budget
-        let new_usage = (self.table.get_memory_usage() as isize + delta) as usize;
-        if new_usage > self.table.memory_budget {
-            return Err(crate::table::TableError::Other(format!(
-                "Memory budget exceeded: {} > {}",
-                new_usage, self.table.memory_budget
-            )));
-        }
-
-        // Store the value
-        store.insert(key.to_vec(), value.to_vec());
-        self.table.update_memory_usage(delta);
-
-        Ok(value.len() as u64 + key.len() as u64 + 16) // +16 for overhead
-    }
-
-    fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
-        let mut store = self.table.data.write().unwrap();
-        if let Some(value) = store.remove(key) {
-            let size = MemoryBlob::estimate_entry_size(key, &value);
-            self.table.update_memory_usage(-(size as isize));
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support range delete".to_string(),
-        ))
-    }
-
-    fn max_inline_size(&self) -> Option<usize> {
-        Some(self.table.inline_threshold)
-    }
-
-    fn max_value_size(&self) -> Option<u64> {
-        Some(self.table.max_blob_size)
-    }
-}
-
-impl<'a> crate::table::BatchOps for MemoryBlobWriter<'a> {
-    fn batch_get(&self, _keys: &[&[u8]]) -> TableResult<Vec<Option<ValueBuf>>> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support batch operations".to_string(),
-        ))
-    }
-
-    fn apply_batch(&mut self, _batch: crate::table::WriteBatch) -> TableResult<crate::table::BatchReport> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support batch operations".to_string(),
-        ))
-    }
-}
-
-impl<'a> crate::table::Flushable for MemoryBlobWriter<'a> {
-    fn flush(&mut self) -> TableResult<()> {
-        // Blob tables are in-memory, no flush needed
-        Ok(())
     }
 }
 

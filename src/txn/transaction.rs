@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 
-use crate::table::{PointLookup, TableEngineRegistry};
+use crate::table::{PointLookup, SearchableTable, TableEngineRegistry};
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{Durability, IsolationLevel, ObjectId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
@@ -308,39 +308,43 @@ impl<FS: FileSystem> Transaction<FS> {
 
         // Read from committed storage via engine registry
         if let Some(engine) = self.engine_registry.get(object_id) {
-            use crate::table::{PointLookup, Table, TableEngineInstance};
+            use crate::table::{PointLookup, SearchableTable, TableEngineInstance};
 
             // Get a reader for the snapshot and use it to read the value
             let result = match &engine {
                 TableEngineInstance::PagedBTree(btree) => {
-                    let reader = Table::reader(btree.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get BTree reader: {}", e))
-                    })?;
+                    let reader = SearchableTable::reader(btree.as_ref(), self.snapshot_lsn)
+                        .map_err(|e| {
+                            TransactionError::Other(format!("Failed to get BTree reader: {}", e))
+                        })?;
                     reader
                         .get(key, self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("BTree get failed: {}", e)))?
                 }
                 TableEngineInstance::LsmTree(lsm) => {
-                    let reader = Table::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get LSM reader: {}", e))
-                    })?;
+                    let reader =
+                        SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Failed to get LSM reader: {}", e))
+                        })?;
                     reader
                         .get(key, self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("LSM get failed: {}", e)))?
                 }
                 TableEngineInstance::MemoryBTree(mem) => {
-                    let reader = Table::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get Memory BTree reader: {}", e))
-                    })?;
+                    let reader =
+                        SearchableTable::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Failed to get Memory BTree reader: {}",
+                                e
+                            ))
+                        })?;
                     reader.get(key, self.snapshot_lsn).map_err(|e| {
                         TransactionError::Other(format!("Memory BTree get failed: {}", e))
                     })?
                 }
                 TableEngineInstance::MemoryBlob(blob) => {
-                    let reader = Table::reader(blob.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get Memory Blob reader: {}", e))
-                    })?;
-                    reader.get(key, self.snapshot_lsn).map_err(|e| {
+                    // Blob tables don't use reader/writer pattern, access directly
+                    blob.get(key).map_err(|e| {
                         TransactionError::Other(format!("Memory Blob get failed: {}", e))
                     })?
                 }
@@ -426,12 +430,12 @@ impl<FS: FileSystem> Transaction<FS> {
         } else {
             // Check in engine registry
             if let Some(engine) = self.engine_registry.get(object_id) {
-                use crate::table::{PointLookup, Table, TableEngineInstance};
+                use crate::table::{PointLookup, SearchableTable, TableEngineInstance};
 
                 match &engine {
                     TableEngineInstance::PagedBTree(btree) => {
-                        let reader =
-                            Table::reader(btree.as_ref(), self.snapshot_lsn).map_err(|e| {
+                        let reader = SearchableTable::reader(btree.as_ref(), self.snapshot_lsn)
+                            .map_err(|e| {
                                 TransactionError::Other(format!(
                                     "Failed to get BTree reader: {}",
                                     e
@@ -442,8 +446,8 @@ impl<FS: FileSystem> Transaction<FS> {
                         })?
                     }
                     TableEngineInstance::LsmTree(lsm) => {
-                        let reader =
-                            Table::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
+                        let reader = SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn)
+                            .map_err(|e| {
                                 TransactionError::Other(format!("Failed to get LSM reader: {}", e))
                             })?;
                         reader.contains(key, self.snapshot_lsn).map_err(|e| {
@@ -451,8 +455,8 @@ impl<FS: FileSystem> Transaction<FS> {
                         })?
                     }
                     TableEngineInstance::MemoryBTree(mem) => {
-                        let reader =
-                            Table::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
+                        let reader = SearchableTable::reader(mem.as_ref(), self.snapshot_lsn)
+                            .map_err(|e| {
                                 TransactionError::Other(format!(
                                     "Failed to get Memory BTree reader: {}",
                                     e
@@ -463,16 +467,12 @@ impl<FS: FileSystem> Transaction<FS> {
                         })?
                     }
                     TableEngineInstance::MemoryBlob(blob) => {
-                        let reader =
-                            Table::reader(blob.as_ref(), self.snapshot_lsn).map_err(|e| {
-                                TransactionError::Other(format!(
-                                    "Failed to get Memory Blob reader: {}",
-                                    e
-                                ))
-                            })?;
-                        reader.contains(key, self.snapshot_lsn).map_err(|e| {
-                            TransactionError::Other(format!("Memory Blob contains failed: {}", e))
-                        })?
+                        // Blob tables don't use reader pattern, check directly
+                        blob.get(key)
+                            .map_err(|e| {
+                                TransactionError::Other(format!("Memory Blob get failed: {}", e))
+                            })?
+                            .is_some()
                     }
                 }
             } else {
@@ -571,12 +571,12 @@ impl<FS: FileSystem> Transaction<FS> {
                     .wal
                     .write_commit(self.txn_id)
                     .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?;
-                
+
                 // Flush the WAL buffer to ensure data reaches the OS
                 self.wal
                     .flush()
                     .map_err(|e| TransactionError::Other(format!("WAL flush failed: {}", e)))?;
-                
+
                 lsn
             }
             Durability::SyncOnCommit => {
@@ -596,14 +596,14 @@ impl<FS: FileSystem> Transaction<FS> {
                 match &engine {
                     TableEngineInstance::PagedBTree(btree) => {
                         // Get a writer for this transaction
-                        let mut writer = Table::writer(
-                            btree.as_ref(),
-                            self.txn_id,
-                            self.snapshot_lsn,
-                        )
-                        .map_err(|e| {
-                            TransactionError::Other(format!("Failed to get BTree writer: {}", e))
-                        })?;
+                        let mut writer =
+                            SearchableTable::writer(btree.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "Failed to get BTree writer: {}",
+                                        e
+                                    ))
+                                })?;
 
                         match value_opt {
                             Some(value) => {
@@ -624,14 +624,11 @@ impl<FS: FileSystem> Transaction<FS> {
                         })?;
                     }
                     TableEngineInstance::LsmTree(lsm) => {
-                        let mut writer = Table::writer(
-                            lsm.as_ref(),
-                            self.txn_id,
-                            self.snapshot_lsn,
-                        )
-                        .map_err(|e| {
-                            TransactionError::Other(format!("Failed to get LSM writer: {}", e))
-                        })?;
+                        let mut writer =
+                            SearchableTable::writer(lsm.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                TransactionError::Other(format!("Failed to get LSM writer: {}", e))
+                            })?;
 
                         match value_opt {
                             Some(value) => {
@@ -652,14 +649,13 @@ impl<FS: FileSystem> Transaction<FS> {
                     }
                     TableEngineInstance::MemoryBTree(mem) => {
                         let mut writer =
-                            Table::writer(mem.as_ref(), self.txn_id, self.snapshot_lsn).map_err(
-                                |e| {
-                                    TransactionError::Other(format!(
-                                        "Failed to get Memory BTree writer: {}",
-                                        e
-                                    ))
-                                },
-                            )?;
+                            SearchableTable::writer(mem.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get Memory BTree writer: {}",
+                                    e
+                                ))
+                            })?;
 
                         match value_opt {
                             Some(value) => {
@@ -693,19 +689,10 @@ impl<FS: FileSystem> Transaction<FS> {
                         })?;
                     }
                     TableEngineInstance::MemoryBlob(blob) => {
-                        let mut writer =
-                            Table::writer(blob.as_ref(), self.txn_id, self.snapshot_lsn).map_err(
-                                |e| {
-                                    TransactionError::Other(format!(
-                                        "Failed to get Memory Blob writer: {}",
-                                        e
-                                    ))
-                                },
-                            )?;
-
+                        // Blob tables don't use writer pattern, access directly
                         match value_opt {
                             Some(value) => {
-                                MutableTable::put(&mut writer, key, value).map_err(|e| {
+                                blob.put(key, value).map_err(|e| {
                                     TransactionError::Other(format!(
                                         "Memory Blob put failed: {}",
                                         e
@@ -713,7 +700,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                 })?;
                             }
                             None => {
-                                MutableTable::delete(&mut writer, key).map_err(|e| {
+                                blob.delete(key).map_err(|e| {
                                     TransactionError::Other(format!(
                                         "Memory Blob delete failed: {}",
                                         e
@@ -721,10 +708,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                 })?;
                             }
                         }
-
-                        Flushable::flush(&mut writer).map_err(|e| {
-                            TransactionError::Other(format!("Memory Blob flush failed: {}", e))
-                        })?;
+                        // No flush needed for blob tables (in-memory, no writer)
                     }
                 }
             }
