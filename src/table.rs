@@ -18,6 +18,7 @@ pub mod bloom;
 pub mod btree;
 mod error;
 pub mod hash;
+pub mod hnsw;
 pub mod lsm;
 mod traits;
 
@@ -33,6 +34,7 @@ pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
 pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
+pub use self::hnsw::{HnswConfig, PagedHnswVector};
 pub use self::lsm::{
     CompactionConfig, CompactionStrategy, LevelConfig,
     LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
@@ -68,6 +70,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     PagedBTree(Arc<PagedBTree<FS>>),
     LsmTree(Arc<LsmTree<FS>>),
     PagedBloomFilter(Arc<PagedBloomFilter<FS>>),
+    PagedHnswVector(Arc<PagedHnswVector<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
     MemoryBlob(Arc<MemoryBlob>),
@@ -82,6 +85,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedBloomFilter(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::PagedHnswVector(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -94,6 +98,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedBloomFilter(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::PagedHnswVector(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
@@ -103,12 +108,13 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
     /// Get the engine kind.
     pub fn kind(&self) -> TableEngineKind {
         match self {
-            Self::PagedBTree(engine) => crate::table::Table::kind(engine.as_ref()),
-            Self::LsmTree(engine) => crate::table::Table::kind(engine.as_ref()),
-            Self::PagedBloomFilter(engine) => crate::table::Table::kind(engine.as_ref()),
-            Self::MemoryBTree(engine) => crate::table::Table::kind(engine.as_ref()),
-            Self::MemoryHashTable(engine) => crate::table::Table::kind(engine.as_ref()),
-            Self::MemoryBlob(engine) => crate::table::Table::kind(engine.as_ref()),
+            Self::PagedBTree(engine) => engine.kind(),
+            Self::LsmTree(engine) => engine.kind(),
+            Self::PagedBloomFilter(engine) => engine.kind(),
+            Self::PagedHnswVector(engine) => engine.kind(),
+            Self::MemoryBTree(engine) => engine.kind(),
+            Self::MemoryHashTable(engine) => engine.kind(),
+            Self::MemoryBlob(engine) => engine.kind(),
         }
     }
 
@@ -119,6 +125,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBTree(_) => None, // TODO: Make get_root_page_id public or add accessor
             Self::LsmTree(_) => None, // LSM has manifest, not single root
             Self::PagedBloomFilter(engine) => Some(engine.root_page_id()),
+            Self::PagedHnswVector(_) => None, // TODO: Add root_page_id accessor
             Self::MemoryBTree(_) => None,
             Self::MemoryHashTable(_) => None,
             Self::MemoryBlob(_) => None,
@@ -132,6 +139,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::PagedBTree(engine) => Self::PagedBTree(Arc::clone(engine)),
             Self::LsmTree(engine) => Self::LsmTree(Arc::clone(engine)),
             Self::PagedBloomFilter(engine) => Self::PagedBloomFilter(Arc::clone(engine)),
+            Self::PagedHnswVector(engine) => Self::PagedHnswVector(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),

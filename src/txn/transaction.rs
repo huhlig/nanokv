@@ -588,6 +588,12 @@ impl<FS: FileSystem> Transaction<FS> {
                         None
                     }
                 }
+                TableEngineInstance::PagedHnswVector(_) => {
+                    // HNSW vector tables don't support key-value get operations
+                    return Err(TransactionError::Other(
+                        "HNSW vector tables don't support get operations".to_string(),
+                    ));
+                }
             };
             return Ok(result);
         }
@@ -729,6 +735,12 @@ impl<FS: FileSystem> Transaction<FS> {
                                 TransactionError::Other(format!("Bloom filter contains failed: {}", e))
                             })?
                     }
+                    TableEngineInstance::PagedHnswVector(_) => {
+                        // HNSW vector tables don't support key-value contains operations
+                        return Err(TransactionError::Other(
+                            "HNSW vector tables don't support contains operations".to_string(),
+                        ));
+                    }
                 }
             } else {
                 false
@@ -840,6 +852,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::PagedBloomFilter(_) => {
                     return Err(TransactionError::Other(
                         "range_delete is not supported for bloom filter tables".to_string(),
+                    ));
+                }
+                TableEngineInstance::PagedHnswVector(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for HNSW vector tables".to_string(),
                     ));
                 }
             }
@@ -1078,6 +1095,14 @@ impl<FS: FileSystem> Transaction<FS> {
                         // They should be updated through their specialized ApproximateMembership API
                         return Err(TransactionError::Other(
                             "transactional put/delete is not supported for bloom filter tables; use ApproximateMembership API"
+                                .to_string(),
+                        ));
+                    }
+                    TableEngineInstance::PagedHnswVector(_) => {
+                        // HNSW vector tables don't support transactional put/delete operations
+                        // They should be updated through their specialized VectorSearch API
+                        return Err(TransactionError::Other(
+                            "transactional put/delete is not supported for HNSW vector tables; use VectorSearch API"
                                 .to_string(),
                         ));
                     }
