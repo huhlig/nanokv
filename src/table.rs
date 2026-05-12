@@ -38,8 +38,8 @@ pub use self::traits::{
     ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
     Histogram, HistogramBucket, KeyStatistics,
     Maintainable, MemoryAware, Migratable, MutableTable, Mutation, OrderedKvTable, OrderedScan,
-    PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, StatisticsProvider,
-    Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableInfo,
+    PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, SliceValueStream,
+    StatisticsProvider, Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableInfo,
     TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
     VacuumReport, ValueStatistics, ValueStream, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
     // Specialty table traits (formerly index traits)

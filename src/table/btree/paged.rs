@@ -1201,6 +1201,24 @@ impl<'a, FS: FileSystem> PointLookup for PagedBTreeReader<'a, FS> {
     fn get(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
         self.table.get_internal(key, snapshot_lsn)
     }
+    
+    fn get_stream(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Box<dyn crate::table::ValueStream + '_>>> {
+        use crate::table::SliceValueStream;
+        
+        // For now, use default implementation that loads the full value
+        // TODO: Implement true streaming with ValueRef and overflow chains
+        // This requires modifying VersionChain to store ValueRef information
+        self.get(key, snapshot_lsn).map(|opt| {
+            opt.map(|value_buf| {
+                Box::new(SliceValueStream::new(value_buf.0))
+                    as Box<dyn crate::table::ValueStream + '_>
+            })
+        })
+    }
 }
 
 impl<'a, FS: FileSystem> OrderedScan for PagedBTreeReader<'a, FS> {
@@ -1242,6 +1260,52 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
         Ok((key.len() + value.len() + 16) as u64)
     }
 
+    fn put_stream(&mut self, key: &[u8], stream: &mut dyn crate::table::ValueStream) -> TableResult<u64> {
+        use crate::types::ValueRef;
+        
+        // Check size hint to determine storage strategy
+        let size_hint = stream.size_hint();
+        let max_inline = self.max_inline_size().unwrap_or(4096);
+        
+        // If small enough or no size hint, use default implementation (inline storage)
+        if let Some(size) = size_hint {
+            if size <= max_inline as u64 {
+                // Read entire value and store inline
+                let mut buffer = Vec::with_capacity(size as usize);
+                let mut temp_buf = vec![0u8; 8192];
+                loop {
+                    let n = stream.read(&mut temp_buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&temp_buf[..n]);
+                }
+                return self.put(key, &buffer);
+            }
+        } else {
+            // No size hint, use default implementation
+            return MutableTable::put_stream(self, key, stream);
+        }
+        
+        // Large value: stream to overflow pages
+        let mut buffer = Vec::new();
+        let mut temp_buf = vec![0u8; 8192];
+        loop {
+            let n = stream.read(&mut temp_buf)?;
+            if n == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp_buf[..n]);
+        }
+        
+        // For now, allocate overflow chain during flush
+        // Store the full value in pending_changes
+        // TODO: Optimize to stream directly during flush
+        self.pending_changes.push((key.to_vec(), Some(buffer.clone())));
+        
+        Ok((key.len() + buffer.len() + 16) as u64)
+    }
+
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
         // Check if key exists
         let exists = self.table.get_internal(key, self.snapshot_lsn)?.is_some();
@@ -1254,6 +1318,12 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
     fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
         // TODO: Implement range delete
         todo!("Range delete not yet implemented for paged B-Tree")
+    }
+    
+    fn max_inline_size(&self) -> Option<usize> {
+        // Use 4KB as default inline threshold
+        // Values larger than this will use overflow pages
+        Some(4096)
     }
 }
 

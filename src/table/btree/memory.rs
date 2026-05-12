@@ -193,6 +193,22 @@ impl<'a> PointLookup for MemoryBTreeReader<'a> {
         }
         Ok(None)
     }
+    
+    fn get_stream(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Box<dyn crate::table::ValueStream + '_>>> {
+        use crate::table::SliceValueStream;
+        
+        // For in-memory table, use default implementation that wraps the value in a stream
+        self.get(key, snapshot_lsn).map(|opt| {
+            opt.map(|value_buf| {
+                Box::new(SliceValueStream::new(value_buf.0))
+                    as Box<dyn crate::table::ValueStream + '_>
+            })
+        })
+    }
 }
 
 impl<'a> OrderedScan for MemoryBTreeReader<'a> {
@@ -232,6 +248,25 @@ impl<'a> MutableTable for MemoryBTreeWriter<'a> {
             .push((key.to_vec(), Some(value.to_vec())));
         // Return approximate size: key + value + overhead
         Ok((key.len() + value.len() + 16) as u64)
+    }
+
+    fn put_stream(&mut self, key: &[u8], stream: &mut dyn crate::table::ValueStream) -> TableResult<u64> {
+        // For in-memory table, read the entire stream into memory
+        let mut buffer = Vec::new();
+        if let Some(size_hint) = stream.size_hint() {
+            buffer.reserve(size_hint as usize);
+        }
+        
+        let mut temp_buf = vec![0u8; 8192]; // 8KB chunks
+        loop {
+            let n = stream.read(&mut temp_buf)?;
+            if n == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp_buf[..n]);
+        }
+        
+        self.put(key, &buffer)
     }
 
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
