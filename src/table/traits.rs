@@ -362,6 +362,10 @@ pub trait MutableTable {
     /// # Returns
     ///
     /// The number of bytes written (key + value + metadata).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value exceeds `max_value_size()`.
     fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64>;
 
     /// Insert or update a key with a streaming value.
@@ -377,6 +381,10 @@ pub trait MutableTable {
     /// # Returns
     ///
     /// The number of bytes written (key + value + metadata).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value exceeds `max_value_size()`.
     fn put_stream(&mut self, key: &[u8], stream: &mut dyn ValueStream) -> TableResult<u64> {
         // Default implementation: read entire stream into memory and call put
         let mut buffer = Vec::new();
@@ -399,6 +407,25 @@ pub trait MutableTable {
     fn delete(&mut self, key: &[u8]) -> TableResult<bool>;
 
     fn range_delete(&mut self, bounds: ScanBounds) -> TableResult<u64>;
+
+    /// Get the maximum inline size for this table.
+    ///
+    /// Values smaller than this threshold are stored inline in table pages.
+    /// Values larger than this threshold may be stored externally (implementation-dependent).
+    ///
+    /// Returns `None` if there is no inline size limit (all values stored inline).
+    fn max_inline_size(&self) -> Option<usize> {
+        None // Default: no limit, store all values inline
+    }
+
+    /// Get the maximum value size supported by this table.
+    ///
+    /// Attempts to store values larger than this limit will fail.
+    ///
+    /// Returns `None` if there is no size limit.
+    fn max_value_size(&self) -> Option<u64> {
+        None // Default: no limit
+    }
 }
 
 /// Batch operation capability.
