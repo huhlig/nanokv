@@ -38,7 +38,7 @@
 
 use crate::pager::{Page, PageId, PageType, Pager, PagerConfig};
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableInfo, TableOptions, IndexMetadata, IndexField, IndexConsistency, TableEngineKind, TableEngineRegistry};
+use crate::table::{TableInfo, TableOptions, TableEngineKind, TableEngineRegistry};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ObjectId, ValueBuf};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
@@ -389,7 +389,6 @@ impl<FS: FileSystem> Database<FS> {
             options,
             root,
             created_lsn,
-            index_metadata: None, // Regular table, not an index
         };
         
         // Add to catalog
@@ -414,24 +413,11 @@ impl<FS: FileSystem> Database<FS> {
         // Find and remove the table
         let table_name = catalog
             .iter()
-            .find(|(_, info)| info.id == table && info.index_metadata.is_none())
+            .find(|(_, info)| info.id == table)
             .map(|(name, _)| name.clone());
         
         if let Some(name) = table_name {
             catalog.remove(&name);
-            
-            // Remove all dependent indexes from the unified catalog
-            let index_names: Vec<String> = catalog
-                .iter()
-                .filter(|(_, info)| {
-                    info.index_metadata.as_ref().map(|m| m.parent_table) == Some(table)
-                })
-                .map(|(name, _)| name.clone())
-                .collect();
-            
-            for index_name in index_names {
-                catalog.remove(&index_name);
-            }
             
             // Release lock before persisting to avoid deadlock
             drop(catalog);
@@ -463,147 +449,21 @@ impl<FS: FileSystem> Database<FS> {
         Ok(catalog.get(name).cloned())
     }
 
-    /// Check if an ObjectId refers to a regular table.
+    /// Check if an ObjectId refers to a table.
     pub fn is_table(&self, id: ObjectId) -> Result<bool, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
-        Ok(catalog.values().any(|info| {
-            info.id == id && info.index_metadata.is_none()
-        }))
+        Ok(catalog.values().any(|info| info.id == id))
     }
 
-    /// Check if an ObjectId refers to an index.
-    pub fn is_index(&self, id: ObjectId) -> Result<bool, DatabaseError> {
-        let catalog = self.table_catalog.read().unwrap();
-        Ok(catalog.values().any(|info| {
-            info.id == id && info.index_metadata.is_some()
-        }))
-    }
-
-    /// Return catalog-visible tables (excludes indexes).
+    /// Return all tables in the catalog.
     pub fn list_tables(&self) -> Result<Vec<TableInfo>, DatabaseError> {
-        let catalog = self.table_catalog.read().unwrap();
-        Ok(catalog
-            .values()
-            .filter(|info| info.index_metadata.is_none())
-            .cloned()
-            .collect())
-    }
-
-    /// Return all catalog objects (both tables and indexes).
-    pub fn list_all_objects(&self) -> Result<Vec<TableInfo>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().cloned().collect())
     }
 
-    /// Create an index over a table.
-    ///
-    /// This operation is transactional - the index becomes visible only after
-    /// the current LSN advances (simulating a commit).
-    pub fn create_index(
-        &self,
-        parent_table: ObjectId,
-        name: &str,
-        engine: TableEngineKind,
-        fields: Vec<IndexField>,
-        unique: bool,
-        consistency: IndexConsistency,
-    ) -> Result<ObjectId, DatabaseError> {
-        let mut catalog = self.table_catalog.write().unwrap();
-        
-        // Check if index already exists
-        if catalog.contains_key(name) {
-            return Err(DatabaseError::index_already_exists(name));
-        }
-        
-        // Allocate new index ID (same as table ID since they're unified)
-        let index_id = ObjectId::from(catalog.len() as u64 + 1);
-        
-        // Get current LSN for creation timestamp
-        let created_lsn = *self.current_lsn.read().unwrap();
-        
-        // Create table options for the index
-        let options = TableOptions {
-            engine, // Engine determines capabilities
-            key_encoding: crate::types::KeyEncoding::RawBytes,
-            compression: None,
-            encryption: None,
-            page_size: None,
-            format_version: 1,
-            max_inline_size: None,
-            max_value_size: None,
-        };
-        
-        // Create index metadata
-        let index_metadata = IndexMetadata {
-            parent_table,
-            index_fields: fields,
-            unique,
-            consistency,
-            stale: false, // New index starts fresh
-        };
-        
-        // Create table info for the index
-        let index_info = TableInfo {
-            id: index_id,
-            name: name.to_string(),
-            options,
-            root: None, // No root page yet
-            created_lsn,
-            index_metadata: Some(index_metadata),
-        };
-        
-        // Add to unified catalog
-        catalog.insert(name.to_string(), index_info);
-        
-        // Release lock before persisting to avoid deadlock
-        drop(catalog);
-        
-        // Persist catalog to disk immediately
-        self.persist_catalog()?;
-        
-        Ok(index_id)
-    }
-
-    /// Drop an index.
-    ///
-    /// This operation is transactional - the index becomes invisible only after
-    /// the current LSN advances (simulating a commit).
-    pub fn drop_index(&self, index: ObjectId) -> Result<(), DatabaseError> {
-        let mut catalog = self.table_catalog.write().unwrap();
-        
-        // Find and remove the index
-        let index_name = catalog
-            .iter()
-            .find(|(_, info)| {
-                info.id == index && info.index_metadata.is_some()
-            })
-            .map(|(name, _)| name.clone());
-        
-        if let Some(name) = index_name {
-            catalog.remove(&name);
-            
-            // Release lock before persisting to avoid deadlock
-            drop(catalog);
-            
-            // Persist catalog to disk immediately
-            self.persist_catalog()?;
-            
-            Ok(())
-        } else {
-            Err(DatabaseError::not_found(index))
-        }
-    }
-
-    /// Return catalog-visible indexes for a table.
-    pub fn list_indexes(&self, table: ObjectId) -> Result<Vec<TableInfo>, DatabaseError> {
-        let catalog = self.table_catalog.read().unwrap();
-        Ok(catalog
-            .values()
-            .filter(|info| {
-                info.index_metadata.as_ref().map(|m| m.parent_table) == Some(table)
-            })
-            .cloned()
-            .collect())
+    /// Return all catalog objects (alias for list_tables since indexes are just tables).
+    pub fn list_all_objects(&self) -> Result<Vec<TableInfo>, DatabaseError> {
+        self.list_tables()
     }
 
     /// Create a named snapshot at the current LSN.
@@ -691,9 +551,6 @@ impl<FS: FileSystem> Database<FS> {
         // Insert into table
         txn.put(table, key, value)?;
 
-        // Update all indexes on this table
-        self.update_indexes_for_insert(&mut txn, table, key, value)?;
-
         // Commit transaction
         txn.commit()
             .map_err(|e| DatabaseError::transaction_failed(format!("Insert commit failed: {}", e)))?;
@@ -730,9 +587,6 @@ impl<FS: FileSystem> Database<FS> {
         // Update in table
         txn.put(table, key, value)?;
 
-        // Update indexes: remove old entries, add new entries
-        self.update_indexes_for_update(&mut txn, table, key, old_value.as_ref(), value)?;
-
         // Commit transaction
         txn.commit()
             .map_err(|e| DatabaseError::transaction_failed(format!("Update commit failed: {}", e)))?;
@@ -763,13 +617,6 @@ impl<FS: FileSystem> Database<FS> {
 
         // Put the new value
         txn.put(table, key, value)?;
-
-        // Update indexes appropriately
-        if let Some(old_val) = old_value {
-            self.update_indexes_for_update(&mut txn, table, key, old_val.as_ref(), value)?;
-        } else {
-            self.update_indexes_for_insert(&mut txn, table, key, value)?;
-        }
 
         // Commit transaction
         txn.commit()
@@ -822,11 +669,6 @@ impl<FS: FileSystem> Database<FS> {
         // Delete from table
         let deleted = txn.delete(table, key)?;
 
-        // Delete from indexes
-        if let Some(old_val) = old_value {
-            self.update_indexes_for_delete(&mut txn, table, key, old_val.as_ref())?;
-        }
-
         // Commit transaction
         txn.commit()
             .map_err(|e| DatabaseError::transaction_failed(format!("Delete commit failed: {}", e)))?;
@@ -850,131 +692,6 @@ impl<FS: FileSystem> Database<FS> {
         })
     }
 
-    // =========================================================================
-    // Internal Index Maintenance Helpers
-    // =========================================================================
-
-    /// Update indexes when inserting a new row.
-    fn update_indexes_for_insert<FS2: FileSystem>(
-        &self,
-        txn: &mut Transaction<FS2>,
-        table: ObjectId,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), DatabaseError> {
-        let indexes = self.list_indexes(table)?;
-        
-        for index_info in indexes {
-            // Extract index key from table key/value
-            let index_key = self.extract_index_key(&index_info, key, value)?;
-            
-            // Index value is typically the table key (for lookups)
-            txn.put(index_info.id, &index_key, key)
-                .map_err(|e| DatabaseError::index_maintenance_failed(
-                    index_info.id,
-                    format!("Failed to insert into index: {}", e)
-                ))?;
-        }
-        
-        Ok(())
-    }
-
-    /// Update indexes when updating an existing row.
-    fn update_indexes_for_update<FS2: FileSystem>(
-        &self,
-        txn: &mut Transaction<FS2>,
-        table: ObjectId,
-        key: &[u8],
-        old_value: &[u8],
-        new_value: &[u8],
-    ) -> Result<(), DatabaseError> {
-        let indexes = self.list_indexes(table)?;
-        
-        for index_info in indexes {
-            // Extract old and new index keys
-            let old_index_key = self.extract_index_key(&index_info, key, old_value)?;
-            let new_index_key = self.extract_index_key(&index_info, key, new_value)?;
-            
-            // If index key changed, delete old and insert new
-            if old_index_key != new_index_key {
-                txn.delete(index_info.id, &old_index_key)
-                    .map_err(|e| DatabaseError::index_maintenance_failed(
-                        index_info.id,
-                        format!("Failed to delete old index entry: {}", e)
-                    ))?;
-                
-                txn.put(index_info.id, &new_index_key, key)
-                    .map_err(|e| DatabaseError::index_maintenance_failed(
-                        index_info.id,
-                        format!("Failed to insert new index entry: {}", e)
-                    ))?;
-            }
-            // If index key unchanged, no update needed
-        }
-        
-        Ok(())
-    }
-
-    /// Update indexes when deleting a row.
-    fn update_indexes_for_delete<FS2: FileSystem>(
-        &self,
-        txn: &mut Transaction<FS2>,
-        table: ObjectId,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), DatabaseError> {
-        let indexes = self.list_indexes(table)?;
-        
-        for index_info in indexes {
-            // Extract index key
-            let index_key = self.extract_index_key(&index_info, key, value)?;
-            
-            // Delete from index
-            txn.delete(index_info.id, &index_key)
-                .map_err(|e| DatabaseError::index_maintenance_failed(
-                    index_info.id,
-                    format!("Failed to delete from index: {}", e)
-                ))?;
-        }
-        
-        Ok(())
-    }
-
-    /// Extract index key from table key and value.
-    ///
-    /// This is a simplified implementation. In a full system, this would:
-    /// - Parse the value according to a schema
-    /// - Extract the indexed fields
-    /// - Encode them according to the index's key encoding
-    ///
-    /// For now, we use a simple approach based on index fields.
-    fn extract_index_key(
-        &self,
-        index_info: &TableInfo,
-        table_key: &[u8],
-        table_value: &[u8],
-    ) -> Result<Vec<u8>, DatabaseError> {
-        // TODO: Implement proper index key extraction based on schema
-        // For now, use a simple concatenation approach
-        
-        if let Some(metadata) = &index_info.index_metadata {
-            if metadata.index_fields.is_empty() {
-                // If no fields specified, use table key as index key
-                Ok(table_key.to_vec())
-            } else {
-                // In a real implementation, we would:
-                // 1. Parse table_value according to schema
-                // 2. Extract fields specified in metadata.index_fields
-                // 3. Encode them according to index_info.options.key_encoding
-                //
-                // For now, just use table_key as a placeholder
-                Ok(table_key.to_vec())
-            }
-        } else {
-            // Not an index, shouldn't happen
-            Ok(table_key.to_vec())
-        }
-    }
 }
 
 /// Table handle for ergonomic access to a specific table.
@@ -1025,11 +742,6 @@ impl<'db, FS: FileSystem> TableHandle<'db, FS> {
     /// Check if a key exists.
     pub fn contains(&self, key: &[u8]) -> Result<bool, DatabaseError> {
         Ok(self.get(key)?.is_some())
-    }
-
-    /// List all indexes on this table.
-    pub fn list_indexes(&self) -> Result<Vec<TableInfo>, DatabaseError> {
-        self.db.list_indexes(self.table_id)
     }
 }
 

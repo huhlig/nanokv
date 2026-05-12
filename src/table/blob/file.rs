@@ -26,10 +26,10 @@
 //! with a B-Tree index mapping keys to file paths.
 
 use crate::table::{
-    BatchOps, BatchReport, BlobTable, Flushable, MutableTable, OrderedScan, PointLookup,
-    SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableCapabilities, TableCursor,
+    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup,
+    Table, TableCapabilities, TableCursor,
     TableEngineKind, TableReader, TableResult, TableStatistics, TableWriter,
-    VerificationReport, WriteBatch,
+    WriteBatch,
 };
 use crate::txn::TransactionId;
 use crate::types::{ObjectId, ScanBounds, ValueBuf};
@@ -115,71 +115,6 @@ impl Table for FileBlob {
     }
 }
 
-impl BlobTable for FileBlob {
-    fn table_id(&self) -> ObjectId {
-        self.id
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn capabilities(&self) -> SpecialtyTableCapabilities {
-        SpecialtyTableCapabilities {
-            exact: true,
-            approximate: false,
-            ordered: false,
-            sparse: false,
-            supports_delete: true,
-            supports_range_query: false,
-            supports_prefix_query: false,
-            supports_scoring: false,
-            supports_incremental_rebuild: false,
-            may_be_stale: false,
-        }
-    }
-
-    fn put_blob(&mut self, _key: &[u8], _data: &[u8]) -> TableResult<u64> {
-        todo!("Write blob to file")
-    }
-
-    fn get_blob(&self, _key: &[u8]) -> TableResult<Option<ValueBuf>> {
-        todo!("Read blob from file")
-    }
-
-    fn delete_blob(&mut self, _key: &[u8]) -> TableResult<bool> {
-        todo!("Delete blob file")
-    }
-
-    fn blob_size(&self, _key: &[u8]) -> TableResult<Option<u64>> {
-        todo!("Get file size")
-    }
-
-    fn max_inline_size(&self) -> usize {
-        // For file-based storage, use a larger threshold since we're optimized for large blobs
-        64 * 1024 // 64KB
-    }
-
-    fn max_blob_size(&self) -> u64 {
-        // File-based storage can handle very large blobs
-        // Limited primarily by filesystem constraints
-        u64::MAX
-    }
-
-    fn stats(&self) -> TableResult<SpecialtyTableStats> {
-        // TODO: Implement actual statistics gathering
-        Ok(SpecialtyTableStats::default())
-    }
-
-    fn verify(&self) -> TableResult<VerificationReport> {
-        // TODO: Implement verification logic
-        Ok(VerificationReport {
-            checked_items: 0,
-            errors: vec![],
-            warnings: vec![],
-        })
-    }
-}
 
 /// Reader for file-based blob storage.
 pub struct FileBlobReader<'a> {
@@ -192,9 +127,8 @@ pub struct FileBlobReader<'a> {
 
 impl<'a> PointLookup for FileBlobReader<'a> {
     fn get(&self, _key: &[u8], _snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support point lookup - use BlobTable::get_blob instead".to_string(),
-        ))
+        // TODO: Implement actual file blob reading
+        todo!("Read blob from file")
     }
 }
 
@@ -295,21 +229,30 @@ impl<'a> TableWriter for FileBlobWriter<'a> {
 
 impl<'a> MutableTable for FileBlobWriter<'a> {
     fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support put - use BlobTable::put_blob instead".to_string(),
-        ))
+        // TODO: Implement actual file blob writing
+        todo!("Write blob to file")
     }
 
     fn delete(&mut self, _key: &[u8]) -> TableResult<bool> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support delete - use BlobTable::delete_blob instead".to_string(),
-        ))
+        // TODO: Implement actual file blob deletion
+        todo!("Delete blob file")
     }
 
     fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
         Err(crate::table::TableError::Other(
             "Blob tables do not support range delete".to_string(),
         ))
+    }
+
+    fn max_inline_size(&self) -> Option<usize> {
+        // For file-based storage, use a larger threshold since we're optimized for large blobs
+        Some(64 * 1024) // 64KB
+    }
+
+    fn max_value_size(&self) -> Option<u64> {
+        // File-based storage can handle very large blobs
+        // Limited primarily by filesystem constraints
+        Some(u64::MAX)
     }
 }
 

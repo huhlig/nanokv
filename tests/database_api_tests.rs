@@ -20,11 +20,10 @@
 //! - Table management (create, drop, list)
 //! - CRUD operations (insert, update, upsert, get, delete)
 //! - Table handle wrapper
-//! - Index maintenance
 //! - Error handling
 
 use nanokv::kvdb::{Database, DatabaseError, DatabaseErrorKind};
-use nanokv::table::{TableOptions, TableEngineKind, IndexField, IndexConsistency};
+use nanokv::table::{TableOptions, TableEngineKind};
 use nanokv::types::{ObjectId, KeyEncoding, Durability};
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
@@ -62,13 +61,11 @@ fn test_create_table() {
     
     // Verify table exists
     assert!(db.is_table(table_id).unwrap());
-    assert!(!db.is_index(table_id).unwrap());
     
     // Verify table info
     let info = db.get_object_info(table_id).unwrap().expect("Table not found");
     assert_eq!(info.name, "users");
     assert_eq!(info.options.engine, TableEngineKind::Memory);
-    assert!(info.index_metadata.is_none()); // Regular table, not an index
 }
 
 #[test]
@@ -340,120 +337,6 @@ fn test_table_handle_info() {
 }
 
 // =============================================================================
-// Index Management Tests
-// =============================================================================
-
-#[test]
-fn test_create_index() {
-    let db = create_test_db();
-    let table_id = db.create_table("users", default_table_options()).unwrap();
-    
-    // Create index
-    let index_id = db.create_index(
-        table_id,
-        "users_email_idx",
-        TableEngineKind::BTree, // Index uses BTree engine
-        vec![IndexField {
-            name: "email".to_string(),
-            encoding: KeyEncoding::Utf8,
-            descending: false,
-        }],
-        true, // unique
-        IndexConsistency::Synchronous,
-    ).expect("Failed to create index");
-    
-    // Verify index exists
-    assert!(db.is_index(index_id).unwrap());
-    assert!(!db.is_table(index_id).unwrap());
-    
-    // Verify index info
-    let info = db.get_object_info(index_id).unwrap().unwrap();
-    assert_eq!(info.name, "users_email_idx");
-    assert_eq!(info.options.engine, TableEngineKind::BTree); // Index uses BTree engine
-    assert!(info.index_metadata.is_some()); // This is an index
-    let metadata = info.index_metadata.as_ref().unwrap();
-    assert_eq!(metadata.parent_table, table_id);
-    assert!(metadata.unique);
-}
-
-#[test]
-fn test_list_indexes() {
-    let db = create_test_db();
-    let table_id = db.create_table("users", default_table_options()).unwrap();
-    
-    // Create multiple indexes
-    db.create_index(
-        table_id,
-        "users_email_idx",
-        TableEngineKind::BTree,
-        vec![],
-        true,
-        IndexConsistency::Synchronous,
-    ).unwrap();
-    
-    db.create_index(
-        table_id,
-        "users_name_idx",
-        TableEngineKind::BTree,
-        vec![],
-        false,
-        IndexConsistency::Synchronous,
-    ).unwrap();
-    
-    // List indexes
-    let indexes = db.list_indexes(table_id).expect("Failed to list indexes");
-    assert_eq!(indexes.len(), 2);
-    
-    let names: Vec<String> = indexes.iter().map(|i| i.name.clone()).collect();
-    assert!(names.contains(&"users_email_idx".to_string()));
-    assert!(names.contains(&"users_name_idx".to_string()));
-}
-
-#[test]
-fn test_drop_index() {
-    let db = create_test_db();
-    let table_id = db.create_table("users", default_table_options()).unwrap();
-    
-    let index_id = db.create_index(
-        table_id,
-        "users_email_idx",
-        TableEngineKind::BTree,
-        vec![],
-        true,
-        IndexConsistency::Synchronous,
-    ).unwrap();
-    
-    // Drop index
-    db.drop_index(index_id).expect("Failed to drop index");
-    
-    // Verify index no longer exists
-    assert!(!db.is_index(index_id).unwrap());
-    assert!(db.get_object_info(index_id).unwrap().is_none());
-}
-
-#[test]
-fn test_drop_table_drops_indexes() {
-    let db = create_test_db();
-    let table_id = db.create_table("users", default_table_options()).unwrap();
-    
-    let index_id = db.create_index(
-        table_id,
-        "users_email_idx",
-        TableEngineKind::BTree,
-        vec![],
-        true,
-        IndexConsistency::Synchronous,
-    ).unwrap();
-    
-    // Drop table
-    db.drop_table(table_id).expect("Failed to drop table");
-    
-    // Verify both table and index are gone
-    assert!(!db.is_table(table_id).unwrap());
-    assert!(!db.is_index(index_id).unwrap());
-}
-
-// =============================================================================
 // Error Handling Tests
 // =============================================================================
 
@@ -468,26 +351,6 @@ fn test_operation_on_nonexistent_table() {
     assert_eq!(result.unwrap_err().kind, DatabaseErrorKind::NotATable);
     
     let result = db.get(fake_table_id, b"key");
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind, DatabaseErrorKind::NotATable);
-}
-
-#[test]
-fn test_operation_on_index_as_table() {
-    let db = create_test_db();
-    let table_id = db.create_table("users", default_table_options()).unwrap();
-    
-    let index_id = db.create_index(
-        table_id,
-        "users_email_idx",
-        TableEngineKind::BTree,
-        vec![],
-        true,
-        IndexConsistency::Synchronous,
-    ).unwrap();
-    
-    // Try to use index as table
-    let result = db.insert(index_id, b"key", b"value");
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind, DatabaseErrorKind::NotATable);
 }

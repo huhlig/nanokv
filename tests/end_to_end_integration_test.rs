@@ -40,7 +40,7 @@
 //!   For now, LSM persistence tests are marked as ignored.
 
 use nanokv::kvdb::Database;
-use nanokv::table::{IndexConsistency, IndexField, TableEngineKind, TableOptions};
+use nanokv::table::{TableEngineKind, TableOptions};
 use nanokv::types::{Durability, KeyEncoding};
 use nanokv::vfs::MemoryFileSystem;
 
@@ -144,53 +144,34 @@ fn test_catalog_persistence() {
 fn test_index_catalog_persistence() {
     let fs = MemoryFileSystem::new();
     
-    // Phase 1: Create database, table, and index
+    // Phase 1: Create database and table
     {
         let db = Database::new(&fs, "test.wal", "test.db")
             .expect("Failed to create database");
         
-        let users_id = db.create_table("users", memory_table_options())
+        let _users_id = db.create_table("users", memory_table_options())
             .expect("Failed to create users table");
         
-        // Create index on email field
-        let _email_idx = db.create_index(
-            users_id,
-            "users_email_idx",
-            TableEngineKind::Memory,
-            vec![IndexField {
-                name: "email".to_string(),
-                encoding: KeyEncoding::RawBytes,
-                descending: false,
-            }],
-            true, // unique
-            IndexConsistency::Synchronous,
-        ).expect("Failed to create index");
-        
-        // Verify index exists
+        // Verify table exists
         let all_objects = db.list_all_objects().unwrap();
-        assert_eq!(all_objects.len(), 2); // 1 table + 1 index
+        assert_eq!(all_objects.len(), 1); // 1 table
     }
     
-    // Phase 2: Reopen and verify index metadata
+    // Phase 2: Reopen and verify table persists
     {
         let db = Database::open(&fs, "test.wal", "test.db")
             .expect("Failed to open database");
         
-        // Verify both table and index exist
+        // Verify table exists
         let all_objects = db.list_all_objects().unwrap();
-        assert_eq!(all_objects.len(), 2, "Table and index should persist");
+        assert_eq!(all_objects.len(), 1, "Table should persist");
         
-        // Verify index metadata
-        let index_info = db.get_object_info_by_name("users_email_idx")
+        // Verify table metadata
+        let table_info = db.get_object_info_by_name("users")
             .unwrap()
-            .expect("Index should exist");
+            .expect("Table should exist");
         
-        assert!(index_info.index_metadata.is_some());
-        let metadata = index_info.index_metadata.unwrap();
-        assert_eq!(metadata.index_fields.len(), 1);
-        assert_eq!(metadata.index_fields[0].name, "email");
-        assert!(metadata.unique);
-        assert_eq!(metadata.consistency, IndexConsistency::Synchronous);
+        assert_eq!(table_info.name, "users");
     }
 }
 

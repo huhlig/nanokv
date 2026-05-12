@@ -26,10 +26,10 @@
 //! with pages linked together to form complete blobs.
 
 use crate::table::{
-    BatchOps, BatchReport, BlobTable, Flushable, MutableTable, OrderedScan, PointLookup,
-    SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableCapabilities, TableCursor,
+    BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup,
+    Table, TableCapabilities, TableCursor,
     TableEngineKind, TableReader, TableResult, TableStatistics, TableWriter,
-    VerificationReport, WriteBatch,
+    WriteBatch,
 };
 use crate::txn::TransactionId;
 use crate::types::{KeyBuf, ObjectId, ScanBounds, ValueBuf};
@@ -114,70 +114,6 @@ impl Table for PagedBlob {
     }
 }
 
-impl BlobTable for PagedBlob {
-    fn table_id(&self) -> ObjectId {
-        self.id
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn capabilities(&self) -> SpecialtyTableCapabilities {
-        SpecialtyTableCapabilities {
-            exact: true,
-            approximate: false,
-            ordered: false,
-            sparse: false,
-            supports_delete: true,
-            supports_range_query: false,
-            supports_prefix_query: false,
-            supports_scoring: false,
-            supports_incremental_rebuild: false,
-            may_be_stale: false,
-        }
-    }
-
-    fn put_blob(&mut self, _key: &[u8], _data: &[u8]) -> TableResult<u64> {
-        todo!("Allocate pages and write blob data")
-    }
-
-    fn get_blob(&self, _key: &[u8]) -> TableResult<Option<ValueBuf>> {
-        todo!("Read linked pages and reconstruct blob")
-    }
-
-    fn delete_blob(&mut self, _key: &[u8]) -> TableResult<bool> {
-        todo!("Free all pages in blob chain")
-    }
-
-    fn blob_size(&self, _key: &[u8]) -> TableResult<Option<u64>> {
-        todo!("Read blob metadata to get size")
-    }
-
-    fn max_inline_size(&self) -> usize {
-        // Use 1/4 of page size as inline threshold
-        self.page_size / 4
-    }
-
-    fn max_blob_size(&self) -> u64 {
-        // With 32-bit page IDs and typical page sizes, we can support very large blobs
-        1024 * 1024 * 1024 // 1GB
-    }
-
-    fn stats(&self) -> TableResult<SpecialtyTableStats> {
-        // TODO: Implement actual statistics gathering
-        Ok(SpecialtyTableStats::default())
-    }
-
-    fn verify(&self) -> TableResult<VerificationReport> {
-        // TODO: Implement verification logic
-        Ok(VerificationReport {
-            checked_items: 0,
-            errors: vec![],
-            warnings: vec![],
-        })
-    }
-}
 
 /// Reader for paged blob storage.
 pub struct PagedBlobReader<'a> {
@@ -187,9 +123,8 @@ pub struct PagedBlobReader<'a> {
 
 impl<'a> PointLookup for PagedBlobReader<'a> {
     fn get(&self, _key: &[u8], _snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support point lookup - use BlobTable::get_blob instead".to_string(),
-        ))
+        // TODO: Implement actual paged blob reading
+        todo!("Read linked pages and reconstruct blob")
     }
 }
 
@@ -280,21 +215,29 @@ pub struct PagedBlobWriter<'a> {
 
 impl<'a> MutableTable for PagedBlobWriter<'a> {
     fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support put - use BlobTable::put_blob instead".to_string(),
-        ))
+        // TODO: Implement actual paged blob writing
+        todo!("Allocate pages and write blob data")
     }
 
     fn delete(&mut self, _key: &[u8]) -> TableResult<bool> {
-        Err(crate::table::TableError::Other(
-            "Blob tables do not support delete - use BlobTable::delete_blob instead".to_string(),
-        ))
+        // TODO: Implement actual paged blob deletion
+        todo!("Free all pages in blob chain")
     }
 
     fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
         Err(crate::table::TableError::Other(
             "Blob tables do not support range delete".to_string(),
         ))
+    }
+
+    fn max_inline_size(&self) -> Option<usize> {
+        // Use 1/4 of page size as inline threshold
+        Some(self.table.page_size / 4)
+    }
+
+    fn max_value_size(&self) -> Option<u64> {
+        // With 32-bit page IDs and typical page sizes, we can support very large blobs
+        Some(1024 * 1024 * 1024) // 1GB
     }
 }
 

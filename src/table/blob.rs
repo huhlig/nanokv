@@ -24,8 +24,9 @@
 //! - `PagedBlob`: Disk-backed storage using linked pages in the pager
 //! - `FileBlob`: Direct file-based storage for very large blobs
 //!
-//! All implementations follow the Table trait and implement the BlobTable
-//! specialty trait for blob-specific operations.
+//! All implementations follow the standard Table trait with MutableTable and
+//! PointLookup for operations. Large values can be streamed using put_stream
+//! and get_stream methods to avoid loading entire blobs into memory.
 
 mod file;
 mod memory;

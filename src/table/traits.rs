@@ -38,25 +38,6 @@ use std::borrow::Cow;
 // the same identifier type without wrapper aliases.
 
 
-/// Index-specific metadata stored at the database/catalog layer.
-///
-/// This metadata tracks the relationship between a table serving as an index
-/// and its parent table. The storage layer is completely agnostic to this.
-/// Regular tables that don't serve as indexes have None for this field.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct IndexMetadata {
-    /// The parent table this index belongs to
-    pub parent_table: ObjectId,
-    /// Index field specifications
-    pub index_fields: Vec<IndexField>,
-    /// Whether index enforces uniqueness
-    pub unique: bool,
-    /// Index consistency model
-    pub consistency: IndexConsistency,
-    /// Whether index is stale and needs rebuilding
-    pub stale: bool,
-}
-
 /// Options for creating a table.
 ///
 /// In the unified architecture, the engine determines the table's capabilities.
@@ -76,32 +57,10 @@ pub struct TableOptions {
     pub max_value_size: Option<u64>,
 }
 
-/// Index field specification (moved from index module for unification).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct IndexField {
-    pub name: String,
-    pub encoding: KeyEncoding,
-    pub descending: bool,
-}
-
-/// Index consistency model (moved from index module for unification).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum IndexConsistency {
-    /// Index updates are part of the same transaction commit.
-    Synchronous,
-    /// Index updates may lag but are replayable/recoverable.
-    Deferred,
-    /// Index may be stale and must expose staleness to query planners.
-    StaleQueryable,
-    /// Index is rebuilt out of band and not used when stale.
-    RebuildRequired,
-}
-
 /// Table metadata from the catalog.
 ///
 /// In the unified architecture, this represents ALL tables.
 /// The `options.engine` field determines the table's implementation and capabilities.
-/// The optional `index_metadata` field indicates if this table serves as an index.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TableInfo {
     pub id: ObjectId,
@@ -109,8 +68,6 @@ pub struct TableInfo {
     pub options: TableOptions,
     pub root: Option<PhysicalLocation>,
     pub created_lsn: LogSequenceNumber,
-    /// Index-specific metadata (None for regular tables, Some for tables serving as indexes)
-    pub index_metadata: Option<IndexMetadata>,
 }
 
 /// Table engine kind - determines both implementation and capabilities.
@@ -1174,132 +1131,6 @@ pub trait Rebuildable {
         source: &dyn SpecialtyTableSource,
         budget: RebuildBudget,
     ) -> TableResult<RebuildProgress>;
-}
-
-/// Blob storage table for large binary objects.
-///
-/// # Deprecation Notice
-///
-/// **This trait is deprecated and will be removed in a future version.**
-///
-/// Use the standard `MutableTable` and `PointLookup` traits instead, which now support
-/// streaming for large values via `put_stream()` and `get_stream()` methods.
-///
-/// ## Migration Guide
-///
-/// ### Before (BlobTable):
-/// ```ignore
-/// let mut blob_table: Box<dyn BlobTable> = ...;
-/// blob_table.put_blob(key, large_data)?;
-/// let data = blob_table.get_blob(key)?;
-/// ```
-///
-/// ### After (MutableTable with streaming):
-/// ```ignore
-/// let mut writer: Box<dyn MutableTable> = ...;
-///
-/// // For small values, use put() directly:
-/// writer.put(key, small_data)?;
-///
-/// // For large values, use put_stream():
-/// let mut stream = create_value_stream(large_data);
-/// writer.put_stream(key, &mut stream)?;
-///
-/// // Reading with get_stream() for large values:
-/// let reader: Box<dyn PointLookup> = ...;
-/// if let Some(mut stream) = reader.get_stream(key, snapshot_lsn)? {
-///     let mut buffer = vec![0u8; 8192];
-///     while let n = stream.read(&mut buffer)? {
-///         if n == 0 { break; }
-///         // Process chunk
-///     }
-/// }
-/// ```
-///
-/// ## Benefits of Migration
-///
-/// 1. **Unified API**: No separate blob-specific methods
-/// 2. **Streaming Support**: Efficient handling of large values
-/// 3. **MVCC Support**: Blob values participate in transactions
-/// 4. **Consistent Behavior**: Same semantics as other table types
-///
-/// ## Configuration
-///
-/// Use `TableOptions` to control value storage:
-/// - `max_inline_size`: Threshold for inline vs. external storage
-/// - `max_value_size`: Maximum supported value size
-///
-/// This specialty trait provides operations for storing and retrieving large
-/// binary objects (blobs) that are too large to fit efficiently in regular
-/// table pages. Different implementations provide different storage strategies:
-///
-/// - `MemoryBlob`: In-memory storage for ephemeral blobs
-/// - `PagedBlob`: Disk-backed storage using linked pages
-/// - `FileBlob`: Direct file-based storage for very large blobs
-///
-/// Blobs are stored by key and can be retrieved, deleted, or checked for existence.
-/// The trait also provides metadata about blob sizes and storage limits.
-#[deprecated(
-    since = "0.1.0",
-    note = "Use MutableTable with put_stream() and PointLookup with get_stream() instead. See trait documentation for migration guide."
-)]
-pub trait BlobTable {
-    fn table_id(&self) -> ObjectId;
-
-    fn name(&self) -> &str;
-
-    fn capabilities(&self) -> SpecialtyTableCapabilities;
-
-    /// Store a blob and return its size.
-    ///
-    /// The key identifies the blob for later retrieval. If a blob with the
-    /// same key already exists, it is replaced.
-    fn put_blob(&mut self, key: &[u8], data: &[u8]) -> TableResult<u64>;
-
-    /// Retrieve a blob by key.
-    ///
-    /// Returns None if the blob doesn't exist or has been deleted.
-    fn get_blob(&self, key: &[u8]) -> TableResult<Option<ValueBuf>>;
-
-    /// Delete a blob by key.
-    ///
-    /// Returns true if the blob existed and was deleted, false if it didn't exist.
-    fn delete_blob(&mut self, key: &[u8]) -> TableResult<bool>;
-
-    /// Check if a blob exists.
-    fn contains_blob(&self, key: &[u8]) -> TableResult<bool> {
-        Ok(self.get_blob(key)?.is_some())
-    }
-
-    /// Get the size of a blob without retrieving its data.
-    ///
-    /// Returns None if the blob doesn't exist.
-    fn blob_size(&self, key: &[u8]) -> TableResult<Option<u64>>;
-
-    /// Get the maximum inline size for this blob store.
-    ///
-    /// Values smaller than this threshold should be stored inline in table pages
-    /// rather than as separate blobs.
-    fn max_inline_size(&self) -> usize;
-
-    /// Get the maximum blob size supported by this implementation.
-    fn max_blob_size(&self) -> u64 {
-        // Default to 1GB max blob size
-        1024 * 1024 * 1024
-    }
-
-    /// List all blob keys (for iteration/scanning).
-    ///
-    /// This is optional and may not be efficiently supported by all implementations.
-    fn list_keys(&self) -> TableResult<Vec<KeyBuf>> {
-        Err(crate::table::TableError::Other(
-            "list_keys not supported by this blob implementation".to_string(),
-        ))
-    }
-
-    fn stats(&self) -> TableResult<SpecialtyTableStats>;
-
-    fn verify(&self) -> TableResult<VerificationReport>;
 }
 
 // =============================================================================
