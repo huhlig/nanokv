@@ -36,14 +36,14 @@ pub use self::traits::{
     // Core table traits
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
     ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
-    Histogram, HistogramBucket, IndexConsistency, IndexField, IndexMetadata, KeyStatistics,
+    Histogram, HistogramBucket, KeyStatistics,
     Maintainable, MemoryAware, Migratable, MutableTable, Mutation, OrderedKvTable, OrderedScan,
     PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, StatisticsProvider,
     Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableInfo,
     TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
     VacuumReport, ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
     // Specialty table traits (formerly index traits)
-    ApproximateMembership, BlobTable, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
+    ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
     FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,
     IvfVector, PhysicalRange, Predicate, QueryBudget, QueryablePredicate, Rebuildable,
     RebuildBudget, RebuildProgress, ScoredDocument, SparseOrdered, SparseQuery,
