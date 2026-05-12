@@ -404,6 +404,130 @@ impl<FS: FileSystem> LsmTree<FS> {
         Ok(())
     }
     
+    /// Flush the active memtable to an SSTable.
+    ///
+    /// This method:
+    /// 1. Makes the active memtable immutable
+    /// 2. Creates a new empty active memtable
+    /// 3. Flushes the immutable memtable to an SSTable
+    ///
+    /// This is called automatically on Drop, but can also be called explicitly
+    /// for controlled shutdown or to free memory.
+    #[instrument(skip(self))]
+    pub fn flush_memtable(&self) -> TableResult<()> {
+        let start = Instant::now();
+        debug!("Flushing active memtable to SSTable");
+        
+        // Check if active memtable has any data
+        let has_data = {
+            let memtable = self.active_memtable.read().unwrap();
+            !memtable.is_empty()
+        };
+        
+        if !has_data {
+            debug!("Active memtable is empty, skipping flush");
+            return Ok(());
+        }
+        
+        // Rotate memtable to make it immutable
+        self.rotate_memtable()?;
+        
+        // Now flush all immutable memtables
+        self.flush_immutable_memtables()?;
+        
+        histogram!("lsm.memtable_flush_duration").record(start.elapsed().as_secs_f64());
+        Ok(())
+    }
+    
+    /// Flush all immutable memtables to SSTables.
+    ///
+    /// This is typically called by the background compaction thread,
+    /// but can also be called explicitly during shutdown.
+    fn flush_immutable_memtables(&self) -> TableResult<()> {
+        let immutable = self.immutable_memtables.read().unwrap();
+        
+        if immutable.is_empty() {
+            return Ok(());
+        }
+        
+        // We need to flush each immutable memtable
+        // For now, we'll flush them one at a time
+        // In a production system, this could be parallelized
+        let memtables_to_flush: Vec<_> = immutable.iter().cloned().collect();
+        drop(immutable);
+        
+        for memtable in memtables_to_flush {
+            self.flush_single_memtable(&memtable)?;
+        }
+        
+        // Clear the immutable memtables list
+        let mut immutable = self.immutable_memtables.write().unwrap();
+        immutable.clear();
+        
+        Ok(())
+    }
+    
+    /// Flush a single memtable to an SSTable.
+    fn flush_single_memtable(&self, memtable: &Memtable) -> TableResult<()> {
+        if !memtable.is_immutable() {
+            return Err(TableError::MemtableNotImmutable);
+        }
+        
+        // Get all entries from the memtable
+        let entries = memtable.entries()?;
+        
+        if entries.is_empty() {
+            return Ok(());
+        }
+        
+        // Allocate a new SSTable ID
+        let sstable_id = SStableId::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+        );
+        
+        // Create SSTable writer
+        let mut writer = SStableWriter::new(
+            self.pager.clone(),
+            sstable_id,
+            0, // L0
+            self.config.sstable.clone(),
+            entries.len(), // estimated_entries
+        );
+        
+        // Write all entries to the SSTable
+        for (key, chain) in entries {
+            // Write the full version chain to preserve MVCC history
+            writer.add(key, chain)?;
+        }
+        
+        // Finalize the SSTable with the memtable's max LSN
+        let current_lsn = memtable.max_lsn().unwrap_or(LogSequenceNumber::from(0));
+        let sstable_metadata = writer.finish(current_lsn)?;
+        
+        // Convert SStableMetadata to FileMetadata for the manifest
+        let file_metadata = FileMetadata {
+            id: sstable_metadata.id,
+            level: sstable_metadata.level,
+            min_key: sstable_metadata.min_key,
+            max_key: sstable_metadata.max_key,
+            num_entries: sstable_metadata.num_entries,
+            total_size: sstable_metadata.total_size,
+            created_lsn: sstable_metadata.created_lsn,
+            first_page_id: sstable_metadata.first_page_id,
+            num_pages: sstable_metadata.num_pages,
+        };
+        
+        // Add the new SSTable to the manifest
+        let version_edit = VersionEdit::add_sstable(file_metadata);
+        
+        self.manifest.apply_edit(version_edit)?;
+        
+        Ok(())
+    }
+    
     /// Create iterators for all data sources.
     fn create_iterators(
         &self,
@@ -848,6 +972,27 @@ impl<'a, FS: FileSystem> LsmCursor<'a, FS> {
         }
         
         Ok(())
+    }
+}
+
+impl<FS: FileSystem> Drop for LsmTree<FS> {
+    /// Flush memtables on drop to ensure data durability.
+    ///
+    /// This Drop implementation ensures that any unflushed data in the active
+    /// memtable is written to disk before the LSM tree is destroyed. This is
+    /// critical for data durability when the database is closed.
+    ///
+    /// Note: Errors during drop are logged but not propagated since Drop cannot
+    /// return errors. For controlled shutdown with error handling, use the
+    /// explicit flush_memtable() method before dropping.
+    fn drop(&mut self) {
+        // Attempt to flush the active memtable
+        if let Err(e) = self.flush_memtable() {
+            eprintln!(
+                "Warning: Failed to flush LSM memtable during drop for table '{}': {}",
+                self.name, e
+            );
+        }
     }
 }
 
