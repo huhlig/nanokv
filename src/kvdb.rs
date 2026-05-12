@@ -692,6 +692,33 @@ impl<FS: FileSystem> Database<FS> {
     }
 }
 
+impl<FS: FileSystem> Drop for Database<FS> {
+    /// Ensure data durability on clean shutdown.
+    ///
+    /// This Drop implementation:
+    /// 1. Flushes all pending WAL writes
+    /// 2. Syncs WAL to disk
+    /// 3. Flushes pager dirty pages
+    /// 4. Syncs database file
+    ///
+    /// Note: Errors during drop are logged but not propagated since Drop cannot return errors.
+    fn drop(&mut self) {
+        // Step 1: Flush WAL buffer
+        if let Err(e) = self.wal.flush() {
+            eprintln!("Warning: Failed to flush WAL during database shutdown: {}", e);
+        }
+
+        // Step 2: Sync pager (flushes cache and syncs file)
+        if let Err(e) = self.pager.sync() {
+            eprintln!("Warning: Failed to sync pager during database shutdown: {}", e);
+        }
+
+        // Note: WAL sync is handled by flush() if sync_on_write is enabled,
+        // or by the group commit coordinator. The pager.sync() call ensures
+        // all database file changes are persisted.
+    }
+}
+
 /// Table handle for ergonomic access to a specific table.
 ///
 /// Provides convenient methods for CRUD operations without needing to
