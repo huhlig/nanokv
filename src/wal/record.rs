@@ -104,6 +104,14 @@ pub enum WriteOpType {
     Delete = 2,
     /// Insert a key into a bloom filter
     BloomInsert = 3,
+    /// Add an edge to a graph
+    GraphAddEdge = 4,
+    /// Remove an edge from a graph
+    GraphRemoveEdge = 5,
+    /// Append a point to a time series
+    TimeSeriesInsert = 6,
+    /// Delete a point from a time series
+    TimeSeriesDelete = 7,
 }
 
 impl WriteOpType {
@@ -113,6 +121,10 @@ impl WriteOpType {
             1 => Ok(WriteOpType::Put),
             2 => Ok(WriteOpType::Delete),
             3 => Ok(WriteOpType::BloomInsert),
+            4 => Ok(WriteOpType::GraphAddEdge),
+            5 => Ok(WriteOpType::GraphRemoveEdge),
+            6 => Ok(WriteOpType::TimeSeriesInsert),
+            7 => Ok(WriteOpType::TimeSeriesDelete),
             _ => Err(WalError::InvalidRecord {
                 lsn: LogSequenceNumber::from(0),
                 details: format!("Invalid write op type: {}", value),

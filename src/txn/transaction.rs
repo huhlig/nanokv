@@ -15,8 +15,9 @@
 //
 
 use crate::table::{
-    ApproximateMembership, PointLookup, SearchableTable, SpecialtyTableCapabilities,
-    SpecialtyTableStats, TableCursor, TableEngineRegistry, VerificationReport,
+    ApproximateMembership, EdgeCursor, GraphAdjacency, PointLookup, SearchableTable,
+    SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor, TableEngineRegistry,
+    TimeSeries, TimeSeriesCursor, TimePointRef, VerificationReport,
 };
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{Durability, IsolationLevel, TableId, ScanBounds, ValueBuf};
@@ -25,6 +26,84 @@ use crate::wal::{LogSequenceNumber, WalWriter, WriteOpType};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::sync::{Arc, Mutex, RwLock};
+
+/// Placeholder EdgeCursor for Transaction's GraphAdjacency implementation.
+/// This will be replaced with actual cursor when GraphAdjacency table engine is implemented.
+#[derive(Debug)]
+pub struct TransactionEdgeCursor {
+    _phantom: std::marker::PhantomData<()>,
+}
+
+impl EdgeCursor for TransactionEdgeCursor {
+    fn valid(&self) -> bool {
+        false
+    }
+
+    fn current(&self) -> Option<crate::table::EdgeRef> {
+        None
+    }
+
+    fn next(&mut self) -> crate::table::TableResult<()> {
+        Err(crate::table::TableError::Other(
+            "GraphAdjacency table engine not yet implemented".to_string(),
+        ))
+    }
+}
+
+/// Placeholder TimeSeriesCursor for Transaction's TimeSeries implementation.
+/// This will be replaced with actual cursor when TimeSeries table engine is implemented.
+#[derive(Debug)]
+pub struct TransactionTimeSeriesCursor {
+    _phantom: std::marker::PhantomData<()>,
+}
+
+impl TimeSeriesCursor for TransactionTimeSeriesCursor {
+    fn valid(&self) -> bool {
+        false
+    }
+
+    fn current(&self) -> Option<TimePointRef> {
+        None
+    }
+
+    fn next(&mut self) -> crate::table::TableResult<()> {
+        Err(crate::table::TableError::Other(
+            "TimeSeries table engine not yet implemented".to_string(),
+        ))
+    }
+}
+
+/// Graph edge operation for tracking in transaction write set
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GraphEdgeOp {
+    AddEdge {
+        source: Vec<u8>,
+        label: Vec<u8>,
+        target: Vec<u8>,
+        edge_id: Vec<u8>,
+    },
+    RemoveEdge {
+        source: Vec<u8>,
+        label: Vec<u8>,
+        target: Vec<u8>,
+        edge_id: Vec<u8>,
+    },
+}
+
+/// Time series operation for tracking in transaction write set
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TimeSeriesOp {
+    AppendPoint {
+        series_key: Vec<u8>,
+        timestamp: i64,
+        value_key: Vec<u8>,
+    },
+    DeletePoint {
+        series_key: Vec<u8>,
+        timestamp: i64,
+        value_key: Vec<u8>,
+    },
+}
 
 /// Transaction ID type
 #[derive(
@@ -183,6 +262,14 @@ pub struct Transaction<FS: FileSystem> {
     // Track specialty-table bloom inserts for commit/rollback visibility
     bloom_write_set: HashSet<(TableId, Vec<u8>)>,
 
+    // Track specialty-table graph edge operations for commit/rollback
+    // Each entry is (table_id, edge_operation)
+    graph_write_set: Vec<(TableId, GraphEdgeOp)>,
+
+    // Track specialty-table time series operations for commit/rollback
+    // Each entry is (table_id, time_series_operation)
+    timeseries_write_set: Vec<(TableId, TimeSeriesOp)>,
+
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
 
@@ -220,6 +307,8 @@ impl<FS: FileSystem> Transaction<FS> {
             read_set: HashSet::new(),
             write_set: HashMap::new(),
             bloom_write_set: HashSet::new(),
+            graph_write_set: Vec::new(),
+            timeseries_write_set: Vec::new(),
             conflict_detector,
             wal,
             engine_registry,
@@ -306,6 +395,16 @@ impl<FS: FileSystem> Transaction<FS> {
         self.bloom_write_set.insert((object_id, key));
     }
 
+    /// Record a graph edge operation for commit/rollback.
+    pub fn record_graph_operation(&mut self, object_id: TableId, op: GraphEdgeOp) {
+        self.graph_write_set.push((object_id, op));
+    }
+
+    /// Record a time series operation for commit/rollback.
+    pub fn record_timeseries_operation(&mut self, object_id: TableId, op: TimeSeriesOp) {
+        self.timeseries_write_set.push((object_id, op));
+    }
+
     /// Prepare the transaction for commit (two-phase commit).
     ///
     /// Transitions from Active to Preparing state.
@@ -352,10 +451,12 @@ impl<FS: FileSystem> Transaction<FS> {
     /// Set the current table context for specialty table operations.
     pub fn with_table(&mut self, table_id: TableId) -> &mut Self {
         self.current_table_id = Some(table_id);
-        self.current_table_name = self
-            .engine_registry
-            .get(table_id)
-            .map(|engine| engine.name().to_string());
+        self.current_table_name = Some(
+            self.engine_registry
+                .get(table_id)
+                .map(|engine| engine.name().to_string())
+                .unwrap_or_else(|| format!("table_{}", table_id.as_u64()))
+        );
         self
     }
 
@@ -376,6 +477,32 @@ impl<FS: FileSystem> Transaction<FS> {
         self.clear_table_context();
         result.map_err(|e| TransactionError::Other(e.to_string()))
     }
+
+    /// Set table context for graph operations.
+    ///
+    /// Note: Unlike `with_bloom()`, there is no `with_graph()` helper because
+    /// `GraphAdjacency` uses Generic Associated Types (GATs) which are not
+    /// dyn-compatible. Use `with_table()` and call graph methods directly instead.
+    ///
+    /// Example:
+    /// ```ignore
+    /// txn.with_table(graph_table_id);
+    /// GraphAdjacency::add_edge(&mut txn, source, label, target, edge_id)?;
+    /// txn.clear_table_context();
+    /// ```
+
+    /// Set table context for time series operations.
+    ///
+    /// Note: Unlike `with_bloom()`, there is no `with_timeseries()` helper because
+    /// `TimeSeries` uses Generic Associated Types (GATs) which are not
+    /// dyn-compatible. Use `with_table()` and call time series methods directly instead.
+    ///
+    /// Example:
+    /// ```ignore
+    /// txn.with_table(timeseries_table_id);
+    /// TimeSeries::append_point(&mut txn, series_key, timestamp, value_key)?;
+    /// txn.clear_table_context();
+    /// ```
 
     /// Get a value from an object (table or index).
     ///
@@ -977,6 +1104,67 @@ impl<FS: FileSystem> Transaction<FS> {
             }
         }
 
+        // Apply graph edge operations after bloom filter inserts.
+        // Note: GraphAdjacency table engine not yet implemented, so operations are logged to WAL
+        // but not applied to any actual table. When GraphAdjacency is implemented, add the variant
+        // to TableEngineInstance and uncomment the application logic below.
+        for (_object_id, _op) in &self.graph_write_set {
+            // TODO: Apply graph operations when GraphAdjacency table engine is implemented
+            // if let Some(engine) = self.engine_registry.get(*object_id) {
+            //     match &engine {
+            //         crate::table::TableEngineInstance::GraphAdjacency(graph) => {
+            //             match op {
+            //                 GraphEdgeOp::AddEdge { source, label, target, edge_id } => {
+            //                     graph.add_edge(source, label, target, edge_id)
+            //                         .map_err(|e| TransactionError::Other(format!("Graph add_edge failed: {}", e)))?;
+            //                 }
+            //                 GraphEdgeOp::RemoveEdge { source, label, target, edge_id } => {
+            //                     graph.remove_edge(source, label, target, edge_id)
+            //                         .map_err(|e| TransactionError::Other(format!("Graph remove_edge failed: {}", e)))?;
+            //                 }
+            //             }
+            //         }
+            //         _ => {
+            //             return Err(TransactionError::Other(
+            //                 "table is not a graph adjacency table".to_string(),
+            //             ))
+            //         }
+            //     }
+            // }
+        }
+
+        // Apply time series operations after graph edge operations.
+        // Note: TimeSeries table engine not yet implemented, so operations are logged to WAL
+        // but not applied to any actual table. When TimeSeries is implemented, add the variant
+        // to TableEngineInstance and uncomment the application logic below.
+        for (_object_id, _op) in &self.timeseries_write_set {
+            // TODO: Apply time series operations when TimeSeries table engine is implemented
+            // if let Some(engine) = self.engine_registry.get(*object_id) {
+            //     match &engine {
+            //         crate::table::TableEngineInstance::TimeSeries(ts) => {
+            //             match op {
+            //                 TimeSeriesOp::AppendPoint { series_key, timestamp, value_key } => {
+            //                     ts.append_point(series_key, *timestamp, value_key)
+            //                         .map_err(|e| TransactionError::Other(format!("TimeSeries append_point failed: {}", e)))?;
+            //                 }
+            //                 TimeSeriesOp::DeletePoint { series_key, timestamp, value_key } => {
+            //                     // Note: TimeSeries trait doesn't have a delete_point method yet
+            //                     // This will need to be added when the table engine is implemented
+            //                     return Err(TransactionError::Other(
+            //                         "TimeSeries delete_point not yet implemented".to_string(),
+            //                     ));
+            //                 }
+            //             }
+            //         }
+            //         _ => {
+            //             return Err(TransactionError::Other(
+            //                 "table is not a time series table".to_string(),
+            //             ))
+            //         }
+            //     }
+            // }
+        }
+
         // Update current LSN
         {
             let mut current_lsn = self.current_lsn.write().unwrap();
@@ -1155,6 +1343,207 @@ impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
     }
 }
 
+impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
+    type EdgeCursor<'a> = TransactionEdgeCursor where Self: 'a;
+
+    fn table_id(&self) -> TableId {
+        self.current_table_id.unwrap_or(TableId::from(0))
+    }
+
+    fn name(&self) -> &str {
+        self.current_table_name.as_deref().unwrap_or("unknown")
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        let Some(table_id) = self.current_table_id else {
+            return SpecialtyTableCapabilities::default();
+        };
+
+        // Note: GraphAdjacency table engine not yet implemented
+        // Return default capabilities for now
+        SpecialtyTableCapabilities::default()
+    }
+
+    fn add_edge(
+        &mut self,
+        source: &[u8],
+        label: &[u8],
+        target: &[u8],
+        edge_id: &[u8],
+    ) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for add_edge",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for graph operation".to_string(),
+            )
+        })?;
+
+        // Write to WAL - encode edge data in key/value fields
+        // Format: key = source|label|target|edge_id (using | as separator)
+        let mut wal_key = Vec::new();
+        wal_key.extend_from_slice(source);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(label);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(target);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(edge_id);
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::GraphAddEdge,
+                wal_key,
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_graph_operation(
+            table_id,
+            GraphEdgeOp::AddEdge {
+                source: source.to_vec(),
+                label: label.to_vec(),
+                target: target.to_vec(),
+                edge_id: edge_id.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    fn remove_edge(
+        &mut self,
+        source: &[u8],
+        label: &[u8],
+        target: &[u8],
+        edge_id: &[u8],
+    ) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for remove_edge",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for graph operation".to_string(),
+            )
+        })?;
+
+        // Write to WAL - encode edge data in key field
+        let mut wal_key = Vec::new();
+        wal_key.extend_from_slice(source);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(label);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(target);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(edge_id);
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::GraphRemoveEdge,
+                wal_key,
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_graph_operation(
+            table_id,
+            GraphEdgeOp::RemoveEdge {
+                source: source.to_vec(),
+                label: label.to_vec(),
+                target: target.to_vec(),
+                edge_id: edge_id.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    fn outgoing(
+        &self,
+        source: &[u8],
+        label: Option<&[u8]>,
+    ) -> crate::table::TableResult<Self::EdgeCursor<'_>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for outgoing",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for graph operation".to_string(),
+            )
+        })?;
+
+        // Note: GraphAdjacency table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "GraphAdjacency table engine not yet implemented".to_string(),
+        ))
+    }
+
+    fn incoming(
+        &self,
+        target: &[u8],
+        label: Option<&[u8]>,
+    ) -> crate::table::TableResult<Self::EdgeCursor<'_>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for incoming",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for graph operation".to_string(),
+            )
+        })?;
+
+        // Note: GraphAdjacency table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "GraphAdjacency table engine not yet implemented".to_string(),
+        ))
+    }
+
+    fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for graph operation".to_string(),
+            )
+        })?;
+
+        // Note: GraphAdjacency table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "GraphAdjacency table engine not yet implemented".to_string(),
+        ))
+    }
+
+    fn verify(&self) -> crate::table::TableResult<VerificationReport> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for graph operation".to_string(),
+            )
+        })?;
+
+        // Note: GraphAdjacency table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "GraphAdjacency table engine not yet implemented".to_string(),
+        ))
+    }
+}
+
 /// Implement the TransactionOps trait for Transaction.
 impl<FS: FileSystem> TransactionOps for Transaction<FS> {
     fn id(&self) -> TransactionId {
@@ -1191,5 +1580,150 @@ impl<FS: FileSystem> TransactionOps for Transaction<FS> {
 
     fn rollback(self) -> TransactionResult<()> {
         Transaction::rollback(self)
+    }
+}
+
+
+impl<FS: FileSystem> TimeSeries for Transaction<FS> {
+    type TimeSeriesCursor<'a> = TransactionTimeSeriesCursor where Self: 'a;
+
+    fn table_id(&self) -> TableId {
+        self.current_table_id.unwrap_or(TableId::from(0))
+    }
+
+    fn name(&self) -> &str {
+        self.current_table_name.as_deref().unwrap_or("unknown")
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        let Some(table_id) = self.current_table_id else {
+            return SpecialtyTableCapabilities::default();
+        };
+
+        // Note: TimeSeries table engine not yet implemented
+        // Return default capabilities for now
+        SpecialtyTableCapabilities::default()
+    }
+
+    fn append_point(
+        &mut self,
+        series_key: &[u8],
+        timestamp: i64,
+        value_key: &[u8],
+    ) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for append_point",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for time series operation".to_string(),
+            )
+        })?;
+
+        // Write to WAL - encode time series data in key/value fields
+        // Format: key = series_key|timestamp, value = value_key
+        let mut wal_key = Vec::new();
+        wal_key.extend_from_slice(series_key);
+        wal_key.push(b'|');
+        wal_key.extend_from_slice(&timestamp.to_le_bytes());
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::TimeSeriesInsert,
+                wal_key,
+                value_key.to_vec(),
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_timeseries_operation(
+            table_id,
+            TimeSeriesOp::AppendPoint {
+                series_key: series_key.to_vec(),
+                timestamp,
+                value_key: value_key.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    fn scan_series(
+        &self,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
+    ) -> crate::table::TableResult<Self::TimeSeriesCursor<'_>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for scan_series",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for time series operation".to_string(),
+            )
+        })?;
+
+        // Note: TimeSeries table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "TimeSeries table engine not yet implemented".to_string(),
+        ))
+    }
+
+    fn latest_before(
+        &self,
+        series_key: &[u8],
+        timestamp: i64,
+    ) -> crate::table::TableResult<Option<TimePointRef>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for latest_before",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for time series operation".to_string(),
+            )
+        })?;
+
+        // Note: TimeSeries table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "TimeSeries table engine not yet implemented".to_string(),
+        ))
+    }
+
+    fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for time series operation".to_string(),
+            )
+        })?;
+
+        // Note: TimeSeries table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "TimeSeries table engine not yet implemented".to_string(),
+        ))
+    }
+
+    fn verify(&self) -> crate::table::TableResult<VerificationReport> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for time series operation".to_string(),
+            )
+        })?;
+
+        // Note: TimeSeries table engine not yet implemented
+        Err(crate::table::TableError::Other(
+            "TimeSeries table engine not yet implemented".to_string(),
+        ))
     }
 }
