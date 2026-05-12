@@ -222,30 +222,33 @@ impl<FS: FileSystem> Pager<FS> {
     /// This will either:
     /// 1. Reuse a page from the free list, or
     /// 2. Grow the database by allocating a new page
+    ///
+    /// # Lock Ordering
+    /// Follows the hierarchy: superblock → header → page_table → file
     #[instrument(skip(self), fields(page_type = ?page_type))]
     pub fn allocate_page(&self, page_type: PageType) -> PagerResult<PageId> {
         let start = Instant::now();
         debug!("Allocating page");
         
-        // Lock-free allocation: Try to pop from free list first
-        // If that fails, allocate a new page from superblock
+        // STEP 1: Lock-free allocation from free list or superblock
+        // Lock ordering: superblock first (level 2)
         let page_id = if let Some(page_id) = self.free_list.pop_page() {
             // Got a page from free list - mark it allocated in superblock
             let mut superblock = self.superblock.write();
             superblock.mark_page_allocated();
+            drop(superblock); // Release immediately
             page_id
         } else {
             // No free pages - allocate a new one
             let mut superblock = self.superblock.write();
-            superblock.allocate_new_page()
+            let page_id = superblock.allocate_new_page();
+            drop(superblock); // Release immediately
+            page_id
         };
         
         counter!("pager.page_allocated").increment(1);
 
-        // Acquire page-level write lock for the newly allocated page
-        // This prevents concurrent access during initialization
-        let _page_lock = self.page_table.write_lock(page_id);
-
+        // STEP 2: Prepare data (no locks held)
         let mut page = Page::new(page_id, page_type, self.config.page_size.data_size());
         page.header.compression = self.config.compression;
         page.header.encryption = self.config.encryption;
@@ -253,14 +256,17 @@ impl<FS: FileSystem> Pager<FS> {
         let page_size = self.config.page_size.to_u32() as usize;
         let page_bytes = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
 
+        // STEP 3: Collect metadata (lock ordering: superblock → header)
         let (header_data, superblock_data) = {
             let free_pages = self.free_list.total_free();
 
+            // Lock superblock first (level 2)
             let superblock_data = {
                 let superblock = self.superblock.read();
                 superblock.clone()
             };
 
+            // Then lock header (level 3)
             let header_data = {
                 let mut header = self.header.write();
                 header.total_pages = superblock_data.total_pages;
@@ -273,6 +279,9 @@ impl<FS: FileSystem> Pager<FS> {
             (header_data, superblock_data)
         };
 
+        // STEP 4: Acquire page lock (level 4), then file lock (level 6)
+        let _page_lock = self.page_table.write_lock(page_id);
+        
         {
             let mut file = self.file.write();
             file.write_to_offset(page_id.as_u64() * page_size as u64, &page_bytes)?;
@@ -301,6 +310,9 @@ impl<FS: FileSystem> Pager<FS> {
     }
 
     /// Free a page (add it to the free list)
+    ///
+    /// # Lock Ordering
+    /// Follows the hierarchy: pin_table → superblock → header → page_table → file
     #[instrument(skip(self), fields(page_id = %page_id))]
     pub fn free_page(&self, page_id: PageId) -> PagerResult<()> {
         let start = Instant::now();
@@ -312,7 +324,7 @@ impl<FS: FileSystem> Pager<FS> {
             return Err(PagerError::InvalidPageId(page_id));
         }
 
-        // CRITICAL: Check if page is pinned before freeing
+        // STEP 1: Check if page is pinned (level 1 - pin_table)
         // This prevents freeing pages that are currently being read
         if self.pin_table.is_pinned(page_id) {
             warn!("Attempted to free pinned page");
@@ -320,13 +332,12 @@ impl<FS: FileSystem> Pager<FS> {
             return Err(PagerError::PagePinned(page_id));
         }
 
-        // Acquire page-level write lock before freeing
-        // This prevents concurrent access during the free operation
-        let _page_lock = self.page_table.write_lock(page_id);
-
         let page_size = self.config.page_size.to_u32() as usize;
         let offset = page_id.as_u64() * page_size as u64;
 
+        // STEP 2: Acquire page lock (level 4), then file lock (level 6) to verify page
+        let _page_lock = self.page_table.write_lock(page_id);
+        
         {
             let mut file = self.file.write();
             let mut buffer = vec![0u8; page_size];
@@ -348,25 +359,28 @@ impl<FS: FileSystem> Pager<FS> {
                 free_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(offset, &free_page_bytes)?;
         }
+        // File lock released here
 
-        // CRITICAL: Hold both locks atomically to prevent race conditions
-        // Lock-free push to free list
+        // STEP 3: Add to free list (lock-free, no ordering needed)
         self.free_list.push_page(page_id);
         
-        // Update superblock
+        // STEP 4: Update superblock (level 2)
         {
             let mut superblock = self.superblock.write();
             superblock.mark_page_freed();
         }
 
+        // STEP 5: Collect metadata (lock ordering: superblock → header)
         let (header_data, superblock_data) = {
             let free_pages = self.free_list.total_free();
 
+            // Lock superblock first (level 2)
             let superblock_data = {
                 let superblock = self.superblock.read();
                 superblock.clone()
             };
 
+            // Then lock header (level 3)
             let header_data = {
                 let mut header = self.header.write();
                 header.total_pages = superblock_data.total_pages;
@@ -379,6 +393,8 @@ impl<FS: FileSystem> Pager<FS> {
             (header_data, superblock_data)
         };
 
+        // STEP 6: Write metadata to disk (file lock - level 6)
+        // Note: page_lock is still held, which is fine since we're writing to different pages
         {
             let mut file = self.file.write();
             let header_bytes = header_data.to_bytes();
@@ -407,6 +423,9 @@ impl<FS: FileSystem> Pager<FS> {
     }
 
     /// Read a page from disk (with caching)
+    ///
+    /// # Lock Ordering
+    /// Follows the hierarchy: pin_table → page_table → cache → file
     #[instrument(skip(self), fields(page_id = %page_id))]
     pub fn read_page(&self, page_id: PageId) -> PagerResult<Page> {
         let start = Instant::now();
@@ -417,7 +436,7 @@ impl<FS: FileSystem> Pager<FS> {
             return Err(PagerError::PageNotFound(page_id));
         }
 
-        // Try cache first
+        // Try cache first (level 5 - cache)
         if let Some(cache) = &self.cache {
             if let Some(page) = cache.get(page_id) {
                 counter!("pager.page_read").increment(1);
@@ -426,11 +445,11 @@ impl<FS: FileSystem> Pager<FS> {
             }
         }
 
-        // CRITICAL: Pin the page before reading to prevent concurrent free
+        // STEP 1: Pin the page (level 1 - pin_table)
         // This ensures the page cannot be freed and reallocated while we're reading it
         self.pin_table.pin(page_id);
 
-        // Acquire page-level read lock for fine-grained concurrency
+        // STEP 2: Acquire page-level read lock (level 4 - page_table)
         // Multiple threads can read different pages concurrently (different shards)
         let _page_lock = self.page_table.read_lock(page_id);
 
@@ -440,8 +459,8 @@ impl<FS: FileSystem> Pager<FS> {
 
         let result = (|| {
             let mut buffer = vec![0u8; page_size];
+            // STEP 3: Acquire file lock (level 6 - file)
             // Note: VFS File trait requires &mut self for read_at_offset
-            // We still benefit from page-level locking for pages in different shards
             let mut file = self.file.write();
             file.read_at_offset(offset, &mut buffer)?;
             drop(file); // Release file lock early
@@ -452,7 +471,7 @@ impl<FS: FileSystem> Pager<FS> {
                 self.config.encryption_key.as_ref(),
             )?;
 
-            // Add to cache
+            // STEP 4: Update cache (level 5 - cache)
             if let Some(cache) = &self.cache {
                 // If evicted page is dirty, write it to disk
                 if let Some(evicted_page) = cache.put(page.clone(), false) {
@@ -463,7 +482,7 @@ impl<FS: FileSystem> Pager<FS> {
             Ok(page)
         })();
 
-        // CRITICAL: Always unpin the page, even if an error occurred
+        // CRITICAL: Always unpin the page (level 1), even if an error occurred
         self.pin_table.unpin(page_id);
         
         if result.is_ok() {
@@ -509,8 +528,11 @@ impl<FS: FileSystem> Pager<FS> {
     }
 
     /// Write a page directly to disk (bypassing cache)
+    ///
+    /// # Lock Ordering
+    /// Follows the hierarchy: page_table → file
     fn write_page_to_disk(&self, page: &Page) -> PagerResult<()> {
-        // Acquire page-level write lock for fine-grained concurrency
+        // STEP 1: Acquire page-level write lock (level 4 - page_table)
         // Only one thread can write to a page at a time, but different pages can be written concurrently
         let _page_lock = self.page_table.write_lock(page.page_id());
 
@@ -518,6 +540,8 @@ impl<FS: FileSystem> Pager<FS> {
         let offset = page.page_id().as_u64() * page_size as u64;
 
         let buffer = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
+        
+        // STEP 2: Acquire file lock (level 6 - file)
         let mut file = self.file.write();
         file.write_to_offset(offset, &buffer)?;
 

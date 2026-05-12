@@ -37,6 +37,7 @@
 ### Implementation Details
 
 - [Pager Concurrency](docs/PAGER_CONCURRENCY_COMPLETE.md)
+- [Pager Lock Ordering](docs/PAGER_LOCK_ORDERING.md) - Deadlock prevention through lock hierarchy
 - [Lock-Free FreeList](docs/LOCK_FREE_FREELIST_IMPLEMENTATION.md)
 - [Sharded Cache](docs/SHARDED_CACHE_IMPLEMENTATION.md)
 - [BTree Split/Merge](docs/BTREE_SPLIT_MERGE_IMPLEMENTATION.md)
