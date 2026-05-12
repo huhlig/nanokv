@@ -41,7 +41,7 @@ pub use self::traits::{
     PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, Severity, StatisticsProvider,
     Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableInfo,
     TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
-    VacuumReport, ValueStatistics, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
+    VacuumReport, ValueStatistics, ValueStream, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
     // Specialty table traits (formerly index traits)
     ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
     FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,

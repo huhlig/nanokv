@@ -480,6 +480,104 @@ impl Page {
     }
 }
 
+/// Overflow page header (32 bytes)
+///
+/// Layout:
+/// - Bytes 0-3: Magic number (0x4F564C46 = "OVLF")
+/// - Bytes 4-7: Next page ID (0 if last page)
+/// - Bytes 8-11: Data length (bytes of data in this page)
+/// - Bytes 12-15: Checksum (CRC32 of data)
+/// - Bytes 16-31: Reserved (for future use)
+#[derive(Debug, Clone)]
+pub struct OverflowPageHeader {
+    /// Magic number for overflow pages ("OVLF" = 0x4F564C46)
+    pub magic: u32,
+    /// Next page ID in the chain (0 if last page)
+    pub next_page_id: u32,
+    /// Length of data in this page
+    pub data_length: u32,
+    /// CRC32 checksum of the data
+    pub checksum: u32,
+}
+
+impl OverflowPageHeader {
+    /// Size of the overflow page header in bytes
+    pub const SIZE: usize = 32;
+    
+    /// Magic number for overflow pages ("OVLF")
+    pub const MAGIC: u32 = 0x4F564C46;
+    
+    /// Create a new overflow page header
+    pub fn new(next_page_id: u32, data_length: u32, checksum: u32) -> Self {
+        Self {
+            magic: Self::MAGIC,
+            next_page_id,
+            data_length,
+            checksum,
+        }
+    }
+    
+    /// Serialize the header to bytes
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut bytes = [0u8; Self::SIZE];
+        
+        // Magic (4 bytes)
+        bytes[0..4].copy_from_slice(&self.magic.to_le_bytes());
+        
+        // Next page ID (4 bytes)
+        bytes[4..8].copy_from_slice(&self.next_page_id.to_le_bytes());
+        
+        // Data length (4 bytes)
+        bytes[8..12].copy_from_slice(&self.data_length.to_le_bytes());
+        
+        // Checksum (4 bytes)
+        bytes[12..16].copy_from_slice(&self.checksum.to_le_bytes());
+        
+        // Reserved bytes remain 0
+        
+        bytes
+    }
+    
+    /// Deserialize the header from bytes
+    pub fn from_bytes(bytes: &[u8]) -> PagerResult<Self> {
+        if bytes.len() < Self::SIZE {
+            return Err(PagerError::InternalError(
+                "Insufficient bytes for overflow page header".to_string(),
+            ));
+        }
+        
+        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        if magic != Self::MAGIC {
+            return Err(PagerError::InternalError(format!(
+                "Invalid overflow page magic: expected 0x{:08X}, got 0x{:08X}",
+                Self::MAGIC,
+                magic
+            )));
+        }
+        
+        let next_page_id = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let data_length = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let checksum = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+        
+        Ok(Self {
+            magic,
+            next_page_id,
+            data_length,
+            checksum,
+        })
+    }
+    
+    /// Check if this is the last page in the chain
+    pub fn is_last(&self) -> bool {
+        self.next_page_id == 0
+    }
+}
+
+/// Calculate CRC32 checksum for data
+pub fn calculate_crc32(data: &[u8]) -> u32 {
+    crc32fast::hash(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

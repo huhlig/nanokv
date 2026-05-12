@@ -822,6 +822,7 @@ dependencies = [
  "aes-gcm",
  "async-trait",
  "bincode",
+ "crc32fast",
  "criterion",
  "crossbeam",
  "crossbeam-channel",

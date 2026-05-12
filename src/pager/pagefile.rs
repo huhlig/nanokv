@@ -625,6 +625,249 @@ impl<FS: FileSystem> Pager<FS> {
         page.data_mut().extend_from_slice(&superblock.to_bytes());
         self.write_page(&page)
     }
+
+    // =========================================================================
+    // Overflow Page Chain Methods
+    // =========================================================================
+
+    /// Write data to an overflow page with header and checksum
+    ///
+    /// Returns the page ID of the written page.
+    #[instrument(skip(self, data), fields(data_len = data.len()))]
+    pub fn write_overflow_page(
+        &self,
+        page_id: PageId,
+        data: &[u8],
+        next_page_id: Option<PageId>,
+    ) -> PagerResult<()> {
+        use crate::pager::page::{calculate_crc32, OverflowPageHeader};
+        
+        debug!("Writing overflow page");
+        
+        // Calculate checksum
+        let checksum = calculate_crc32(data);
+        
+        // Create overflow header
+        let header = OverflowPageHeader::new(
+            next_page_id.map(|id| id.as_u64() as u32).unwrap_or(0),
+            data.len() as u32,
+            checksum,
+        );
+        
+        // Create page with overflow data
+        let mut page = Page::new(
+            page_id,
+            PageType::Overflow,
+            self.config.page_size.data_size(),
+        );
+        page.header.compression = self.config.compression;
+        page.header.encryption = self.config.encryption;
+        
+        // Write header and data to page
+        page.data_mut().extend_from_slice(&header.to_bytes());
+        page.data_mut().extend_from_slice(data);
+        
+        self.write_page(&page)?;
+        
+        counter!("pager.overflow_page_write").increment(1);
+        Ok(())
+    }
+
+    /// Link two overflow pages together
+    ///
+    /// Updates the first page's header to point to the second page.
+    #[instrument(skip(self), fields(from = %from_page_id, to = %to_page_id))]
+    pub fn link_overflow_pages(
+        &self,
+        from_page_id: PageId,
+        to_page_id: PageId,
+    ) -> PagerResult<()> {
+        use crate::pager::page::OverflowPageHeader;
+        
+        debug!("Linking overflow pages");
+        
+        // Read the current page
+        let page = self.read_page(from_page_id)?;
+        
+        // Parse the overflow header
+        let mut header = OverflowPageHeader::from_bytes(page.data())?;
+        
+        // Update next_page_id
+        header.next_page_id = to_page_id.as_u64() as u32;
+        
+        // Extract the data (skip header)
+        let data = &page.data()[OverflowPageHeader::SIZE..];
+        
+        // Write updated page
+        self.write_overflow_page(from_page_id, data, Some(to_page_id))?;
+        
+        Ok(())
+    }
+
+    /// Allocate and write a chain of overflow pages for the given data
+    ///
+    /// Returns a vector of allocated page IDs in chain order.
+    #[instrument(skip(self, data), fields(data_len = data.len()))]
+    pub fn allocate_overflow_chain(&self, data: &[u8]) -> PagerResult<Vec<PageId>> {
+        use crate::pager::page::OverflowPageHeader;
+        
+        debug!("Allocating overflow chain");
+        
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        
+        // Calculate how much data fits in each overflow page
+        let page_data_size = self.config.page_size.data_size() - OverflowPageHeader::SIZE;
+        
+        // Calculate number of pages needed
+        let num_pages = (data.len() + page_data_size - 1) / page_data_size;
+        
+        // Allocate all pages first
+        let mut page_ids = Vec::with_capacity(num_pages);
+        for _ in 0..num_pages {
+            let page_id = self.allocate_page(PageType::Overflow)?;
+            page_ids.push(page_id);
+        }
+        
+        // Write data to pages
+        for (i, page_id) in page_ids.iter().enumerate() {
+            let start = i * page_data_size;
+            let end = ((i + 1) * page_data_size).min(data.len());
+            let chunk = &data[start..end];
+            
+            let next_page_id = if i + 1 < page_ids.len() {
+                Some(page_ids[i + 1])
+            } else {
+                None
+            };
+            
+            self.write_overflow_page(*page_id, chunk, next_page_id)?;
+        }
+        
+        counter!("pager.overflow_chain_allocated").increment(1);
+        histogram!("pager.overflow_chain_pages").record(num_pages as f64);
+        
+        Ok(page_ids)
+    }
+
+    /// Read data from an overflow page chain
+    ///
+    /// Reads and validates all pages in the chain, returning the complete data.
+    #[instrument(skip(self), fields(first_page = %first_page_id))]
+    pub fn read_overflow_chain(&self, first_page_id: PageId) -> PagerResult<Vec<u8>> {
+        use crate::pager::page::{calculate_crc32, OverflowPageHeader};
+        
+        debug!("Reading overflow chain");
+        
+        let mut result = Vec::new();
+        let mut current_page_id = first_page_id;
+        let mut pages_read = 0;
+        
+        loop {
+            // Read the page
+            let page = self.read_page(current_page_id)?;
+            
+            // Verify it's an overflow page
+            if page.page_type() != PageType::Overflow {
+                return Err(PagerError::InternalError(format!(
+                    "Expected overflow page, got {:?}",
+                    page.page_type()
+                )));
+            }
+            
+            // Parse header
+            let header = OverflowPageHeader::from_bytes(page.data())?;
+            
+            // Extract data (skip header)
+            let data_start = OverflowPageHeader::SIZE;
+            let data_end = data_start + header.data_length as usize;
+            
+            if data_end > page.data().len() {
+                return Err(PagerError::InternalError(format!(
+                    "Overflow page data length {} exceeds page size",
+                    header.data_length
+                )));
+            }
+            
+            let data = &page.data()[data_start..data_end];
+            
+            // Verify checksum
+            let actual_checksum = calculate_crc32(data);
+            if actual_checksum != header.checksum {
+                return Err(PagerError::InternalError(format!(
+                    "Overflow page checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
+                    header.checksum, actual_checksum
+                )));
+            }
+            
+            // Append data to result
+            result.extend_from_slice(data);
+            pages_read += 1;
+            
+            // Check if this is the last page
+            if header.is_last() {
+                break;
+            }
+            
+            // Move to next page
+            current_page_id = PageId::from(header.next_page_id as u64);
+        }
+        
+        counter!("pager.overflow_chain_read").increment(1);
+        histogram!("pager.overflow_chain_pages_read").record(pages_read as f64);
+        
+        Ok(result)
+    }
+
+    /// Free all pages in an overflow chain
+    ///
+    /// Walks the chain and frees each page.
+    #[instrument(skip(self), fields(first_page = %first_page_id))]
+    pub fn free_overflow_chain(&self, first_page_id: PageId) -> PagerResult<()> {
+        use crate::pager::page::OverflowPageHeader;
+        
+        debug!("Freeing overflow chain");
+        
+        let mut current_page_id = first_page_id;
+        let mut pages_freed = 0;
+        
+        loop {
+            // Read the page to get the next page ID
+            let page = self.read_page(current_page_id)?;
+            
+            // Verify it's an overflow page
+            if page.page_type() != PageType::Overflow {
+                return Err(PagerError::InternalError(format!(
+                    "Expected overflow page, got {:?}",
+                    page.page_type()
+                )));
+            }
+            
+            // Parse header to get next page
+            let header = OverflowPageHeader::from_bytes(page.data())?;
+            let next_page_id = if header.is_last() {
+                None
+            } else {
+                Some(PageId::from(header.next_page_id as u64))
+            };
+            
+            // Free the current page
+            self.free_page(current_page_id)?;
+            pages_freed += 1;
+            
+            // Move to next page or exit
+            match next_page_id {
+                Some(next_id) => current_page_id = next_id,
+                None => break,
+            }
+        }
+        
+        counter!("pager.overflow_chain_freed").increment(1);
+        histogram!("pager.overflow_chain_pages_freed").record(pages_freed as f64);
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]
