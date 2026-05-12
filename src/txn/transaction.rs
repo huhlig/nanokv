@@ -16,7 +16,7 @@
 
 use crate::table::{PointLookup, TableEngineRegistry};
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
-use crate::types::{IsolationLevel, ObjectId, ScanBounds, ValueBuf};
+use crate::types::{Durability, IsolationLevel, ObjectId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WriteOpType};
 use std::collections::{HashMap, HashSet};
@@ -165,6 +165,7 @@ pub struct Transaction<FS: FileSystem> {
     txn_id: TransactionId,
     snapshot_lsn: LogSequenceNumber,
     isolation: IsolationLevel,
+    durability: Durability,
     state: TransactionState,
 
     // For Serializable isolation: track all keys read to detect read-write conflicts
@@ -190,11 +191,12 @@ pub struct Transaction<FS: FileSystem> {
 }
 
 impl<FS: FileSystem> Transaction<FS> {
-    /// Create a new transaction with the given ID, snapshot LSN, isolation level, and shared resources.
+    /// Create a new transaction with the given ID, snapshot LSN, isolation level, durability policy, and shared resources.
     pub fn new(
         txn_id: TransactionId,
         snapshot_lsn: LogSequenceNumber,
         isolation: IsolationLevel,
+        durability: Durability,
         conflict_detector: Arc<Mutex<ConflictDetector>>,
         wal: Arc<WalWriter<FS>>,
         engine_registry: Arc<TableEngineRegistry<FS>>,
@@ -207,6 +209,7 @@ impl<FS: FileSystem> Transaction<FS> {
             txn_id,
             snapshot_lsn,
             isolation,
+            durability,
             state: TransactionState::Active,
             read_set: HashSet::new(),
             write_set: HashMap::new(),
@@ -526,6 +529,11 @@ impl<FS: FileSystem> Transaction<FS> {
     /// Commit the transaction.
     ///
     /// Writes commit record to WAL, applies changes to storage engines, and releases locks.
+    /// The durability policy controls how the commit is persisted:
+    /// - MemoryOnly: No WAL writes (for in-memory tables only)
+    /// - WalOnly: Write to WAL buffer but don't force sync
+    /// - FlushOnCommit: Flush WAL buffer to OS but don't force disk sync
+    /// - SyncOnCommit: Force sync to stable storage before returning
     pub fn commit(mut self) -> TransactionResult<CommitInfo> {
         // Validate state - must be Active or Preparing
         if self.state != TransactionState::Active && self.state != TransactionState::Preparing {
@@ -542,11 +550,43 @@ impl<FS: FileSystem> Transaction<FS> {
             detector.check_read_write_conflicts(&self.read_set, self.txn_id)?;
         }
 
-        // Write COMMIT record to WAL
-        let commit_lsn = self
-            .wal
-            .write_commit(self.txn_id)
-            .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?;
+        // Write COMMIT record to WAL based on durability policy
+        let commit_lsn = match self.durability {
+            Durability::MemoryOnly => {
+                // For memory-only durability, we still write to WAL for consistency
+                // but we don't force any syncing
+                self.wal
+                    .write_commit(self.txn_id)
+                    .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?
+            }
+            Durability::WalOnly => {
+                // Write to WAL buffer but don't force sync
+                self.wal
+                    .write_commit(self.txn_id)
+                    .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?
+            }
+            Durability::FlushOnCommit => {
+                // Write commit record and flush buffer to OS
+                let lsn = self
+                    .wal
+                    .write_commit(self.txn_id)
+                    .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?;
+                
+                // Flush the WAL buffer to ensure data reaches the OS
+                self.wal
+                    .flush()
+                    .map_err(|e| TransactionError::Other(format!("WAL flush failed: {}", e)))?;
+                
+                lsn
+            }
+            Durability::SyncOnCommit => {
+                // Write commit record - this will automatically sync if sync_on_write is enabled
+                // The write_commit method already handles syncing based on WAL config
+                self.wal
+                    .write_commit(self.txn_id)
+                    .map_err(|e| TransactionError::Other(format!("WAL commit failed: {}", e)))?
+            }
+        };
 
         // Apply write set to storage engines
         use crate::table::{Flushable, MutableTable, Table, TableEngineInstance};

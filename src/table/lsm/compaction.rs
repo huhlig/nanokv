@@ -798,7 +798,7 @@ mod tests {
         let job2 = CompactionJob::new(1, 2, vec![], vec![], 2.0);
         let job3 = CompactionJob::new(2, 3, vec![], vec![], 1.0);
 
-        let mut jobs = vec![job1, job2, job3];
+        let mut jobs = [job1, job2, job3];
         jobs.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap_or(Ordering::Equal));
 
         // Should be sorted by priority (descending)

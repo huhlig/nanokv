@@ -22,7 +22,7 @@
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::TableEngineRegistry;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
-use nanokv::types::{IsolationLevel, ObjectId};
+use nanokv::types::{Durability, IsolationLevel, ObjectId};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::sync::{Arc, Mutex, RwLock};
@@ -49,6 +49,7 @@ fn create_test_transaction(
         txn_id,
         snapshot_lsn,
         isolation,
+        Durability::SyncOnCommit,
         conflict_detector,
         wal,
         engine_registry,

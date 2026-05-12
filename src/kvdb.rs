@@ -38,15 +38,15 @@
 
 use crate::pager::{Page, PageId, PageType, Pager, PagerConfig};
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableInfo, TableOptions, TableEngineKind, TableEngineRegistry};
+use crate::table::{TableEngineRegistry, TableInfo, TableOptions};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
-use crate::types::{ObjectId, ValueBuf};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
+use crate::types::{ObjectId, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Top-level embedded database.
 ///
@@ -58,25 +58,25 @@ pub struct Database<FS: FileSystem> {
     // Transaction management
     /// Shared conflict detector for coordinating transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
-    
+
     /// Next transaction ID to allocate (lock-free atomic counter)
     next_txn_id: Arc<AtomicU64>,
-    
+
     /// Current LSN for snapshot isolation
     current_lsn: Arc<RwLock<LogSequenceNumber>>,
-    
+
     // Catalog management
     /// Unified catalog: maps table/index names to their metadata
     /// Both regular tables and indexes are stored here
     table_catalog: Arc<RwLock<HashMap<String, TableInfo>>>,
-    
+
     // Storage layer
     /// Write-ahead log for durability
     wal: Arc<WalWriter<FS>>,
-    
+
     /// Pager for disk I/O
     pager: Arc<Pager<FS>>,
-    
+
     /// Table engine registry for managing storage engine instances
     engine_registry: Arc<TableEngineRegistry<FS>>,
 }
@@ -87,15 +87,15 @@ impl<FS: FileSystem> Database<FS> {
         let wal_config = WalWriterConfig::default();
         let wal = WalWriter::create(fs, wal_path, wal_config)
             .map_err(|e| DatabaseError::wal_failed(format!("Failed to create WAL: {}", e)))?;
-        
+
         // Create pager for database file with default config
         let pager_config = PagerConfig::default();
         let pager = Pager::create(fs, db_path, pager_config)
             .map_err(|e| DatabaseError::pager_failed(format!("Failed to create pager: {}", e)))?;
         let pager = Arc::new(pager);
-        
+
         let engine_registry = Arc::new(TableEngineRegistry::new(pager.clone()));
-        
+
         let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(AtomicU64::new(1)),
@@ -105,29 +105,29 @@ impl<FS: FileSystem> Database<FS> {
             pager,
             engine_registry,
         };
-        
+
         // Initialize empty catalog page
         db.persist_catalog()?;
-        
+
         Ok(db)
     }
-    
+
     /// Open an existing database instance.
     pub fn open(fs: &FS, wal_path: &str, db_path: &str) -> Result<Self, DatabaseError> {
         let wal_config = WalWriterConfig::default();
         let wal = WalWriter::open(fs, wal_path, wal_config)
             .map_err(|e| DatabaseError::wal_failed(format!("Failed to open WAL: {}", e)))?;
-        
+
         // Get current LSN from WAL
         let current_lsn = wal.current_lsn();
-        
+
         // Open pager for database file
         let pager = Pager::open(fs, db_path)
             .map_err(|e| DatabaseError::pager_failed(format!("Failed to open pager: {}", e)))?;
         let pager = Arc::new(pager);
-        
+
         let engine_registry = Arc::new(TableEngineRegistry::new(pager.clone()));
-        
+
         let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(AtomicU64::new(1)),
@@ -137,10 +137,10 @@ impl<FS: FileSystem> Database<FS> {
             pager,
             engine_registry,
         };
-        
+
         // Recover catalog from disk
         db.recover_catalog()?;
-        
+
         Ok(db)
     }
 
@@ -154,12 +154,14 @@ impl<FS: FileSystem> Database<FS> {
     pub fn begin_read(&self) -> Result<Transaction<FS>, DatabaseError> {
         let txn_id = self.allocate_txn_id();
         let snapshot_lsn = *self.current_lsn.read().unwrap();
-        
+
         // Transaction::new will write BEGIN to WAL
+        // Read-only transactions use WalOnly durability (no sync needed)
         Ok(Transaction::new(
             txn_id,
             snapshot_lsn,
             IsolationLevel::ReadCommitted,
+            Durability::WalOnly,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
             Arc::clone(&self.engine_registry),
@@ -169,15 +171,15 @@ impl<FS: FileSystem> Database<FS> {
 
     /// Begin a write transaction with the requested durability policy.
     pub fn begin_write(&self, durability: Durability) -> Result<Transaction<FS>, DatabaseError> {
-        let _ = durability; // TODO: Use durability policy
         let txn_id = self.allocate_txn_id();
         let snapshot_lsn = *self.current_lsn.read().unwrap();
-        
+
         // Transaction::new will write BEGIN to WAL
         Ok(Transaction::new(
             txn_id,
             snapshot_lsn,
             IsolationLevel::ReadCommitted,
+            durability,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
             Arc::clone(&self.engine_registry),
@@ -192,13 +194,15 @@ impl<FS: FileSystem> Database<FS> {
     /// (e.g., too old and already garbage collected).
     pub fn begin_read_at(&self, lsn: LogSequenceNumber) -> Result<Transaction<FS>, DatabaseError> {
         let txn_id = self.allocate_txn_id();
-        
+
         // Transaction::new will write BEGIN to WAL
         // TODO: Validate that LSN is still available
+        // Read-only transactions use WalOnly durability (no sync needed)
         Ok(Transaction::new(
             txn_id,
             lsn,
             IsolationLevel::ReadCommitted,
+            Durability::WalOnly,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
             Arc::clone(&self.engine_registry),
@@ -219,42 +223,43 @@ impl<FS: FileSystem> Database<FS> {
     /// - JSON data: Serialized Vec<TableInfo>
     fn persist_catalog(&self) -> Result<(), DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
-        
+
         // Collect all table info into a vector
         let tables: Vec<TableInfo> = catalog.values().cloned().collect();
-        
+
         // Serialize to JSON
         let json_data = serde_json::to_vec(&tables)
             .map_err(|e| DatabaseError::other(format!("Failed to serialize catalog: {}", e)))?;
-        
+
         // Catalog page is always page 2 (page 0 = header, page 1 = superblock, page 2 = catalog)
         // We use a fixed page ID rather than allocating to ensure consistency
         let catalog_page_id = PageId::from(2);
-        
+
         // Try to allocate the catalog page if it doesn't exist yet
         // This will fail if page already exists, which is fine - we'll just write to it
         let _ = self.pager.allocate_page(PageType::Catalog);
-        
+
         // Prepare page data with version and count header
         let version: u32 = 1; // Catalog format version
         let count: u32 = tables.len() as u32;
-        
+
         let mut page_data = Vec::with_capacity(8 + json_data.len());
         page_data.extend_from_slice(&version.to_le_bytes());
         page_data.extend_from_slice(&count.to_le_bytes());
         page_data.extend_from_slice(&json_data);
-        
+
         // Create page with catalog data
         let mut page = Page::new(catalog_page_id, PageType::Catalog, page_data.len());
         page.data = page_data;
-        
+
         // Write to catalog page
-        self.pager.write_page(&page)
-            .map_err(|e| DatabaseError::pager_failed(format!("Failed to write catalog page: {}", e)))?;
-        
+        self.pager.write_page(&page).map_err(|e| {
+            DatabaseError::pager_failed(format!("Failed to write catalog page: {}", e))
+        })?;
+
         Ok(())
     }
-    
+
     /// Recover the catalog from disk.
     ///
     /// Reads the catalog page and deserializes the table metadata.
@@ -262,20 +267,21 @@ impl<FS: FileSystem> Database<FS> {
     fn recover_catalog(&self) -> Result<(), DatabaseError> {
         // Catalog page is always page 2 (page 0 = header, page 1 = superblock, page 2 = catalog)
         let catalog_page_id = PageId::from(2);
-        
+
         // Read catalog page
-        let page = self.pager.read_page(catalog_page_id)
-            .map_err(|e| DatabaseError::pager_failed(format!("Failed to read catalog page: {}", e)))?;
-        
+        let page = self.pager.read_page(catalog_page_id).map_err(|e| {
+            DatabaseError::pager_failed(format!("Failed to read catalog page: {}", e))
+        })?;
+
         // Check if page is empty (new database)
         if page.data.is_empty() || page.data.len() < 8 {
             return Ok(()); // Empty catalog is valid for new databases
         }
-        
+
         // Parse header
         let version = u32::from_le_bytes(page.data[0..4].try_into().unwrap());
         let count = u32::from_le_bytes(page.data[4..8].try_into().unwrap());
-        
+
         // Validate version
         if version != 1 {
             return Err(DatabaseError::other(format!(
@@ -283,12 +289,12 @@ impl<FS: FileSystem> Database<FS> {
                 version
             )));
         }
-        
+
         // Deserialize JSON data
         let json_data = &page.data[8..];
         let tables: Vec<TableInfo> = serde_json::from_slice(json_data)
             .map_err(|e| DatabaseError::other(format!("Failed to deserialize catalog: {}", e)))?;
-        
+
         // Validate count
         if tables.len() != count as usize {
             return Err(DatabaseError::other(format!(
@@ -297,52 +303,60 @@ impl<FS: FileSystem> Database<FS> {
                 tables.len()
             )));
         }
-        
+
         // Populate catalog and reopen engines
         let mut catalog = self.table_catalog.write().unwrap();
         catalog.clear();
-        
+
         for table_info in tables {
             // Reopen the storage engine for this table if it has a root page
             // Memory tables don't persist, so they start fresh
             if let Some(root_location) = table_info.root {
-                let engine = self.engine_registry.open_engine(
-                    table_info.id,
-                    table_info.name.clone(),
-                    &table_info.options,
-                    root_location.page_id,
-                ).map_err(|e| DatabaseError::other(format!(
-                    "Failed to reopen storage engine for table '{}': {}",
-                    table_info.name, e
-                )))?;
-                
+                let engine = self
+                    .engine_registry
+                    .open_engine(
+                        table_info.id,
+                        table_info.name.clone(),
+                        &table_info.options,
+                        root_location.page_id,
+                    )
+                    .map_err(|e| {
+                        DatabaseError::other(format!(
+                            "Failed to reopen storage engine for table '{}': {}",
+                            table_info.name, e
+                        ))
+                    })?;
+
                 // Register the reopened engine
-                self.engine_registry.register(engine)
-                    .map_err(|e| DatabaseError::other(format!(
+                self.engine_registry.register(engine).map_err(|e| {
+                    DatabaseError::other(format!(
                         "Failed to register storage engine for table '{}': {}",
                         table_info.name, e
-                    )))?;
+                    ))
+                })?;
             } else {
                 // Memory table or table without root - create fresh engine
-                let (engine, _root_page_id) = self.engine_registry.create_engine(
-                    table_info.id,
-                    table_info.name.clone(),
-                    &table_info.options,
-                ).map_err(|e| DatabaseError::other(format!(
-                    "Failed to create storage engine for table '{}': {}",
-                    table_info.name, e
-                )))?;
-                
-                self.engine_registry.register(engine)
-                    .map_err(|e| DatabaseError::other(format!(
+                let (engine, _root_page_id) = self
+                    .engine_registry
+                    .create_engine(table_info.id, table_info.name.clone(), &table_info.options)
+                    .map_err(|e| {
+                        DatabaseError::other(format!(
+                            "Failed to create storage engine for table '{}': {}",
+                            table_info.name, e
+                        ))
+                    })?;
+
+                self.engine_registry.register(engine).map_err(|e| {
+                    DatabaseError::other(format!(
                         "Failed to register storage engine for table '{}': {}",
                         table_info.name, e
-                    )))?;
+                    ))
+                })?;
             }
-            
+
             catalog.insert(table_info.name.clone(), table_info);
         }
-        
+
         Ok(())
     }
 
@@ -356,7 +370,7 @@ impl<FS: FileSystem> Database<FS> {
         options: TableOptions,
     ) -> Result<ObjectId, DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
-        
+
         // Check if table already exists
         if catalog.contains_key(name) {
             return Err(DatabaseError::table_already_exists(name));
@@ -364,25 +378,28 @@ impl<FS: FileSystem> Database<FS> {
 
         // Allocate new table ID
         let table_id = ObjectId::from(catalog.len() as u64 + 1);
-        
+
         // Get current LSN for creation timestamp
         let created_lsn = *self.current_lsn.read().unwrap();
-        
+
         // Create the storage engine instance
-        let (engine, root_page_id) = self.engine_registry.create_engine(table_id, name.to_string(), &options)
+        let (engine, root_page_id) = self
+            .engine_registry
+            .create_engine(table_id, name.to_string(), &options)
             .map_err(|e| DatabaseError::other(format!("Failed to create storage engine: {}", e)))?;
-        
+
         // Register the engine
-        self.engine_registry.register(engine)
-            .map_err(|e| DatabaseError::other(format!("Failed to register storage engine: {}", e)))?;
-        
+        self.engine_registry.register(engine).map_err(|e| {
+            DatabaseError::other(format!("Failed to register storage engine: {}", e))
+        })?;
+
         // Create table info with root page location
         let root = root_page_id.map(|page_id| crate::pager::PhysicalLocation {
             page_id,
             offset: 0,
             length: 0,
         });
-        
+
         let table_info = TableInfo {
             id: table_id,
             name: name.to_string(),
@@ -390,16 +407,16 @@ impl<FS: FileSystem> Database<FS> {
             root,
             created_lsn,
         };
-        
+
         // Add to catalog
         catalog.insert(name.to_string(), table_info);
-        
+
         // Release lock before persisting to avoid deadlock
         drop(catalog);
-        
+
         // Persist catalog to disk immediately
         self.persist_catalog()?;
-        
+
         Ok(table_id)
     }
 
@@ -409,22 +426,22 @@ impl<FS: FileSystem> Database<FS> {
     /// the current LSN advances (simulating a commit).
     pub fn drop_table(&self, table: ObjectId) -> Result<(), DatabaseError> {
         let mut catalog = self.table_catalog.write().unwrap();
-        
+
         // Find and remove the table
         let table_name = catalog
             .iter()
             .find(|(_, info)| info.id == table)
             .map(|(name, _)| name.clone());
-        
+
         if let Some(name) = table_name {
             catalog.remove(&name);
-            
+
             // Release lock before persisting to avoid deadlock
             drop(catalog);
-            
+
             // Persist catalog to disk immediately
             self.persist_catalog()?;
-            
+
             Ok(())
         } else {
             Err(DatabaseError::not_found(table))
@@ -473,14 +490,14 @@ impl<FS: FileSystem> Database<FS> {
     /// resources.
     pub fn create_snapshot(&self, _name: &str) -> Result<Snapshot, DatabaseError> {
         Err(DatabaseError::invalid_operation(
-            "Snapshot creation not yet implemented".to_string()
+            "Snapshot creation not yet implemented".to_string(),
         ))
     }
 
     /// List all active snapshots.
     pub fn list_snapshots(&self) -> Result<Vec<Snapshot>, DatabaseError> {
         Err(DatabaseError::invalid_operation(
-            "Snapshot listing not yet implemented".to_string()
+            "Snapshot listing not yet implemented".to_string(),
         ))
     }
 
@@ -489,7 +506,7 @@ impl<FS: FileSystem> Database<FS> {
     /// After releasing, the snapshot LSN may no longer be available for reads.
     pub fn release_snapshot(&self, _snapshot_id: SnapshotId) -> Result<(), DatabaseError> {
         Err(DatabaseError::invalid_operation(
-            "Snapshot release not yet implemented".to_string()
+            "Snapshot release not yet implemented".to_string(),
         ))
     }
 
@@ -530,12 +547,7 @@ impl<FS: FileSystem> Database<FS> {
     /// - The key already exists (use `upsert` for update-or-insert)
     /// - Index maintenance fails
     /// - Transaction commit fails
-    pub fn insert(
-        &self,
-        table: ObjectId,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), DatabaseError> {
+    pub fn insert(&self, table: ObjectId, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -552,8 +564,9 @@ impl<FS: FileSystem> Database<FS> {
         txn.put(table, key, value)?;
 
         // Commit transaction
-        txn.commit()
-            .map_err(|e| DatabaseError::transaction_failed(format!("Insert commit failed: {}", e)))?;
+        txn.commit().map_err(|e| {
+            DatabaseError::transaction_failed(format!("Insert commit failed: {}", e))
+        })?;
 
         Ok(())
     }
@@ -567,12 +580,7 @@ impl<FS: FileSystem> Database<FS> {
     /// - The key does not exist (use `upsert` for insert-or-update)
     /// - Index maintenance fails
     /// - Transaction commit fails
-    pub fn update(
-        &self,
-        table: ObjectId,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), DatabaseError> {
+    pub fn update(&self, table: ObjectId, key: &[u8], value: &[u8]) -> Result<(), DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -581,15 +589,17 @@ impl<FS: FileSystem> Database<FS> {
         let mut txn = self.begin_write(Durability::SyncOnCommit)?;
 
         // Get old value for index maintenance
-        let old_value = txn.get(table, key)?
+        let _old_value = txn
+            .get(table, key)?
             .ok_or_else(|| DatabaseError::key_not_found(table, key))?;
 
         // Update in table
         txn.put(table, key, value)?;
 
         // Commit transaction
-        txn.commit()
-            .map_err(|e| DatabaseError::transaction_failed(format!("Update commit failed: {}", e)))?;
+        txn.commit().map_err(|e| {
+            DatabaseError::transaction_failed(format!("Update commit failed: {}", e))
+        })?;
 
         Ok(())
     }
@@ -598,12 +608,7 @@ impl<FS: FileSystem> Database<FS> {
     ///
     /// This is a convenience method that inserts if the key doesn't exist,
     /// or updates if it does.
-    pub fn upsert(
-        &self,
-        table: ObjectId,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<bool, DatabaseError> {
+    pub fn upsert(&self, table: ObjectId, key: &[u8], value: &[u8]) -> Result<bool, DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -619,8 +624,9 @@ impl<FS: FileSystem> Database<FS> {
         txn.put(table, key, value)?;
 
         // Commit transaction
-        txn.commit()
-            .map_err(|e| DatabaseError::transaction_failed(format!("Upsert commit failed: {}", e)))?;
+        txn.commit().map_err(|e| {
+            DatabaseError::transaction_failed(format!("Upsert commit failed: {}", e))
+        })?;
 
         Ok(is_update)
     }
@@ -629,11 +635,7 @@ impl<FS: FileSystem> Database<FS> {
     ///
     /// This is a convenience method that begins a read transaction and
     /// retrieves the value.
-    pub fn get(
-        &self,
-        table: ObjectId,
-        key: &[u8],
-    ) -> Result<Option<ValueBuf>, DatabaseError> {
+    pub fn get(&self, table: ObjectId, key: &[u8]) -> Result<Option<ValueBuf>, DatabaseError> {
         // Validate table exists
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -647,11 +649,7 @@ impl<FS: FileSystem> Database<FS> {
     /// Delete a key from a table with automatic index maintenance.
     ///
     /// Returns true if the key existed and was deleted, false if it didn't exist.
-    pub fn delete(
-        &self,
-        table: ObjectId,
-        key: &[u8],
-    ) -> Result<bool, DatabaseError> {
+    pub fn delete(&self, table: ObjectId, key: &[u8]) -> Result<bool, DatabaseError> {
         // Validate table exists and is a regular table
         if !self.is_table(table)? {
             return Err(DatabaseError::not_a_table(table));
@@ -670,8 +668,9 @@ impl<FS: FileSystem> Database<FS> {
         let deleted = txn.delete(table, key)?;
 
         // Commit transaction
-        txn.commit()
-            .map_err(|e| DatabaseError::transaction_failed(format!("Delete commit failed: {}", e)))?;
+        txn.commit().map_err(|e| {
+            DatabaseError::transaction_failed(format!("Delete commit failed: {}", e))
+        })?;
 
         Ok(deleted)
     }
@@ -691,7 +690,6 @@ impl<FS: FileSystem> Database<FS> {
             table_id: table,
         })
     }
-
 }
 
 /// Table handle for ergonomic access to a specific table.
@@ -808,20 +806,14 @@ impl DatabaseError {
     pub fn key_already_exists(table: ObjectId, key: &[u8]) -> Self {
         Self {
             kind: DatabaseErrorKind::KeyAlreadyExists,
-            message: format!(
-                "Key {:?} already exists in table {:?}",
-                key, table
-            ),
+            message: format!("Key {:?} already exists in table {:?}", key, table),
         }
     }
 
     pub fn key_not_found(table: ObjectId, key: &[u8]) -> Self {
         Self {
             kind: DatabaseErrorKind::KeyNotFound,
-            message: format!(
-                "Key {:?} not found in table {:?}",
-                key, table
-            ),
+            message: format!("Key {:?} not found in table {:?}", key, table),
         }
     }
 
