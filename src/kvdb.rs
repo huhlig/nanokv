@@ -38,8 +38,7 @@
 
 use crate::pager::{Page, PageId, PageType, Pager, PagerConfig};
 use crate::snap::{Snapshot, SnapshotId};
-use crate::table::{TableInfo, TableOptions, IndexMetadata, IndexField, IndexConsistency, TableEngineKind};
-use crate::table_registry::TableEngineRegistry;
+use crate::table::{TableInfo, TableOptions, IndexMetadata, IndexField, IndexConsistency, TableEngineKind, TableEngineRegistry};
 use crate::txn::{ConflictDetector, Transaction, TransactionId};
 use crate::types::{ObjectId, ValueBuf};
 use crate::types::{ConsistencyGuarantees, Durability, IsolationLevel};
@@ -47,6 +46,7 @@ use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Top-level embedded database.
 ///
@@ -59,8 +59,8 @@ pub struct Database<FS: FileSystem> {
     /// Shared conflict detector for coordinating transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
     
-    /// Next transaction ID to allocate
-    next_txn_id: Arc<Mutex<u64>>,
+    /// Next transaction ID to allocate (lock-free atomic counter)
+    next_txn_id: Arc<AtomicU64>,
     
     /// Current LSN for snapshot isolation
     current_lsn: Arc<RwLock<LogSequenceNumber>>,
@@ -98,7 +98,7 @@ impl<FS: FileSystem> Database<FS> {
         
         let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
-            next_txn_id: Arc::new(Mutex::new(1)),
+            next_txn_id: Arc::new(AtomicU64::new(1)),
             current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
             wal: Arc::new(wal),
@@ -130,7 +130,7 @@ impl<FS: FileSystem> Database<FS> {
         
         let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
-            next_txn_id: Arc::new(Mutex::new(1)),
+            next_txn_id: Arc::new(AtomicU64::new(1)),
             current_lsn: Arc::new(RwLock::new(current_lsn)),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
             wal: Arc::new(wal),
@@ -144,12 +144,10 @@ impl<FS: FileSystem> Database<FS> {
         Ok(db)
     }
 
-    /// Allocate a new transaction ID.
+    /// Allocate a new transaction ID using lock-free atomic increment.
     fn allocate_txn_id(&self) -> TransactionId {
-        let mut next_id = self.next_txn_id.lock().unwrap();
-        let txn_id = TransactionId::from(*next_id);
-        *next_id += 1;
-        txn_id
+        let txn_id = self.next_txn_id.fetch_add(1, Ordering::SeqCst);
+        TransactionId::from(txn_id)
     }
 
     /// Begin a read-only transaction using the latest stable snapshot.
@@ -157,10 +155,7 @@ impl<FS: FileSystem> Database<FS> {
         let txn_id = self.allocate_txn_id();
         let snapshot_lsn = *self.current_lsn.read().unwrap();
         
-        // Write BEGIN record to WAL
-        self.wal.write_begin(txn_id)
-            .map_err(|e| DatabaseError::wal_failed(format!("Failed to write BEGIN to WAL: {}", e)))?;
-        
+        // Transaction::new will write BEGIN to WAL
         Ok(Transaction::new(
             txn_id,
             snapshot_lsn,
@@ -178,10 +173,7 @@ impl<FS: FileSystem> Database<FS> {
         let txn_id = self.allocate_txn_id();
         let snapshot_lsn = *self.current_lsn.read().unwrap();
         
-        // Write BEGIN record to WAL
-        self.wal.write_begin(txn_id)
-            .map_err(|e| DatabaseError::wal_failed(format!("Failed to write BEGIN to WAL: {}", e)))?;
-        
+        // Transaction::new will write BEGIN to WAL
         Ok(Transaction::new(
             txn_id,
             snapshot_lsn,
@@ -201,10 +193,7 @@ impl<FS: FileSystem> Database<FS> {
     pub fn begin_read_at(&self, lsn: LogSequenceNumber) -> Result<Transaction<FS>, DatabaseError> {
         let txn_id = self.allocate_txn_id();
         
-        // Write BEGIN record to WAL
-        self.wal.write_begin(txn_id)
-            .map_err(|e| DatabaseError::wal_failed(format!("Failed to write BEGIN to WAL: {}", e)))?;
-        
+        // Transaction::new will write BEGIN to WAL
         // TODO: Validate that LSN is still available
         Ok(Transaction::new(
             txn_id,
@@ -621,19 +610,25 @@ impl<FS: FileSystem> Database<FS> {
     /// at the snapshot LSN. Snapshots must be explicitly released to free
     /// resources.
     pub fn create_snapshot(&self, _name: &str) -> Result<Snapshot, DatabaseError> {
-        todo!("Create a named snapshot at the current LSN")
+        Err(DatabaseError::invalid_operation(
+            "Snapshot creation not yet implemented".to_string()
+        ))
     }
 
     /// List all active snapshots.
     pub fn list_snapshots(&self) -> Result<Vec<Snapshot>, DatabaseError> {
-        todo!("Return a list of all active snapshots")
+        Err(DatabaseError::invalid_operation(
+            "Snapshot listing not yet implemented".to_string()
+        ))
     }
 
     /// Release a snapshot, allowing its resources to be reclaimed.
     ///
     /// After releasing, the snapshot LSN may no longer be available for reads.
     pub fn release_snapshot(&self, _snapshot_id: SnapshotId) -> Result<(), DatabaseError> {
-        todo!("Release the specified snapshot and reclaim its resources")
+        Err(DatabaseError::invalid_operation(
+            "Snapshot release not yet implemented".to_string()
+        ))
     }
 
     /// Get the consistency guarantees provided by this database.
