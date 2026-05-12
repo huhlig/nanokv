@@ -565,10 +565,11 @@ pub struct LsmWriter<'a, FS: FileSystem> {
 }
 
 impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
-    fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<()> {
+    fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
         self.pending_changes
             .push((key.to_vec(), Some(value.to_vec())));
-        Ok(())
+        // Return approximate size: key + value + overhead
+        Ok((key.len() + value.len() + 16) as u64)
     }
     
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {

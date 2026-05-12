@@ -44,6 +44,8 @@ fn default_table_options() -> TableOptions {
         encryption: None,
         page_size: None,
         format_version: 1,
+        max_inline_size: None,
+        max_value_size: None,
     }
 }
 
@@ -547,6 +549,8 @@ fn lsm_table_options() -> TableOptions {
         encryption: None,
         page_size: None,
         format_version: 1,
+        max_inline_size: None,
+        max_value_size: None,
     }
 }
 
@@ -778,6 +782,8 @@ fn btree_table_options() -> TableOptions {
         encryption: None,
         page_size: None,
         format_version: 1,
+        max_inline_size: None,
+        max_value_size: None,
     }
 }
 

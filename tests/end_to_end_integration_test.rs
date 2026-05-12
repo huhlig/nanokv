@@ -57,6 +57,8 @@ fn memory_table_options() -> TableOptions {
         encryption: None,
         page_size: None,
         format_version: 1,
+        max_inline_size: None,
+        max_value_size: None,
     }
 }
 
@@ -69,6 +71,8 @@ fn lsm_table_options() -> TableOptions {
         encryption: None,
         page_size: None,
         format_version: 1,
+        max_inline_size: None,
+        max_value_size: None,
     }
 }
 
@@ -249,6 +253,8 @@ fn test_data_persistence_btree_table() {
             encryption: None,
             page_size: None,
             format_version: 1,
+            max_inline_size: None,
+            max_value_size: None,
         }).expect("Failed to create users table");
         
         // Insert test data
@@ -353,6 +359,8 @@ fn test_mixed_operations_with_persistence() {
             encryption: None,
             page_size: None,
             format_version: 1,
+            max_inline_size: None,
+            max_value_size: None,
         }).unwrap();
         let logs_id = db.create_table("logs", lsm_table_options()).unwrap();
         let cache_id = db.create_table("cache", memory_table_options()).unwrap();

@@ -20,7 +20,7 @@
 //! and indexes uniformly using ObjectId, without automatic index maintenance.
 
 use nanokv::pager::{Pager, PagerConfig};
-use nanokv::table_registry::TableEngineRegistry;
+use nanokv::table::TableEngineRegistry;
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::{IsolationLevel, ObjectId};
 use nanokv::vfs::MemoryFileSystem;

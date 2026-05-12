@@ -1054,7 +1054,7 @@ mod tests {
             MergeIterator::new(iterators, Direction::Forward, create_lsn(200)).unwrap();
 
         // Expected order: key0 (from mt1), key1 (from mt2), key2 (from mt2), key3 (from mt2), key4 (from mt1)
-        let expected = vec![
+        let expected = [
             ("key0", "value1_0"),
             ("key1", "value2_1"),
             ("key2", "value2_2"), // mt2 overrides mt1

@@ -410,8 +410,8 @@ impl<'a> TableWriter for MemoryBlobWriter<'a> {
     }
 }
 
-impl<'a> crate::table::MutableTable for MemoryBlobWriter<'a> {
-    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<()> {
+impl<'a> MutableTable for MemoryBlobWriter<'a> {
+    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
         Err(crate::table::TableError::Other(
             "Blob tables do not support put - use BlobTable::put_blob instead".to_string(),
         ))
@@ -423,7 +423,7 @@ impl<'a> crate::table::MutableTable for MemoryBlobWriter<'a> {
         ))
     }
 
-    fn range_delete(&mut self, _bounds: crate::types::ScanBounds) -> TableResult<u64> {
+    fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
         Err(crate::table::TableError::Other(
             "Blob tables do not support range delete".to_string(),
         ))

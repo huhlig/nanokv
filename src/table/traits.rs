@@ -69,6 +69,11 @@ pub struct TableOptions {
     pub encryption: Option<EncryptionKind>,
     pub page_size: Option<usize>,
     pub format_version: u32,
+    /// Maximum size for inline values (stored directly in table pages).
+    /// Values larger than this threshold should use external storage (ValueRef).
+    pub max_inline_size: Option<usize>,
+    /// Maximum value size supported by this table.
+    pub max_value_size: Option<u64>,
 }
 
 /// Index field specification (moved from index module for unification).
@@ -205,6 +210,71 @@ impl TableEngineKind {
 // Table capability traits
 // =============================================================================
 
+/// Streaming read interface for large values.
+///
+/// Allows reading values in chunks without loading the entire value into memory.
+/// Similar to std::io::Read but returns TableResult for consistency.
+pub trait ValueStream {
+    /// Read data into the provided buffer.
+    ///
+    /// Returns the number of bytes read. A return value of 0 indicates EOF.
+    fn read(&mut self, buf: &mut [u8]) -> TableResult<usize>;
+
+    /// Get a size hint for the total value size, if known.
+    ///
+    /// This is useful for pre-allocating buffers or displaying progress.
+    fn size_hint(&self) -> Option<u64>;
+}
+
+/// Streaming write interface for large values.
+///
+/// Allows writing values in chunks without requiring the entire value in memory.
+pub trait ValueSink {
+    /// Write data from the provided buffer.
+    ///
+    /// Returns the number of bytes written.
+    fn write(&mut self, buf: &[u8]) -> TableResult<usize>;
+
+    /// Finish writing and return the total bytes written.
+    ///
+    /// This must be called to ensure all data is persisted.
+    fn finish(self) -> TableResult<u64>;
+}
+
+/// Helper struct for streaming a slice of bytes.
+///
+/// This is used as a default implementation for get_stream when the value
+/// is already in memory.
+pub struct SliceValueStream {
+    data: Vec<u8>,
+    position: usize,
+}
+
+impl SliceValueStream {
+    /// Create a new stream from a vector of bytes.
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data, position: 0 }
+    }
+}
+
+impl ValueStream for SliceValueStream {
+    fn read(&mut self, buf: &mut [u8]) -> TableResult<usize> {
+        let remaining = self.data.len() - self.position;
+        if remaining == 0 {
+            return Ok(0);
+        }
+        
+        let to_copy = remaining.min(buf.len());
+        buf[..to_copy].copy_from_slice(&self.data[self.position..self.position + to_copy]);
+        self.position += to_copy;
+        Ok(to_copy)
+    }
+
+    fn size_hint(&self) -> Option<u64> {
+        Some(self.data.len() as u64)
+    }
+}
+
 /// Point lookup capability with MVCC snapshot support.
 ///
 /// The `snapshot_lsn` parameter enables tables to:
@@ -223,6 +293,33 @@ pub trait PointLookup {
     ///
     /// The value if found and visible at the snapshot, or None otherwise
     fn get(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>>;
+
+    /// Get a streaming reader for a value at a specific snapshot.
+    ///
+    /// This is more efficient for large values as it avoids loading the entire
+    /// value into memory. For small inline values, implementations may wrap
+    /// the value in a simple stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to look up
+    /// * `snapshot_lsn` - The LSN at which to read (for MVCC visibility)
+    ///
+    /// # Returns
+    ///
+    /// A streaming reader if the key exists and is visible, or None otherwise
+    fn get_stream(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Box<dyn ValueStream + '_>>> {
+        // Default implementation: load entire value and wrap in a stream
+        self.get(key, snapshot_lsn).map(|opt| {
+            opt.map(|value_buf| {
+                Box::new(SliceValueStream::new(value_buf.0)) as Box<dyn ValueStream + '_>
+            })
+        })
+    }
 
     /// Check if a key exists at a specific snapshot.
     fn contains(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<bool> {
@@ -260,7 +357,44 @@ pub trait PrefixScan: OrderedScan {
 
 /// Mutation capability.
 pub trait MutableTable {
-    fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<()>;
+    /// Insert or update a key-value pair.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes written (key + value + metadata).
+    fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64>;
+
+    /// Insert or update a key with a streaming value.
+    ///
+    /// This is more efficient for large values as it avoids loading the entire
+    /// value into memory. The stream is consumed during the operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to insert or update
+    /// * `stream` - A streaming reader for the value data
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes written (key + value + metadata).
+    fn put_stream(&mut self, key: &[u8], stream: &mut dyn ValueStream) -> TableResult<u64> {
+        // Default implementation: read entire stream into memory and call put
+        let mut buffer = Vec::new();
+        if let Some(size_hint) = stream.size_hint() {
+            buffer.reserve(size_hint as usize);
+        }
+        
+        let mut temp_buf = vec![0u8; 8192]; // 8KB chunks
+        loop {
+            let n = stream.read(&mut temp_buf)?;
+            if n == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp_buf[..n]);
+        }
+        
+        self.put(key, &buffer)
+    }
 
     fn delete(&mut self, key: &[u8]) -> TableResult<bool>;
 
@@ -1017,6 +1151,57 @@ pub trait Rebuildable {
 
 /// Blob storage table for large binary objects.
 ///
+/// # Deprecation Notice
+///
+/// **This trait is deprecated and will be removed in a future version.**
+///
+/// Use the standard `MutableTable` and `PointLookup` traits instead, which now support
+/// streaming for large values via `put_stream()` and `get_stream()` methods.
+///
+/// ## Migration Guide
+///
+/// ### Before (BlobTable):
+/// ```ignore
+/// let mut blob_table: Box<dyn BlobTable> = ...;
+/// blob_table.put_blob(key, large_data)?;
+/// let data = blob_table.get_blob(key)?;
+/// ```
+///
+/// ### After (MutableTable with streaming):
+/// ```ignore
+/// let mut writer: Box<dyn MutableTable> = ...;
+///
+/// // For small values, use put() directly:
+/// writer.put(key, small_data)?;
+///
+/// // For large values, use put_stream():
+/// let mut stream = create_value_stream(large_data);
+/// writer.put_stream(key, &mut stream)?;
+///
+/// // Reading with get_stream() for large values:
+/// let reader: Box<dyn PointLookup> = ...;
+/// if let Some(mut stream) = reader.get_stream(key, snapshot_lsn)? {
+///     let mut buffer = vec![0u8; 8192];
+///     while let n = stream.read(&mut buffer)? {
+///         if n == 0 { break; }
+///         // Process chunk
+///     }
+/// }
+/// ```
+///
+/// ## Benefits of Migration
+///
+/// 1. **Unified API**: No separate blob-specific methods
+/// 2. **Streaming Support**: Efficient handling of large values
+/// 3. **MVCC Support**: Blob values participate in transactions
+/// 4. **Consistent Behavior**: Same semantics as other table types
+///
+/// ## Configuration
+///
+/// Use `TableOptions` to control value storage:
+/// - `max_inline_size`: Threshold for inline vs. external storage
+/// - `max_value_size`: Maximum supported value size
+///
 /// This specialty trait provides operations for storing and retrieving large
 /// binary objects (blobs) that are too large to fit efficiently in regular
 /// table pages. Different implementations provide different storage strategies:
@@ -1027,6 +1212,10 @@ pub trait Rebuildable {
 ///
 /// Blobs are stored by key and can be retrieved, deleted, or checked for existence.
 /// The trait also provides metadata about blob sizes and storage limits.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use MutableTable with put_stream() and PointLookup with get_stream() instead. See trait documentation for migration guide."
+)]
 pub trait BlobTable {
     fn table_id(&self) -> ObjectId;
 

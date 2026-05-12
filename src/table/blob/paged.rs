@@ -279,7 +279,7 @@ pub struct PagedBlobWriter<'a> {
 }
 
 impl<'a> MutableTable for PagedBlobWriter<'a> {
-    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<()> {
+    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
         Err(crate::table::TableError::Other(
             "Blob tables do not support put - use BlobTable::put_blob instead".to_string(),
         ))

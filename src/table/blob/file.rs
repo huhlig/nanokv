@@ -294,7 +294,7 @@ impl<'a> TableWriter for FileBlobWriter<'a> {
 }
 
 impl<'a> MutableTable for FileBlobWriter<'a> {
-    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<()> {
+    fn put(&mut self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
         Err(crate::table::TableError::Other(
             "Blob tables do not support put - use BlobTable::put_blob instead".to_string(),
         ))
