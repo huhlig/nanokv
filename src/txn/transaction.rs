@@ -191,6 +191,31 @@ pub struct Transaction<FS: FileSystem> {
 }
 
 impl<FS: FileSystem> Transaction<FS> {
+    fn build(
+        txn_id: TransactionId,
+        snapshot_lsn: LogSequenceNumber,
+        isolation: IsolationLevel,
+        durability: Durability,
+        conflict_detector: Arc<Mutex<ConflictDetector>>,
+        wal: Arc<WalWriter<FS>>,
+        engine_registry: Arc<TableEngineRegistry<FS>>,
+        current_lsn: Arc<RwLock<LogSequenceNumber>>,
+    ) -> Self {
+        Self {
+            txn_id,
+            snapshot_lsn,
+            isolation,
+            durability,
+            state: TransactionState::Active,
+            read_set: HashSet::new(),
+            write_set: HashMap::new(),
+            conflict_detector,
+            wal,
+            engine_registry,
+            current_lsn,
+        }
+    }
+
     /// Create a new transaction with the given ID, snapshot LSN, isolation level, durability policy, and shared resources.
     pub fn new(
         txn_id: TransactionId,
@@ -205,19 +230,38 @@ impl<FS: FileSystem> Transaction<FS> {
         // Write BEGIN record to WAL to register the transaction
         let _ = wal.write_begin(txn_id);
 
-        Self {
+        Self::build(
             txn_id,
             snapshot_lsn,
             isolation,
             durability,
-            state: TransactionState::Active,
-            read_set: HashSet::new(),
-            write_set: HashMap::new(),
             conflict_detector,
             wal,
             engine_registry,
             current_lsn,
-        }
+        )
+    }
+
+    /// Create a new read-only transaction without registering it as an active WAL writer transaction.
+    pub fn new_read_only(
+        txn_id: TransactionId,
+        snapshot_lsn: LogSequenceNumber,
+        isolation: IsolationLevel,
+        conflict_detector: Arc<Mutex<ConflictDetector>>,
+        wal: Arc<WalWriter<FS>>,
+        engine_registry: Arc<TableEngineRegistry<FS>>,
+        current_lsn: Arc<RwLock<LogSequenceNumber>>,
+    ) -> Self {
+        Self::build(
+            txn_id,
+            snapshot_lsn,
+            isolation,
+            Durability::WalOnly,
+            conflict_detector,
+            wal,
+            engine_registry,
+            current_lsn,
+        )
     }
 
     /// Record a read operation for conflict detection.

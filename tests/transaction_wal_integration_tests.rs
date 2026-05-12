@@ -19,7 +19,7 @@
 //! These tests verify that transactions correctly integrate with the WAL
 //! for durability and crash recovery.
 
-use nanokv::kvdb::Database;
+use nanokv::kvdb::{Database, DatabaseErrorKind};
 use nanokv::table::{TableEngineKind, TableOptions};
 use nanokv::types::{Bound, Durability, KeyBuf, KeyEncoding, ScanBounds};
 use nanokv::vfs::MemoryFileSystem;
@@ -432,6 +432,104 @@ fn test_transaction_range_delete_rollback() {
     assert_eq!(txn.get(table_id, b"key1").unwrap().unwrap().0, b"value1");
     assert_eq!(txn.get(table_id, b"key2").unwrap().unwrap().0, b"value2");
     assert_eq!(txn.get(table_id, b"key3").unwrap().unwrap().0, b"value3");
+}
+
+#[test]
+fn test_snapshot_lifecycle_create_list_release() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let snapshot = db.create_snapshot("backup-1").unwrap();
+    assert_eq!(snapshot.name, "backup-1");
+    assert_eq!(snapshot.lsn.as_u64(), 0);
+
+    let snapshots = db.list_snapshots().unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0], snapshot);
+
+    db.release_snapshot(snapshot.id).unwrap();
+    assert!(db.list_snapshots().unwrap().is_empty());
+}
+
+#[test]
+fn test_snapshot_duplicate_name_rejected() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    db.create_snapshot("backup").unwrap();
+    let err = db.create_snapshot("backup").unwrap_err();
+    assert_eq!(err.kind, DatabaseErrorKind::InvalidOperation);
+    assert!(err.message.contains("already exists"));
+}
+
+#[test]
+fn test_begin_read_at_named_snapshot_is_allowed_while_pinned() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        txn.put(table_id, b"key1", b"value1").unwrap();
+        txn.commit().unwrap();
+    }
+
+    let snapshot = db.create_snapshot("named-read").unwrap();
+    assert!(snapshot.lsn.as_u64() > 0);
+
+    let historical_txn = db.begin_read_at(snapshot.lsn).unwrap();
+    assert_eq!(
+        historical_txn.snapshot_lsn().as_u64(),
+        snapshot.lsn.as_u64()
+    );
+    assert_eq!(
+        historical_txn.get(table_id, b"key1").unwrap().unwrap().0,
+        b"value1"
+    );
+
+    let current_txn = db.begin_read().unwrap();
+    assert_eq!(current_txn.get(table_id, b"key1").unwrap().unwrap().0, b"value1");
+}
+
+#[test]
+fn test_begin_read_at_unpinned_lsn_rejected_after_snapshot_release() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        txn.put(table_id, b"key1", b"value1").unwrap();
+        txn.commit().unwrap();
+    }
+
+    let snapshot = db.create_snapshot("to-release").unwrap();
+    db.release_snapshot(snapshot.id).unwrap();
+
+    let err = match db.begin_read_at(snapshot.lsn) {
+        Ok(_) => panic!("expected released snapshot LSN to be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind, DatabaseErrorKind::InvalidOperation);
+    assert!(err.message.contains("not pinned"));
+
+    let current_txn = db.begin_read().unwrap();
+    assert_eq!(current_txn.get(table_id, b"key1").unwrap().unwrap().0, b"value1");
+}
+
+#[test]
+fn test_begin_read_at_future_lsn_rejected() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let err = match db.begin_read_at(1_u64.into()) {
+        Ok(_) => panic!("expected future LSN to be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind, DatabaseErrorKind::InvalidOperation);
+    assert!(err.message.contains("not yet committed"));
 }
 
 // Made with Bob

@@ -46,6 +46,7 @@ use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Top-level embedded database.
@@ -62,8 +63,14 @@ pub struct Database<FS: FileSystem> {
     /// Next transaction ID to allocate (lock-free atomic counter)
     next_txn_id: Arc<AtomicU64>,
 
+    /// Next snapshot ID to allocate (lock-free atomic counter)
+    next_snapshot_id: Arc<AtomicU64>,
+
     /// Current LSN for snapshot isolation
     current_lsn: Arc<RwLock<LogSequenceNumber>>,
+
+    /// Active named snapshots pinned by ID.
+    snapshots: Arc<RwLock<HashMap<SnapshotId, Snapshot>>>,
 
     // Catalog management
     /// Unified catalog: maps table/index names to their metadata
@@ -99,7 +106,9 @@ impl<FS: FileSystem> Database<FS> {
         let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(AtomicU64::new(1)),
+            next_snapshot_id: Arc::new(AtomicU64::new(1)),
             current_lsn: Arc::new(RwLock::new(LogSequenceNumber::from(0))),
+            snapshots: Arc::new(RwLock::new(HashMap::new())),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
             wal: Arc::new(wal),
             pager,
@@ -131,7 +140,9 @@ impl<FS: FileSystem> Database<FS> {
         let db = Self {
             conflict_detector: Arc::new(Mutex::new(ConflictDetector::new())),
             next_txn_id: Arc::new(AtomicU64::new(1)),
+            next_snapshot_id: Arc::new(AtomicU64::new(1)),
             current_lsn: Arc::new(RwLock::new(current_lsn)),
+            snapshots: Arc::new(RwLock::new(HashMap::new())),
             table_catalog: Arc::new(RwLock::new(HashMap::new())),
             wal: Arc::new(wal),
             pager,
@@ -150,18 +161,53 @@ impl<FS: FileSystem> Database<FS> {
         TransactionId::from(txn_id)
     }
 
+    fn allocate_snapshot_id(&self) -> SnapshotId {
+        let snapshot_id = self.next_snapshot_id.fetch_add(1, Ordering::SeqCst);
+        SnapshotId::from(snapshot_id)
+    }
+
+    fn current_snapshot_lsn(&self) -> LogSequenceNumber {
+        let current_lsn = *self.current_lsn.read().unwrap();
+        current_lsn.into()
+    }
+
+    fn validate_snapshot_lsn(&self, lsn: LogSequenceNumber) -> Result<(), DatabaseError> {
+        let latest_readable_lsn = self.current_snapshot_lsn();
+
+        if lsn > latest_readable_lsn {
+            return Err(DatabaseError::invalid_operation(format!(
+                "Snapshot LSN {} is not yet committed; latest readable LSN is {}",
+                lsn, latest_readable_lsn
+            )));
+        }
+
+        if lsn == LogSequenceNumber::from(0) {
+            return Ok(());
+        }
+
+        let snapshots = self.snapshots.read().unwrap();
+        let is_pinned = snapshots.values().any(|snapshot| snapshot.lsn == lsn);
+        drop(snapshots);
+
+        if !is_pinned {
+            return Err(DatabaseError::invalid_operation(format!(
+                "Snapshot LSN {} is not pinned by an active named snapshot",
+                lsn
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Begin a read-only transaction using the latest stable snapshot.
     pub fn begin_read(&self) -> Result<Transaction<FS>, DatabaseError> {
         let txn_id = self.allocate_txn_id();
-        let snapshot_lsn = *self.current_lsn.read().unwrap();
+        let snapshot_lsn = self.current_snapshot_lsn();
 
-        // Transaction::new will write BEGIN to WAL
-        // Read-only transactions use WalOnly durability (no sync needed)
-        Ok(Transaction::new(
+        Ok(Transaction::new_read_only(
             txn_id,
             snapshot_lsn,
             IsolationLevel::ReadCommitted,
-            Durability::WalOnly,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
             Arc::clone(&self.engine_registry),
@@ -193,16 +239,13 @@ impl<FS: FileSystem> Database<FS> {
     /// time-travel queries. Returns an error if the LSN is not available
     /// (e.g., too old and already garbage collected).
     pub fn begin_read_at(&self, lsn: LogSequenceNumber) -> Result<Transaction<FS>, DatabaseError> {
+        self.validate_snapshot_lsn(lsn)?;
         let txn_id = self.allocate_txn_id();
 
-        // Transaction::new will write BEGIN to WAL
-        // TODO: Validate that LSN is still available
-        // Read-only transactions use WalOnly durability (no sync needed)
-        Ok(Transaction::new(
+        Ok(Transaction::new_read_only(
             txn_id,
             lsn,
             IsolationLevel::ReadCommitted,
-            Durability::WalOnly,
             Arc::clone(&self.conflict_detector),
             Arc::clone(&self.wal),
             Arc::clone(&self.engine_registry),
@@ -488,26 +531,58 @@ impl<FS: FileSystem> Database<FS> {
     /// The snapshot pins necessary pages/segments to enable consistent reads
     /// at the snapshot LSN. Snapshots must be explicitly released to free
     /// resources.
-    pub fn create_snapshot(&self, _name: &str) -> Result<Snapshot, DatabaseError> {
-        Err(DatabaseError::invalid_operation(
-            "Snapshot creation not yet implemented".to_string(),
-        ))
+    pub fn create_snapshot(&self, name: &str) -> Result<Snapshot, DatabaseError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DatabaseError::invalid_operation(
+                "Snapshot name cannot be empty".to_string(),
+            ));
+        }
+
+        let mut snapshots = self.snapshots.write().unwrap();
+        if snapshots.values().any(|snapshot| snapshot.name == name) {
+            return Err(DatabaseError::invalid_operation(format!(
+                "Snapshot '{}' already exists",
+                name
+            )));
+        }
+
+        let snapshot = Snapshot::new(
+            self.allocate_snapshot_id(),
+            name.to_string(),
+            self.current_snapshot_lsn(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DatabaseError::other(format!("System time error: {}", e)))?
+                .as_secs() as i64,
+            0,
+            self.wal.active_transactions(),
+        );
+
+        snapshots.insert(snapshot.id, snapshot.clone());
+        Ok(snapshot)
     }
 
     /// List all active snapshots.
     pub fn list_snapshots(&self) -> Result<Vec<Snapshot>, DatabaseError> {
-        Err(DatabaseError::invalid_operation(
-            "Snapshot listing not yet implemented".to_string(),
-        ))
+        let mut snapshots: Vec<_> = self.snapshots.read().unwrap().values().cloned().collect();
+        snapshots.sort_by_key(|snapshot| snapshot.id);
+        Ok(snapshots)
     }
 
     /// Release a snapshot, allowing its resources to be reclaimed.
     ///
     /// After releasing, the snapshot LSN may no longer be available for reads.
-    pub fn release_snapshot(&self, _snapshot_id: SnapshotId) -> Result<(), DatabaseError> {
-        Err(DatabaseError::invalid_operation(
-            "Snapshot release not yet implemented".to_string(),
-        ))
+    pub fn release_snapshot(&self, snapshot_id: SnapshotId) -> Result<(), DatabaseError> {
+        let removed = self.snapshots.write().unwrap().remove(&snapshot_id);
+        if removed.is_some() {
+            Ok(())
+        } else {
+            Err(DatabaseError::invalid_operation(format!(
+                "Snapshot {} not found",
+                snapshot_id
+            )))
+        }
     }
 
     /// Get the consistency guarantees provided by this database.
