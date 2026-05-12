@@ -1283,6 +1283,36 @@ impl<FS: FileSystem> SStableReader<FS> {
         // No visible version found (all versions are too new)
         Ok(None)
     }
+    
+    /// Get a streaming reader for a value at a specific snapshot LSN.
+    ///
+    /// This method is similar to `get()` but returns a stream for efficient
+    /// reading of large values. For now, it uses the same implementation as `get()`
+    /// and wraps the result in a SliceValueStream. Future optimization could
+    /// use ValueRef to stream directly from overflow pages.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to look up
+    /// * `snapshot_lsn` - The LSN of the snapshot for visibility checking
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(stream))` - Key found with a visible version
+    /// * `Ok(None)` - Key not found or no visible version
+    /// * `Err(_)` - I/O or corruption error
+    pub fn get_stream(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Box<dyn crate::table::ValueStream + '_>>> {
+        // For now, use the existing get() method and wrap in a stream
+        // Future optimization: Store ValueRef in version chain and stream from overflow pages
+        match self.get(key, snapshot_lsn)? {
+            Some(value) => Ok(Some(Box::new(crate::table::SliceValueStream::new(value)))),
+            None => Ok(None),
+        }
+    }
 
     /// Get metadata about this SSTable.
     pub fn metadata(&self) -> &SStableMetadata {

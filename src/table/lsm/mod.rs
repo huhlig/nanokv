@@ -80,7 +80,7 @@ use crate::table::error::{TableError, TableResult};
 use crate::table::{
     BatchOps, BatchReport, Flushable, MutableTable, OrderedScan, PointLookup, Table,
     TableCapabilities, TableCursor, TableEngineKind, TableReader, TableStatistics,
-    TableWriter, WriteBatch,
+    TableWriter, ValueStream, WriteBatch,
 };
 use crate::txn::TransactionId;
 use crate::types::{Bound, ObjectId, ScanBounds, ValueBuf};
@@ -290,6 +290,25 @@ impl<FS: FileSystem> LsmTree<FS> {
         histogram!("lsm.get_duration").record(start.elapsed().as_secs_f64());
         counter!("lsm.sstable_read").increment(1);
         Ok(None)
+    }
+    
+    /// Get a streaming reader for a value at a specific snapshot.
+    ///
+    /// For now, this uses the same implementation as get_internal and wraps
+    /// the result in a SliceValueStream. Future optimization could use ValueRef
+    /// to stream directly from overflow pages without loading into memory.
+    #[instrument(skip(self, key), fields(key_len = key.len()))]
+    fn get_stream_internal(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Box<dyn ValueStream + '_>>> {
+        // For now, use get_internal and wrap the result
+        // This avoids lifetime issues with the SSTable reader
+        match self.get_internal(key, snapshot_lsn)? {
+            Some(value) => Ok(Some(Box::new(crate::table::SliceValueStream::new(value)))),
+            None => Ok(None),
+        }
     }
     
     /// Insert a key-value pair into the active memtable.
@@ -531,6 +550,14 @@ impl<'a, FS: FileSystem> PointLookup for LsmReader<'a, FS> {
             .get_internal(key, snapshot_lsn)
             .map(|opt| opt.map(ValueBuf))
     }
+    
+    fn get_stream(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<Box<dyn ValueStream + '_>>> {
+        self.tree.get_stream_internal(key, snapshot_lsn)
+    }
 }
 
 impl<'a, FS: FileSystem> OrderedScan for LsmReader<'a, FS> {
@@ -570,6 +597,26 @@ impl<'a, FS: FileSystem> MutableTable for LsmWriter<'a, FS> {
             .push((key.to_vec(), Some(value.to_vec())));
         // Return approximate size: key + value + overhead
         Ok((key.len() + value.len() + 16) as u64)
+    }
+    
+    fn put_stream(&mut self, key: &[u8], stream: &mut dyn ValueStream) -> TableResult<u64> {
+        // For LSM tree, we need to buffer the stream into memory for the memtable
+        // The memtable is in-memory anyway, so we can't avoid this
+        let mut buffer = Vec::new();
+        if let Some(size_hint) = stream.size_hint() {
+            buffer.reserve(size_hint as usize);
+        }
+        
+        let mut temp_buf = vec![0u8; 8192]; // 8KB chunks
+        loop {
+            let n = stream.read(&mut temp_buf)?;
+            if n == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp_buf[..n]);
+        }
+        
+        self.put(key, &buffer)
     }
     
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
