@@ -63,14 +63,38 @@ pub enum PageType {
     BTreeInternal = 3,
     /// B-Tree leaf node
     BTreeLeaf = 4,
-    /// Overflow page (for large values)
-    Overflow = 5,
+    /// Hash table bucket page
+    HashBucket = 5,
+    /// Adaptive Radix Tree (ART) Node4 (up to 4 children)
+    ArtNode4 = 6,
+    /// Adaptive Radix Tree (ART) Node16 (up to 16 children)
+    ArtNode16 = 7,
+    /// Adaptive Radix Tree (ART) Node48 (up to 48 children)
+    ArtNode48 = 8,
+    /// Adaptive Radix Tree (ART) Node256 (up to 256 children)
+    ArtNode256 = 9,
     /// LSM level metadata
-    LsmMeta = 6,
+    LsmMeta = 10,
     /// LSM data page
-    LsmData = 7,
+    LsmData = 11,
     /// Catalog page (table metadata)
-    Catalog = 8,
+    Catalog = 12,
+    /// Overflow page (for large values)
+    Overflow = 13,
+    /// Bloom filter page
+    BloomFilter = 16,
+    /// Inverted index page
+    InvertedIndex = 17,
+    /// R-Tree node page (spatial indexing)
+    RTreeNode = 18,
+    /// Graph adjacency list page
+    GraphAdjList = 19,
+    /// Vector index page (for similarity search)
+    VectorIndex = 20,
+    /// Time series bucket page
+    TimeSeriesBucket = 21,
+    /// Index metadata page
+    IndexMetadata = 33,
 }
 
 impl PageType {
@@ -82,10 +106,22 @@ impl PageType {
             2 => Some(PageType::FreeList),
             3 => Some(PageType::BTreeInternal),
             4 => Some(PageType::BTreeLeaf),
-            5 => Some(PageType::Overflow),
-            6 => Some(PageType::LsmMeta),
-            7 => Some(PageType::LsmData),
-            8 => Some(PageType::Catalog),
+            5 => Some(PageType::HashBucket),
+            6 => Some(PageType::ArtNode4),
+            7 => Some(PageType::ArtNode16),
+            8 => Some(PageType::ArtNode48),
+            9 => Some(PageType::ArtNode256),
+            10 => Some(PageType::LsmMeta),
+            11 => Some(PageType::LsmData),
+            12 => Some(PageType::Catalog),
+            13 => Some(PageType::Overflow),
+            16 => Some(PageType::BloomFilter),
+            17 => Some(PageType::InvertedIndex),
+            18 => Some(PageType::RTreeNode),
+            19 => Some(PageType::GraphAdjList),
+            20 => Some(PageType::VectorIndex),
+            21 => Some(PageType::TimeSeriesBucket),
+            33 => Some(PageType::IndexMetadata),
             _ => None,
         }
     }
