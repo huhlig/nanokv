@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 
-use crate::table::{PointLookup, SearchableTable, TableEngineRegistry};
+use crate::table::{PointLookup, SearchableTable, TableCursor, TableEngineRegistry};
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{Durability, IsolationLevel, ObjectId, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
@@ -499,12 +499,9 @@ impl<FS: FileSystem> Transaction<FS> {
 
     /// Delete a range of keys from an object (table or index).
     ///
-    /// # Implementation Note
-    ///
-    /// Currently not implemented. Full implementation requires:
-    /// 1. Scanning the object at snapshot_lsn to find matching keys
-    /// 2. Recording each deletion in the write set and WAL
-    /// 3. Handling the interaction between range bounds and existing writes
+    /// Scans the object at the transaction snapshot, acquires per-key write locks,
+    /// records delete operations in the WAL, and stores tombstones in the write set.
+    /// Returns the number of keys matched by the snapshot-visible scan.
     pub fn range_delete(&mut self, object: ObjectId, bounds: ScanBounds) -> TransactionResult<u64> {
         // Check if transaction is still active
         if !self.is_active() {
@@ -515,15 +512,96 @@ impl<FS: FileSystem> Transaction<FS> {
             ));
         }
 
-        // TODO: Implement range delete
-        // This requires:
-        // 1. Access to storage engine to scan for keys in range
-        // 2. Recording each deletion in write set and WAL
-        // 3. Counting deleted keys
-        let _ = (object, bounds);
-        Err(TransactionError::Other(
-            "range_delete not yet implemented - requires storage engine integration".to_string(),
-        ))
+        let object_id = object;
+        let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+
+        if let Some(engine) = self.engine_registry.get(object_id) {
+            use crate::table::{OrderedScan, SearchableTable, TableEngineInstance};
+
+            match &engine {
+                TableEngineInstance::PagedBTree(btree) => {
+                    let reader = SearchableTable::reader(btree.as_ref(), self.snapshot_lsn)
+                        .map_err(|e| {
+                            TransactionError::Other(format!("Failed to get BTree reader: {}", e))
+                        })?;
+                    let mut cursor = reader
+                        .scan(bounds.clone(), self.snapshot_lsn)
+                        .map_err(|e| TransactionError::Other(format!("BTree scan failed: {}", e)))?;
+
+                    while cursor.valid() {
+                        if let Some(key) = cursor.key() {
+                            keys_to_delete.push(key.to_vec());
+                        }
+                        cursor.next().map_err(|e| {
+                            TransactionError::Other(format!("BTree cursor next failed: {}", e))
+                        })?;
+                    }
+                }
+                TableEngineInstance::LsmTree(lsm) => {
+                    let reader = SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Failed to get LSM reader: {}", e))
+                    })?;
+                    let mut cursor = reader
+                        .scan(bounds.clone(), self.snapshot_lsn)
+                        .map_err(|e| TransactionError::Other(format!("LSM scan failed: {}", e)))?;
+
+                    while cursor.valid() {
+                        if let Some(key) = cursor.key() {
+                            keys_to_delete.push(key.to_vec());
+                        }
+                        cursor.next().map_err(|e| {
+                            TransactionError::Other(format!("LSM cursor next failed: {}", e))
+                        })?;
+                    }
+                }
+                TableEngineInstance::MemoryBTree(mem) => {
+                    let reader = SearchableTable::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Failed to get Memory BTree reader: {}", e))
+                    })?;
+                    let mut cursor = reader.scan(bounds, self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Memory BTree scan failed: {}", e))
+                    })?;
+
+                    while cursor.valid() {
+                        if let Some(key) = cursor.key() {
+                            keys_to_delete.push(key.to_vec());
+                        }
+                        cursor.next().map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Memory BTree cursor next failed: {}",
+                                e
+                            ))
+                        })?;
+                    }
+                }
+                TableEngineInstance::MemoryBlob(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for blob tables".to_string(),
+                    ));
+                }
+            }
+        }
+
+        for key in &keys_to_delete {
+            let mut detector = self.conflict_detector.lock().unwrap();
+            detector.check_write_conflict(object_id, key, self.txn_id)?;
+            detector.acquire_write_lock(object_id, key.clone(), self.txn_id);
+            drop(detector);
+
+            self.wal
+                .write_operation(
+                    self.txn_id,
+                    object_id,
+                    WriteOpType::Delete,
+                    key.clone(),
+                    vec![],
+                )
+                .map_err(|e| TransactionError::Other(format!("WAL write failed: {}", e)))?;
+
+            self.record_delete(object_id, key.clone());
+        }
+
+        Ok(keys_to_delete.len() as u64)
     }
 
     /// Commit the transaction.

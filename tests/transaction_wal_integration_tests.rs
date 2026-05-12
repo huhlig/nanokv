@@ -21,7 +21,7 @@
 
 use nanokv::kvdb::Database;
 use nanokv::table::{TableEngineKind, TableOptions};
-use nanokv::types::{Durability, KeyEncoding};
+use nanokv::types::{Bound, Durability, KeyBuf, KeyEncoding, ScanBounds};
 use nanokv::vfs::MemoryFileSystem;
 
 /// Helper to create default table options for tests
@@ -347,6 +347,87 @@ fn test_sequential_transactions() {
     }
     
     // Verify all data
+    let txn = db.begin_read().unwrap();
+    assert_eq!(txn.get(table_id, b"key1").unwrap().unwrap().0, b"value1");
+    assert_eq!(txn.get(table_id, b"key2").unwrap().unwrap().0, b"value2");
+    assert_eq!(txn.get(table_id, b"key3").unwrap().unwrap().0, b"value3");
+}
+
+/// Range delete should remove only keys in the requested bounds and leave other
+/// tables untouched when committed.
+#[test]
+fn test_transaction_range_delete_commit_multi_table() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let table1 = db.create_table("table1", default_table_options()).unwrap();
+    let table2 = db.create_table("table2", default_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        txn.put(table1, b"a1", b"v1").unwrap();
+        txn.put(table1, b"a2", b"v2").unwrap();
+        txn.put(table1, b"b1", b"v3").unwrap();
+        txn.put(table2, b"a1", b"other").unwrap();
+        txn.commit().unwrap();
+    }
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        let deleted = txn
+            .range_delete(
+                table1,
+                ScanBounds::Prefix(KeyBuf(b"a".to_vec())),
+            )
+            .unwrap();
+        assert_eq!(deleted, 2);
+        txn.commit().unwrap();
+    }
+
+    let txn = db.begin_read().unwrap();
+    assert!(txn.get(table1, b"a1").unwrap().is_none());
+    assert!(txn.get(table1, b"a2").unwrap().is_none());
+    assert_eq!(txn.get(table1, b"b1").unwrap().unwrap().0, b"v3");
+    assert_eq!(txn.get(table2, b"a1").unwrap().unwrap().0, b"other");
+}
+
+/// Range delete should be visible inside the transaction but rolled back when
+/// the transaction aborts.
+#[test]
+fn test_transaction_range_delete_rollback() {
+    let fs = MemoryFileSystem::new();
+    let db = Database::new(&fs, "test.wal", "test.db").unwrap();
+
+    let table_id = db.create_table("test_table", default_table_options()).unwrap();
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        txn.put(table_id, b"key1", b"value1").unwrap();
+        txn.put(table_id, b"key2", b"value2").unwrap();
+        txn.put(table_id, b"key3", b"value3").unwrap();
+        txn.commit().unwrap();
+    }
+
+    {
+        let mut txn = db.begin_write(Durability::WalOnly).unwrap();
+        let deleted = txn
+            .range_delete(
+                table_id,
+                ScanBounds::Range {
+                    start: Bound::Included(KeyBuf(b"key1".to_vec())),
+                    end: Bound::Included(KeyBuf(b"key2".to_vec())),
+                },
+            )
+            .unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(txn.get(table_id, b"key1").unwrap().is_none());
+        assert!(txn.get(table_id, b"key2").unwrap().is_none());
+        assert_eq!(txn.get(table_id, b"key3").unwrap().unwrap().0, b"value3");
+
+        txn.rollback().unwrap();
+    }
+
     let txn = db.begin_read().unwrap();
     assert_eq!(txn.get(table_id, b"key1").unwrap().unwrap().0, b"value1");
     assert_eq!(txn.get(table_id, b"key2").unwrap().unwrap().0, b"value2");
