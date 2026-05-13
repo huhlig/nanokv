@@ -52,25 +52,55 @@ impl EdgeCursor for TransactionEdgeCursor {
 }
 
 /// Placeholder TimeSeriesCursor for Transaction's TimeSeries implementation.
-/// This will be replaced with actual cursor when TimeSeries table engine is implemented.
+/// TimeSeries cursor that owns its data (copied from the underlying table cursor)
 #[derive(Debug)]
 pub struct TransactionTimeSeriesCursor {
-    _phantom: std::marker::PhantomData<()>,
+    series_key: Vec<u8>,
+    points: Vec<(i64, Vec<u8>)>,
+    position: usize,
+}
+
+impl TransactionTimeSeriesCursor {
+    fn from_points<C: TimeSeriesCursor>(mut cursor: C) -> Self {
+        let mut points = Vec::new();
+        while cursor.valid() {
+            if let Some(point) = cursor.current() {
+                points.push((point.timestamp, point.value_key.0));
+            }
+            let _ = cursor.next();
+        }
+        let series_key = points.first().map(|_| Vec::new()).unwrap_or_default(); // We'll get it from the first point if needed
+        Self {
+            series_key,
+            points,
+            position: 0,
+        }
+    }
 }
 
 impl TimeSeriesCursor for TransactionTimeSeriesCursor {
     fn valid(&self) -> bool {
-        false
+        self.position < self.points.len()
     }
 
     fn current(&self) -> Option<TimePointRef> {
-        None
+        if self.valid() {
+            let (ts, value_key) = &self.points[self.position];
+            Some(TimePointRef {
+                series_key: crate::types::KeyBuf(self.series_key.clone()),
+                timestamp: *ts,
+                value_key: crate::types::KeyBuf(value_key.clone()),
+            })
+        } else {
+            None
+        }
     }
 
     fn next(&mut self) -> crate::table::TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "TimeSeries table engine not yet implemented".to_string(),
-        ))
+        if self.valid() {
+            self.position += 1;
+        }
+        Ok(())
     }
 }
 
@@ -301,7 +331,7 @@ pub struct Transaction<FS: FileSystem> {
 
     // Track specialty-table time series operations for commit/rollback
     // Each entry is (table_id, time_series_operation)
-    timeseries_write_set: Vec<(TableId, TimeSeriesOp)>,
+    timeseries_write_set: std::cell::RefCell<Vec<(TableId, TimeSeriesOp)>>,
 
     // Track specialty-table vector operations for commit/rollback
     // Each entry is (table_id, vector_operation)
@@ -349,7 +379,7 @@ impl<FS: FileSystem> Transaction<FS> {
             write_set: HashMap::new(),
             bloom_write_set: HashSet::new(),
             graph_write_set: Vec::new(),
-            timeseries_write_set: Vec::new(),
+            timeseries_write_set: std::cell::RefCell::new(Vec::new()),
             vector_write_set: RwLock::new(Vec::new()),
             geospatial_write_set: Vec::new(),
             conflict_detector,
@@ -444,8 +474,8 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 
     /// Record a time series operation for commit/rollback.
-    pub fn record_timeseries_operation(&mut self, object_id: TableId, op: TimeSeriesOp) {
-        self.timeseries_write_set.push((object_id, op));
+    pub fn record_timeseries_operation(&self, object_id: TableId, op: TimeSeriesOp) {
+        self.timeseries_write_set.borrow_mut().push((object_id, op));
     }
 
     /// Record a vector operation for commit/rollback.
@@ -1431,35 +1461,29 @@ impl<FS: FileSystem> Transaction<FS> {
         }
 
         // Apply time series operations after graph edge operations.
-        // Note: TimeSeries table engine not yet implemented, so operations are logged to WAL
-        // but not applied to any actual table. When TimeSeries is implemented, add the variant
-        // to TableEngineInstance and uncomment the application logic below.
-        for (_object_id, _op) in &self.timeseries_write_set {
-            // TODO: Apply time series operations when TimeSeries table engine is implemented
-            // if let Some(engine) = self.engine_registry.get(*object_id) {
-            //     match &engine {
-            //         crate::table::TableEngineInstance::TimeSeries(ts) => {
-            //             match op {
-            //                 TimeSeriesOp::AppendPoint { series_key, timestamp, value_key } => {
-            //                     ts.append_point(series_key, *timestamp, value_key)
-            //                         .map_err(|e| TransactionError::Other(format!("TimeSeries append_point failed: {}", e)))?;
-            //                 }
-            //                 TimeSeriesOp::DeletePoint { series_key, timestamp, value_key } => {
-            //                     // Note: TimeSeries trait doesn't have a delete_point method yet
-            //                     // This will need to be added when the table engine is implemented
-            //                     return Err(TransactionError::Other(
-            //                         "TimeSeries delete_point not yet implemented".to_string(),
-            //                     ));
-            //                 }
-            //             }
-            //         }
-            //         _ => {
-            //             return Err(TransactionError::Other(
-            //                 "table is not a time series table".to_string(),
-            //             ))
-            //         }
-            //     }
-            // }
+        for (object_id, op) in self.timeseries_write_set.borrow().iter() {
+            if let Some(engine) = self.engine_registry.get(*object_id) {
+                match &engine {
+                    crate::table::TableEngineInstance::TimeSeriesTable(ts) => {
+                        match op {
+                            TimeSeriesOp::AppendPoint { series_key, timestamp, value_key } => {
+                                ts.append_point(series_key, *timestamp, value_key)
+                                    .map_err(|e| TransactionError::Other(format!("TimeSeries append_point failed: {}", e)))?;
+                            }
+                            TimeSeriesOp::DeletePoint { series_key: _, timestamp: _, value_key: _ } => {
+                                return Err(TransactionError::Other(
+                                    "TimeSeries tables are append-only; delete operations are not supported".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(TransactionError::Other(
+                            "table is not a time series table".to_string(),
+                        ))
+                    }
+                }
+            }
         }
 
         // Apply vector operations after time series operations.
@@ -1962,17 +1986,22 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
     }
 
     fn capabilities(&self) -> SpecialtyTableCapabilities {
-        let Some(_table_id) = self.current_table_id else {
+        let Some(table_id) = self.current_table_id else {
             return SpecialtyTableCapabilities::default();
         };
 
-        // Note: TimeSeries table engine not yet implemented
-        // Return default capabilities for now
-        SpecialtyTableCapabilities::default()
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::TimeSeriesTable(ts) => ts.capabilities(),
+                _ => SpecialtyTableCapabilities::default(),
+            }
+        } else {
+            SpecialtyTableCapabilities::default()
+        }
     }
 
     fn append_point(
-        &mut self,
+        &self,
         series_key: &[u8],
         timestamp: i64,
         value_key: &[u8],
@@ -2020,9 +2049,9 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
 
     fn scan_series(
         &self,
-        _series_key: &[u8],
-        _start_ts: i64,
-        _end_ts: i64,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
     ) -> crate::table::TableResult<Self::TimeSeriesCursor<'_>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -2031,22 +2060,33 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
             )));
         }
 
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
         })?;
 
-        // Note: TimeSeries table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "TimeSeries table engine not yet implemented".to_string(),
-        ))
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::TimeSeriesTable(ts) => {
+                    let cursor = ts.scan_series(series_key, start_ts, end_ts)?;
+                    Ok(TransactionTimeSeriesCursor::from_points(cursor))
+                }
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a time series table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "time series table not found".to_string(),
+            ))
+        }
     }
 
     fn latest_before(
         &self,
-        _series_key: &[u8],
-        _timestamp: i64,
+        series_key: &[u8],
+        timestamp: i64,
     ) -> crate::table::TableResult<Option<TimePointRef>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -2055,42 +2095,68 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
             )));
         }
 
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
         })?;
 
-        // Note: TimeSeries table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "TimeSeries table engine not yet implemented".to_string(),
-        ))
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::TimeSeriesTable(ts) => {
+                    ts.latest_before(series_key, timestamp)
+                }
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a time series table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "time series table not found".to_string(),
+            ))
+        }
     }
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
         })?;
 
-        // Note: TimeSeries table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "TimeSeries table engine not yet implemented".to_string(),
-        ))
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::TimeSeriesTable(ts) => ts.stats(),
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a time series table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "time series table not found".to_string(),
+            ))
+        }
     }
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
         })?;
 
-        // Note: TimeSeries table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "TimeSeries table engine not yet implemented".to_string(),
-        ))
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::TimeSeriesTable(ts) => ts.verify(),
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a time series table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "time series table not found".to_string(),
+            ))
+        }
     }
 }
 

@@ -1090,7 +1090,7 @@ pub trait TimeSeries {
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
     fn append_point(
-        &mut self,
+        &self,
         series_key: &[u8],
         timestamp: i64,
         value_key: &[u8],

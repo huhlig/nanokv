@@ -174,78 +174,58 @@ fn test_timeseries_capabilities() {
 }
 
 #[test]
-fn test_timeseries_scan_series_not_implemented() {
-    let mut txn = create_test_transaction();
-    let table_id = TableId::from(1);
-
-    txn.with_table(table_id);
+fn test_timeseries_scan_series_without_table() {
+    let txn = create_test_transaction();
 
     let series_key = b"sensor-1";
     let start_ts = 1000i64;
     let end_ts = 2000i64;
 
     let result = TimeSeries::scan_series(&txn, series_key, start_ts, end_ts);
-    assert!(result.is_err(), "scan_series should fail (not implemented)");
+    assert!(result.is_err(), "scan_series should fail without table context");
     assert!(
-        result.unwrap_err().to_string().contains("not yet implemented"),
-        "Error should mention not implemented"
+        result.unwrap_err().to_string().contains("no table context"),
+        "Error should mention no table context"
     );
-
-    txn.clear_table_context();
 }
 
 #[test]
-fn test_timeseries_latest_before_not_implemented() {
-    let mut txn = create_test_transaction();
-    let table_id = TableId::from(1);
-
-    txn.with_table(table_id);
+fn test_timeseries_latest_before_without_table() {
+    let txn = create_test_transaction();
 
     let series_key = b"sensor-1";
     let timestamp = 1500i64;
 
     let result = TimeSeries::latest_before(&txn, series_key, timestamp);
-    assert!(result.is_err(), "latest_before should fail (not implemented)");
+    assert!(result.is_err(), "latest_before should fail without table context");
     assert!(
-        result.unwrap_err().to_string().contains("not yet implemented"),
-        "Error should mention not implemented"
+        result.unwrap_err().to_string().contains("no table context"),
+        "Error should mention no table context"
     );
-
-    txn.clear_table_context();
 }
 
 #[test]
-fn test_timeseries_stats_not_implemented() {
-    let mut txn = create_test_transaction();
-    let table_id = TableId::from(1);
-
-    txn.with_table(table_id);
+fn test_timeseries_stats_without_table() {
+    let txn = create_test_transaction();
 
     let result = TimeSeries::stats(&txn);
-    assert!(result.is_err(), "stats should fail (not implemented)");
+    assert!(result.is_err(), "stats should fail without table context");
     assert!(
-        result.unwrap_err().to_string().contains("not yet implemented"),
-        "Error should mention not implemented"
+        result.unwrap_err().to_string().contains("no table context"),
+        "Error should mention no table context"
     );
-
-    txn.clear_table_context();
 }
 
 #[test]
-fn test_timeseries_verify_not_implemented() {
-    let mut txn = create_test_transaction();
-    let table_id = TableId::from(1);
-
-    txn.with_table(table_id);
+fn test_timeseries_verify_without_table() {
+    let txn = create_test_transaction();
 
     let result = TimeSeries::verify(&txn);
-    assert!(result.is_err(), "verify should fail (not implemented)");
+    assert!(result.is_err(), "verify should fail without table context");
     assert!(
-        result.unwrap_err().to_string().contains("not yet implemented"),
-        "Error should mention not implemented"
+        result.unwrap_err().to_string().contains("no table context"),
+        "Error should mention no table context"
     );
-
-    txn.clear_table_context();
 }
 
 #[test]
