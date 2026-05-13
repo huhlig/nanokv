@@ -69,12 +69,49 @@ fn test_default_lsm_config() {
 // The following tests are disabled because they require API changes
 // or full LSM tree implementation with pager/VFS
 
-/// Test memtable operations (requires full implementation)
+/// Test memtable operations
 #[test]
-#[ignore = "Memtable API not fully exposed for testing"]
 fn test_memtable_operations() {
-    // This would test insert, get, delete operations
-    // Requires Memtable to be fully testable without pager
+    use nanokv::table::lsm::Memtable;
+    use nanokv::txn::TransactionId;
+    use nanokv::wal::LogSequenceNumber;
+
+    let memtable = Memtable::new(1024 * 1024);
+
+    // Test insert
+    memtable
+        .insert(
+            b"key1".to_vec(),
+            b"value1".to_vec(),
+            TransactionId::from(1),
+            Some(LogSequenceNumber::from(100)),
+        )
+        .unwrap();
+
+    // Test get
+    let value = memtable.get(b"key1", LogSequenceNumber::from(100)).unwrap();
+    assert_eq!(value, Some(b"value1".to_vec()));
+
+    // Test get with earlier LSN (should return None)
+    let value = memtable.get(b"key1", LogSequenceNumber::from(99)).unwrap();
+    assert_eq!(value, None);
+
+    // Test delete
+    memtable
+        .delete(
+            b"key1".to_vec(),
+            TransactionId::from(2),
+            Some(LogSequenceNumber::from(200)),
+        )
+        .unwrap();
+
+    // Test get after delete (should return None)
+    let value = memtable.get(b"key1", LogSequenceNumber::from(200)).unwrap();
+    assert_eq!(value, None);
+
+    // Test get before delete (should return original value)
+    let value = memtable.get(b"key1", LogSequenceNumber::from(150)).unwrap();
+    assert_eq!(value, Some(b"value1".to_vec()));
 }
 
 /// Test bloom filter operations
@@ -83,9 +120,7 @@ fn test_bloom_filter_operations() {
     use nanokv::table::lsm::BloomFilterBuilder;
 
     // Create a bloom filter using the builder
-    let mut filter = BloomFilterBuilder::new(1000)
-        .bits_per_key(10)
-        .build();
+    let mut filter = BloomFilterBuilder::new(1000).bits_per_key(10).build();
 
     // Add keys to the bloom filter
     filter.insert(b"key1");
@@ -114,7 +149,7 @@ fn test_bloom_filter_operations() {
 #[test]
 fn test_sstable_operations() {
     use nanokv::pager::{Pager, PagerConfig};
-    use nanokv::table::lsm::{SStableConfig, SStableReader, SStableWriter, SStableId};
+    use nanokv::table::lsm::{SStableConfig, SStableId, SStableReader, SStableWriter};
     use nanokv::txn::VersionChain;
     use nanokv::vfs::MemoryFileSystem;
     use nanokv::wal::LogSequenceNumber;
@@ -139,17 +174,18 @@ fn test_sstable_operations() {
     // Add sorted key-value pairs
     let keys = vec!["alpha", "beta", "gamma"];
     for key in &keys {
-        let mut chain = VersionChain::new(
-            key.as_bytes().to_vec(),
-            1.into(),
-        );
+        let mut chain = VersionChain::new(key.as_bytes().to_vec(), 1.into());
         chain.commit(LogSequenceNumber::from(1));
-        writer.add(key.as_bytes().to_vec(), chain).expect("Failed to add entry");
+        writer
+            .add(key.as_bytes().to_vec(), chain)
+            .expect("Failed to add entry");
     }
 
     // Finish writing SSTable
     let created_lsn = LogSequenceNumber::from(1);
-    let metadata = writer.finish(created_lsn).expect("Failed to finish SSTable");
+    let metadata = writer
+        .finish(created_lsn)
+        .expect("Failed to finish SSTable");
 
     // Verify metadata
     assert_eq!(metadata.id.as_u64(), 1);
@@ -159,11 +195,8 @@ fn test_sstable_operations() {
     assert_eq!(metadata.max_key, b"gamma");
 
     // Open SSTable for reading
-    let reader = SStableReader::open(
-        pager.clone(),
-        metadata.first_page_id,
-        sstable_config,
-    ).expect("Failed to open SSTable");
+    let reader = SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config)
+        .expect("Failed to open SSTable");
 
     // Verify bloom filter (note: bloom filters can have false positives)
     assert!(reader.may_contain(b"alpha"));
@@ -174,14 +207,22 @@ fn test_sstable_operations() {
     // Read back the keys
     let snapshot_lsn = LogSequenceNumber::from(1);
     for key in &keys {
-        let value = reader.get(key.as_bytes(), snapshot_lsn)
+        let value = reader
+            .get(key.as_bytes(), snapshot_lsn)
             .expect("Failed to get key");
         assert!(value.is_some(), "Key {} should exist", key);
-        assert_eq!(value.unwrap(), key.as_bytes(), "Value should match key for {}", key);
+        assert_eq!(
+            value.unwrap(),
+            key.as_bytes(),
+            "Value should match key for {}",
+            key
+        );
     }
 
     // Verify non-existent key
-    let result = reader.get(b"nonexistent", snapshot_lsn).expect("Failed to get key");
+    let result = reader
+        .get(b"nonexistent", snapshot_lsn)
+        .expect("Failed to get key");
     assert!(result.is_none(), "Non-existent key should not be found");
 }
 
@@ -220,24 +261,29 @@ fn test_compaction() {
 
     // Should pick L0 compaction since we exceed the size limit
     let job = picker.pick_compaction(&version);
-    assert!(job.is_some(), "Should pick compaction when L0 exceeds size limit");
+    assert!(
+        job.is_some(),
+        "Should pick compaction when L0 exceeds size limit"
+    );
 
     let job = job.unwrap();
     assert_eq!(job.source_level, 0);
     assert_eq!(job.target_level, 1);
-    assert!(!job.source_files.is_empty(), "Should have source files to compact");
-    assert!(job.priority > 1.0, "Priority should be > 1.0 when over limit");
+    assert!(
+        !job.source_files.is_empty(),
+        "Should have source files to compact"
+    );
+    assert!(
+        job.priority > 1.0,
+        "Priority should be > 1.0 when over limit"
+    );
 
     // Verify input file IDs are unique
     let input_ids = job.input_file_ids();
     assert_eq!(input_ids.len(), job.input_file_count());
 
     // Verify estimated output size calculation
-    let expected_size: u64 = job
-        .source_files
-        .iter()
-        .map(|f| f.total_size)
-        .sum::<u64>()
+    let expected_size: u64 = job.source_files.iter().map(|f| f.total_size).sum::<u64>()
         + job.target_files.iter().map(|f| f.total_size).sum::<u64>();
     assert_eq!(job.estimated_output_size, expected_size);
 }
@@ -261,7 +307,9 @@ fn test_lsm_mvcc() {
         Arc::new(Pager::create(&fs, "test.db", pager_config).expect("Failed to create pager"));
 
     // Allocate a root page for the LSM tree
-    let root_page_id = pager.allocate_page(PageType::LsmMeta).expect("Failed to allocate page");
+    let root_page_id = pager
+        .allocate_page(PageType::LsmMeta)
+        .expect("Failed to allocate page");
 
     let lsm_config = LsmConfig::default();
     let lsm: LsmTree<MemoryFileSystem> = LsmTree::new(
@@ -277,14 +325,18 @@ fn test_lsm_mvcc() {
     let tx1 = TransactionId::from(1);
     let lsn1 = LogSequenceNumber::from(10);
     let mut writer1 = lsm.writer(tx1, lsn1).expect("Failed to create writer");
-    writer1.put(b"mvcc_key", b"value_v1").expect("Failed to put");
+    writer1
+        .put(b"mvcc_key", b"value_v1")
+        .expect("Failed to put");
     writer1.flush().expect("Failed to flush");
 
     // Transaction 2: Update value at LSN 20
     let tx2 = TransactionId::from(2);
     let lsn2 = LogSequenceNumber::from(20);
     let mut writer2 = lsm.writer(tx2, lsn2).expect("Failed to create writer");
-    writer2.put(b"mvcc_key", b"value_v2").expect("Failed to put");
+    writer2
+        .put(b"mvcc_key", b"value_v2")
+        .expect("Failed to put");
     writer2.flush().expect("Failed to flush");
 
     // Transaction 3: Delete key at LSN 30
@@ -295,7 +347,9 @@ fn test_lsm_mvcc() {
     writer3.flush().expect("Failed to flush");
 
     // Read at LSN 5: key should not exist (before any writes)
-    let reader_before = lsm.reader(LogSequenceNumber::from(5)).expect("Failed to create reader");
+    let reader_before = lsm
+        .reader(LogSequenceNumber::from(5))
+        .expect("Failed to create reader");
     let result_before = reader_before
         .get(b"mvcc_key", LogSequenceNumber::from(5))
         .expect("Failed to get");
@@ -305,7 +359,9 @@ fn test_lsm_mvcc() {
     );
 
     // Read at LSN 15: should see v1 (after tx1, before tx2)
-    let reader_v1 = lsm.reader(LogSequenceNumber::from(15)).expect("Failed to create reader");
+    let reader_v1 = lsm
+        .reader(LogSequenceNumber::from(15))
+        .expect("Failed to create reader");
     let result_v1 = reader_v1
         .get(b"mvcc_key", LogSequenceNumber::from(15))
         .expect("Failed to get");
@@ -317,7 +373,9 @@ fn test_lsm_mvcc() {
     );
 
     // Read at LSN 25: should see v2 (after tx2, before tx3)
-    let reader_v2 = lsm.reader(LogSequenceNumber::from(25)).expect("Failed to create reader");
+    let reader_v2 = lsm
+        .reader(LogSequenceNumber::from(25))
+        .expect("Failed to create reader");
     let result_v2 = reader_v2
         .get(b"mvcc_key", LogSequenceNumber::from(25))
         .expect("Failed to get");
@@ -335,10 +393,7 @@ fn test_lsm_mvcc() {
     let result_after = reader_after
         .get(b"mvcc_key", LogSequenceNumber::from(35))
         .expect("Failed to get");
-    assert!(
-        result_after.is_none(),
-        "Key should be deleted at LSN 35"
-    );
+    assert!(result_after.is_none(), "Key should be deleted at LSN 35");
 
     // Test multiple keys with different versions
     let tx4 = TransactionId::from(4);
@@ -356,7 +411,9 @@ fn test_lsm_mvcc() {
     writer5.flush().expect("Failed to flush");
 
     // Read at LSN 45: both keys at v1
-    let reader_45 = lsm.reader(LogSequenceNumber::from(45)).expect("Failed to create reader");
+    let reader_45 = lsm
+        .reader(LogSequenceNumber::from(45))
+        .expect("Failed to create reader");
     let key_a_45 = reader_45
         .get(b"key_a", LogSequenceNumber::from(45))
         .expect("Failed to get");
@@ -367,7 +424,9 @@ fn test_lsm_mvcc() {
     assert_eq!(key_b_45.unwrap().0.as_slice(), b"b_v1");
 
     // Read at LSN 55: key_a at v2, key_b still at v1
-    let reader_55 = lsm.reader(LogSequenceNumber::from(55)).expect("Failed to create reader");
+    let reader_55 = lsm
+        .reader(LogSequenceNumber::from(55))
+        .expect("Failed to create reader");
     let key_a_55 = reader_55
         .get(b"key_a", LogSequenceNumber::from(55))
         .expect("Failed to get");

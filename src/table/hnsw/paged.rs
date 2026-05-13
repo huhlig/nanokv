@@ -603,11 +603,10 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         pos += 4;
         let mut vector = Vec::with_capacity(vec_len);
         for _ in 0..vec_len {
-            let v = f32::from_le_bytes(
-                data[pos..pos + 4]
-                    .try_into()
-                    .map_err(|e| TableError::Other(format!("Failed to read vector element: {}", e)))?,
-            );
+            let v =
+                f32::from_le_bytes(data[pos..pos + 4].try_into().map_err(|e| {
+                    TableError::Other(format!("Failed to read vector element: {}", e))
+                })?);
             vector.push(v);
             pos += 4;
         }
@@ -629,19 +628,16 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         pos += 4;
         let mut neighbors = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
-            let count = u32::from_le_bytes(
-                data[pos..pos + 4]
-                    .try_into()
-                    .map_err(|e| TableError::Other(format!("Failed to read neighbor count: {}", e)))?,
-            ) as usize;
+            let count =
+                u32::from_le_bytes(data[pos..pos + 4].try_into().map_err(|e| {
+                    TableError::Other(format!("Failed to read neighbor count: {}", e))
+                })?) as usize;
             pos += 4;
             let mut layer_neighbors = Vec::with_capacity(count);
             for _ in 0..count {
-                let n = NodeId(u32::from_le_bytes(
-                    data[pos..pos + 4]
-                        .try_into()
-                        .map_err(|e| TableError::Other(format!("Failed to read neighbor id: {}", e)))?,
-                ));
+                let n = NodeId(u32::from_le_bytes(data[pos..pos + 4].try_into().map_err(
+                    |e| TableError::Other(format!("Failed to read neighbor id: {}", e)),
+                )?));
                 layer_neighbors.push(n);
                 pos += 4;
             }
@@ -669,7 +665,12 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
     }
 
     /// Add bidirectional connections between nodes
-    fn connect_nodes(&self, node_id: NodeId, neighbors: Vec<NodeId>, layer: usize) -> TableResult<()> {
+    fn connect_nodes(
+        &self,
+        node_id: NodeId,
+        neighbors: Vec<NodeId>,
+        layer: usize,
+    ) -> TableResult<()> {
         // Load the node, add neighbors, and store it back
         let mut node = self.load_node(node_id)?;
         if layer >= node.neighbors.len() {
