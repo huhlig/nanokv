@@ -14,6 +14,19 @@
 // limitations under the License.
 //
 
+#![warn(
+    clippy::cargo,
+    missing_docs,
+    clippy::pedantic,
+    future_incompatible,
+    rust_2018_idioms
+)]
+#![allow(
+    clippy::option_if_let_else,
+    clippy::module_name_repetitions,
+    clippy::missing_errors_doc
+)]
+
 pub mod error;
 pub mod kvdb;
 pub mod pager;

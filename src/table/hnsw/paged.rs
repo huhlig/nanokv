@@ -112,6 +112,18 @@ impl Default for HnswConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct NodeId(u32);
 
+impl NodeId {
+    fn as_u32(&self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for NodeId {
+    fn from(v: u32) -> Self {
+        NodeId(v)
+    }
+}
+
 /// Node data stored in pages
 #[derive(Clone, Debug)]
 struct HnswNode {
@@ -489,19 +501,159 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
 
     /// Load a node from storage
     fn load_node(&self, node_id: NodeId) -> TableResult<HnswNode> {
-        // TODO: Implement actual page-based node loading
-        // For now, return a placeholder error
-        Err(TableError::Other(format!(
-            "Node loading not yet implemented: {:?}",
-            node_id
-        )))
+        let page_id = PageId::from(node_id.0 as u64);
+
+        let page = self
+            .pager
+            .read_page(page_id)
+            .map_err(|e| TableError::Other(format!("Failed to read node page: {}", e)))?;
+
+        Self::deserialize_node(page.data())
     }
 
     /// Store a node to storage
-    fn store_node(&self, _node: &HnswNode) -> TableResult<NodeId> {
-        // TODO: Implement actual page-based node storage
-        // For now, return a placeholder node ID
-        Ok(NodeId(1))
+    fn store_node(&self, node: &HnswNode) -> TableResult<NodeId> {
+        let page_id = self
+            .pager
+            .allocate_page(PageType::VectorIndex)
+            .map_err(|e| TableError::Other(format!("Failed to allocate node page: {}", e)))?;
+
+        let data = Self::serialize_node(node)?;
+
+        let page_size = self.pager.page_size().to_u32() as usize;
+        let mut page = Page::new(page_id, PageType::VectorIndex, page_size);
+        page.data_mut().extend_from_slice(&data);
+
+        self.pager
+            .write_page(&page)
+            .map_err(|e| TableError::Other(format!("Failed to write node page: {}", e)))?;
+
+        Ok(NodeId(page_id.as_u64() as u32))
+    }
+
+    /// Update an existing node in storage
+    fn update_node(&self, node_id: NodeId, node: &HnswNode) -> TableResult<()> {
+        let page_id = PageId::from(node_id.as_u32() as u64);
+
+        let data = Self::serialize_node(node)?;
+
+        let page_size = self.pager.page_size().to_u32() as usize;
+        let mut page = Page::new(page_id, PageType::VectorIndex, page_size);
+        page.data_mut().extend_from_slice(&data);
+
+        self.pager
+            .write_page(&page)
+            .map_err(|e| TableError::Other(format!("Failed to update node page: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Serialize a node to bytes
+    fn serialize_node(node: &HnswNode) -> TableResult<Vec<u8>> {
+        let mut data = Vec::new();
+
+        // Vector ID length + data
+        let id_bytes = node.id.as_ref();
+        let id_len = id_bytes.len() as u32;
+        data.extend_from_slice(&id_len.to_le_bytes());
+        data.extend_from_slice(id_bytes);
+
+        // Vector length + data
+        let vec_len = node.vector.len() as u32;
+        data.extend_from_slice(&vec_len.to_le_bytes());
+        for &v in &node.vector {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+
+        // Layer
+        data.extend_from_slice(&(node.layer as u32).to_le_bytes());
+
+        // Neighbors: number of layers, then for each layer: count + node IDs
+        data.extend_from_slice(&(node.neighbors.len() as u32).to_le_bytes());
+        for layer_neighbors in &node.neighbors {
+            data.extend_from_slice(&(layer_neighbors.len() as u32).to_le_bytes());
+            for &n in layer_neighbors {
+                data.extend_from_slice(&n.0.to_le_bytes());
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Deserialize a node from bytes
+    fn deserialize_node(data: &[u8]) -> TableResult<HnswNode> {
+        let mut pos = 0;
+
+        // Read vector ID
+        let id_len = u32::from_le_bytes(
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|e| TableError::Other(format!("Failed to read id length: {}", e)))?,
+        ) as usize;
+        pos += 4;
+        let id = KeyBuf(data[pos..pos + id_len].to_vec());
+        pos += id_len;
+
+        // Read vector
+        let vec_len = u32::from_le_bytes(
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|e| TableError::Other(format!("Failed to read vector length: {}", e)))?,
+        ) as usize;
+        pos += 4;
+        let mut vector = Vec::with_capacity(vec_len);
+        for _ in 0..vec_len {
+            let v = f32::from_le_bytes(
+                data[pos..pos + 4]
+                    .try_into()
+                    .map_err(|e| TableError::Other(format!("Failed to read vector element: {}", e)))?,
+            );
+            vector.push(v);
+            pos += 4;
+        }
+
+        // Read layer
+        let layer = u32::from_le_bytes(
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|e| TableError::Other(format!("Failed to read layer: {}", e)))?,
+        ) as usize;
+        pos += 4;
+
+        // Read neighbors
+        let num_layers = u32::from_le_bytes(
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|e| TableError::Other(format!("Failed to read num layers: {}", e)))?,
+        ) as usize;
+        pos += 4;
+        let mut neighbors = Vec::with_capacity(num_layers);
+        for _ in 0..num_layers {
+            let count = u32::from_le_bytes(
+                data[pos..pos + 4]
+                    .try_into()
+                    .map_err(|e| TableError::Other(format!("Failed to read neighbor count: {}", e)))?,
+            ) as usize;
+            pos += 4;
+            let mut layer_neighbors = Vec::with_capacity(count);
+            for _ in 0..count {
+                let n = NodeId(u32::from_le_bytes(
+                    data[pos..pos + 4]
+                        .try_into()
+                        .map_err(|e| TableError::Other(format!("Failed to read neighbor id: {}", e)))?,
+                ));
+                layer_neighbors.push(n);
+                pos += 4;
+            }
+            neighbors.push(layer_neighbors);
+        }
+
+        Ok(HnswNode {
+            id,
+            vector,
+            layer,
+            neighbors,
+        })
     }
 
     /// Select M neighbors from candidates using heuristic
@@ -517,19 +669,49 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
     }
 
     /// Add bidirectional connections between nodes
-    fn connect_nodes(
-        &self,
-        _node_id: NodeId,
-        _neighbors: Vec<NodeId>,
-        _layer: usize,
-    ) -> TableResult<()> {
-        // TODO: Implement bidirectional connection updates
+    fn connect_nodes(&self, node_id: NodeId, neighbors: Vec<NodeId>, layer: usize) -> TableResult<()> {
+        // Load the node, add neighbors, and store it back
+        let mut node = self.load_node(node_id)?;
+        if layer >= node.neighbors.len() {
+            node.neighbors.resize(layer + 1, Vec::new());
+        }
+        for n in &neighbors {
+            if !node.neighbors[layer].contains(n) {
+                node.neighbors[layer].push(*n);
+            }
+        }
+        self.update_node(node_id, &node)?;
+
+        // Add reverse connections
+        for neighbor_id in neighbors {
+            let mut neighbor = self.load_node(neighbor_id)?;
+            if layer >= neighbor.neighbors.len() {
+                neighbor.neighbors.resize(layer + 1, Vec::new());
+            }
+            if !neighbor.neighbors[layer].contains(&node_id) {
+                neighbor.neighbors[layer].push(node_id);
+            }
+            self.update_node(neighbor_id, &neighbor)?;
+        }
+
         Ok(())
     }
 
     /// Prune connections if a node has too many neighbors
-    fn prune_connections(&self, _node_id: NodeId, _layer: usize) -> TableResult<()> {
-        // TODO: Implement connection pruning
+    fn prune_connections(&self, node_id: NodeId, layer: usize) -> TableResult<()> {
+        let max_connections = if layer == 0 {
+            self.config.read().unwrap().max_connections_layer0
+        } else {
+            self.config.read().unwrap().max_connections
+        };
+
+        let mut node = self.load_node(node_id)?;
+        if layer < node.neighbors.len() && node.neighbors[layer].len() > max_connections {
+            // Keep only the closest neighbors (simple heuristic: keep first M)
+            node.neighbors[layer].truncate(max_connections);
+            self.update_node(node_id, &node)?;
+        }
+
         Ok(())
     }
 }
@@ -634,20 +816,21 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         // Select layer for new node
         let layer = self.select_layer();
 
-        // Create new node
-        let node = HnswNode {
-            id: id_buf.clone(),
-            vector: vector.to_vec(),
-            layer,
-            neighbors: vec![Vec::new(); layer + 1],
-        };
-
         // Get entry point
         let entry_point = *self.entry_point.read().unwrap();
 
-        if let Some(ep) = entry_point {
+        let node_id = if let Some(ep) = entry_point {
             // Insert into existing graph
             let max_layer = *self.max_layer.read().unwrap();
+
+            // Create initial node with empty neighbors
+            let initial_node = HnswNode {
+                id: id_buf.clone(),
+                vector: vector.to_vec(),
+                layer,
+                neighbors: vec![Vec::new(); layer + 1],
+            };
+            let node_id = self.store_node(&initial_node)?;
 
             // Search from top layer down to layer+1
             let mut current_nearest = vec![ep];
@@ -676,9 +859,6 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
 
                 let neighbors = self.select_neighbors(candidates, m, lc, true);
 
-                // Store node first to get node_id
-                let node_id = self.store_node(&node)?;
-
                 // Add bidirectional connections
                 self.connect_nodes(node_id, neighbors.clone(), lc)?;
 
@@ -694,17 +874,25 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
             // Update max layer if needed
             if layer > max_layer {
                 *self.max_layer.write().unwrap() = layer;
-                *self.entry_point.write().unwrap() = Some(self.store_node(&node)?);
+                *self.entry_point.write().unwrap() = Some(node_id);
             }
+
+            node_id
         } else {
             // First node - becomes entry point
+            let node = HnswNode {
+                id: id_buf.clone(),
+                vector: vector.to_vec(),
+                layer,
+                neighbors: vec![Vec::new(); layer + 1],
+            };
             let node_id = self.store_node(&node)?;
             *self.entry_point.write().unwrap() = Some(node_id);
             *self.max_layer.write().unwrap() = layer;
-        }
+            node_id
+        };
 
         // Update mappings
-        let node_id = self.store_node(&node)?;
         self.id_to_node.write().unwrap().insert(id_buf, node_id);
         *self.num_vectors.write().unwrap() += 1;
 
