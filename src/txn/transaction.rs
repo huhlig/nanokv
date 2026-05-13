@@ -15,10 +15,10 @@
 //
 
 use crate::table::{
-    ApproximateMembership, EdgeCursor, GraphAdjacency, PointLookup, SearchableTable,
-    SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor, TableEngineRegistry,
-    TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch, VectorSearchOptions, VectorHit,
-    VectorMetric, VerificationReport,
+    ApproximateMembership, EdgeCursor, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency,
+    PointLookup, SearchableTable, SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor,
+    TableEngineRegistry, TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch,
+    VectorSearchOptions, VectorHit, VectorMetric, VerificationReport,
 };
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{Durability, IsolationLevel, TableId, ScanBounds, ValueBuf};
@@ -116,6 +116,26 @@ enum VectorOp {
     DeleteVector {
         id: Vec<u8>,
     },
+}
+
+/// Geospatial operation for tracking in transaction write set
+#[derive(Clone, Debug, PartialEq)]
+enum GeoSpatialOp {
+    InsertGeometry {
+        id: Vec<u8>,
+        geometry: SerializedGeometry,
+    },
+    DeleteGeometry {
+        id: Vec<u8>,
+    },
+}
+
+/// Serialized geometry for storage in write set
+#[derive(Clone, Debug, PartialEq)]
+enum SerializedGeometry {
+    Point { x: f64, y: f64 },
+    BoundingBox { min_x: f64, min_y: f64, max_x: f64, max_y: f64 },
+    Wkb(Vec<u8>),
 }
 
 /// Transaction ID type
@@ -287,6 +307,10 @@ pub struct Transaction<FS: FileSystem> {
     // Each entry is (table_id, vector_operation)
     vector_write_set: Vec<(TableId, VectorOp)>,
 
+    // Track specialty-table geospatial operations for commit/rollback
+    // Each entry is (table_id, geospatial_operation)
+    geospatial_write_set: Vec<(TableId, GeoSpatialOp)>,
+
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
 
@@ -327,6 +351,7 @@ impl<FS: FileSystem> Transaction<FS> {
             graph_write_set: Vec::new(),
             timeseries_write_set: Vec::new(),
             vector_write_set: Vec::new(),
+            geospatial_write_set: Vec::new(),
             conflict_detector,
             wal,
             engine_registry,
@@ -428,6 +453,11 @@ impl<FS: FileSystem> Transaction<FS> {
         self.vector_write_set.push((object_id, op));
     }
 
+    /// Record a geospatial operation for commit/rollback.
+    pub fn record_geospatial_operation(&mut self, object_id: TableId, op: GeoSpatialOp) {
+        self.geospatial_write_set.push((object_id, op));
+    }
+
     /// Prepare the transaction for commit (two-phase commit).
     ///
     /// Transitions from Active to Preparing state.
@@ -506,6 +536,18 @@ impl<FS: FileSystem> Transaction<FS> {
     pub fn with_vector<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
     where
         F: FnOnce(&mut dyn VectorSearch) -> crate::table::TableResult<R>,
+    {
+        self.with_table(table_id);
+        let result = f(self);
+        self.clear_table_context();
+        result.map_err(|e| TransactionError::Other(e.to_string()))
+    }
+
+    /// Execute a scoped set of geospatial operations using the transaction as
+    /// a `GeoSpatial` implementation.
+    pub fn with_geospatial<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
+    where
+        F: FnOnce(&mut dyn GeoSpatial) -> crate::table::TableResult<R>,
     {
         self.with_table(table_id);
         let result = f(self);
@@ -1298,6 +1340,48 @@ impl<FS: FileSystem> Transaction<FS> {
             // }
         }
 
+        // Apply geospatial operations after vector operations.
+        // Note: PagedRTree methods require &mut self, but the engine is stored in Arc.
+        // The R-Tree implementation needs to be updated to use interior mutability (RwLock)
+        // for its mutable state before geospatial operations can be applied in transactions.
+        // Operations are logged to WAL for durability.
+        for (_object_id, _op) in &self.geospatial_write_set {
+            // TODO: Apply geospatial operations when PagedRTree is updated to use interior mutability
+            // if let Some(engine) = self.engine_registry.get(*object_id) {
+            //     match &engine {
+            //         crate::table::TableEngineInstance::PagedRTree(rtree) => {
+            //             match op {
+            //                 GeoSpatialOp::InsertGeometry { id, geometry } => {
+            //                     let geometry_ref = match geometry {
+            //                         SerializedGeometry::Point { x, y } => {
+            //                             GeometryRef::Point(GeoPoint { x: *x, y: *y })
+            //                         }
+            //                         SerializedGeometry::BoundingBox { min_x, min_y, max_x, max_y } => {
+            //                             GeometryRef::BoundingBox {
+            //                                 min: GeoPoint { x: *min_x, y: *min_y },
+            //                                 max: GeoPoint { x: *max_x, y: *max_y },
+            //                             }
+            //                         }
+            //                         SerializedGeometry::Wkb(wkb) => GeometryRef::Wkb(wkb),
+            //                     };
+            //                     rtree.insert_geometry(id, geometry_ref)
+            //                         .map_err(|e| TransactionError::Other(format!("Geospatial insert_geometry failed: {}", e)))?;
+            //                 }
+            //                 GeoSpatialOp::DeleteGeometry { id } => {
+            //                     rtree.delete_geometry(id)
+            //                         .map_err(|e| TransactionError::Other(format!("Geospatial delete_geometry failed: {}", e)))?;
+            //                 }
+            //             }
+            //         }
+            //         _ => {
+            //             return Err(TransactionError::Other(
+            //                 "table is not a geospatial table".to_string(),
+            //             ))
+            //         }
+            //     }
+            // }
+        }
+
         // Update current LSN
         {
             let mut current_lsn = self.current_lsn.write().unwrap();
@@ -2044,6 +2128,223 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
             Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => hnsw.verify(),
             Some(_) => Err(crate::table::TableError::Other(
                 "table is not a vector search table".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+}
+
+impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
+    fn table_id(&self) -> TableId {
+        self.current_table_id.unwrap_or(TableId::from(0))
+    }
+
+    fn name(&self) -> &str {
+        self.current_table_name.as_deref().unwrap_or("unknown")
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        let Some(table_id) = self.current_table_id else {
+            return SpecialtyTableCapabilities::default();
+        };
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedRTree(rtree)) => {
+                GeoSpatial::capabilities(rtree.as_ref())
+            }
+            _ => SpecialtyTableCapabilities::default(),
+        }
+    }
+
+    fn insert_geometry(&mut self, id: &[u8], geometry: GeometryRef<'_>) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for insert_geometry",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for geospatial operation".to_string(),
+            )
+        })?;
+
+        // Serialize geometry for storage in write set
+        let serialized_geometry = match geometry {
+            GeometryRef::Point(point) => SerializedGeometry::Point {
+                x: point.x,
+                y: point.y,
+            },
+            GeometryRef::BoundingBox { min, max } => SerializedGeometry::BoundingBox {
+                min_x: min.x,
+                min_y: min.y,
+                max_x: max.x,
+                max_y: max.y,
+            },
+            GeometryRef::Wkb(wkb) => SerializedGeometry::Wkb(wkb.to_vec()),
+        };
+
+        // Serialize geometry for WAL (store as value in Write record)
+        let geometry_bytes = match &serialized_geometry {
+            SerializedGeometry::Point { x, y } => {
+                let mut bytes = Vec::with_capacity(17);
+                bytes.push(1); // Point type
+                bytes.extend_from_slice(&x.to_le_bytes());
+                bytes.extend_from_slice(&y.to_le_bytes());
+                bytes
+            }
+            SerializedGeometry::BoundingBox { min_x, min_y, max_x, max_y } => {
+                let mut bytes = Vec::with_capacity(33);
+                bytes.push(2); // BoundingBox type
+                bytes.extend_from_slice(&min_x.to_le_bytes());
+                bytes.extend_from_slice(&min_y.to_le_bytes());
+                bytes.extend_from_slice(&max_x.to_le_bytes());
+                bytes.extend_from_slice(&max_y.to_le_bytes());
+                bytes
+            }
+            SerializedGeometry::Wkb(wkb) => {
+                let mut bytes = Vec::with_capacity(1 + wkb.len());
+                bytes.push(3); // WKB type
+                bytes.extend_from_slice(wkb);
+                bytes
+            }
+        };
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::GeoInsert,
+                id.to_vec(),
+                geometry_bytes,
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_geospatial_operation(
+            table_id,
+            GeoSpatialOp::InsertGeometry {
+                id: id.to_vec(),
+                geometry: serialized_geometry,
+            },
+        );
+        Ok(())
+    }
+
+    fn delete_geometry(&mut self, id: &[u8]) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for delete_geometry",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for geospatial operation".to_string(),
+            )
+        })?;
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::GeoDelete,
+                id.to_vec(),
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_geospatial_operation(
+            table_id,
+            GeoSpatialOp::DeleteGeometry {
+                id: id.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    fn intersects(&self, query: GeometryRef<'_>, limit: usize) -> crate::table::TableResult<Vec<GeoHit>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for intersects",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for geospatial operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedRTree(rtree)) => {
+                rtree.intersects(query, limit)
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a geospatial table".to_string(),
+            )),
+            None => Ok(vec![]),
+        }
+    }
+
+    fn nearest(&self, point: GeoPoint, limit: usize) -> crate::table::TableResult<Vec<GeoHit>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for nearest",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for geospatial operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedRTree(rtree)) => {
+                rtree.nearest(point, limit)
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a geospatial table".to_string(),
+            )),
+            None => Ok(vec![]),
+        }
+    }
+
+    fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for geospatial operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedRTree(rtree)) => rtree.stats(),
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a geospatial table".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+
+    fn verify(&self) -> crate::table::TableResult<VerificationReport> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for geospatial operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedRTree(rtree)) => rtree.verify(),
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a geospatial table".to_string(),
             )),
             None => Err(crate::table::TableError::Other(
                 "table not found".to_string(),

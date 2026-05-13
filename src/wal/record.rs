@@ -116,6 +116,10 @@ pub enum WriteOpType {
     VectorInsert = 8,
     /// Delete a vector
     VectorDelete = 9,
+    /// Insert a geometry into a geospatial index
+    GeoInsert = 10,
+    /// Delete a geometry from a geospatial index
+    GeoDelete = 11,
 }
 
 impl WriteOpType {
@@ -131,6 +135,8 @@ impl WriteOpType {
             7 => Ok(WriteOpType::TimeSeriesDelete),
             8 => Ok(WriteOpType::VectorInsert),
             9 => Ok(WriteOpType::VectorDelete),
+            10 => Ok(WriteOpType::GeoInsert),
+            11 => Ok(WriteOpType::GeoDelete),
             _ => Err(WalError::InvalidRecord {
                 lsn: LogSequenceNumber::from(0),
                 details: format!("Invalid write op type: {}", value),
