@@ -778,7 +778,9 @@ impl<FS: FileSystem> PagedRTree<FS> {
         match base_type {
             1 => {
                 if wkb.len() < 21 {
-                    return Err(TableError::operation_not_supported("WKB Point data too short"));
+                    return Err(TableError::operation_not_supported(
+                        "WKB Point data too short",
+                    ));
                 }
                 let x = read_f64(wkb, 5);
                 let y = read_f64(wkb, 13);
@@ -786,7 +788,9 @@ impl<FS: FileSystem> PagedRTree<FS> {
             }
             2 => {
                 if wkb.len() < 9 {
-                    return Err(TableError::operation_not_supported("WKB LineString data too short"));
+                    return Err(TableError::operation_not_supported(
+                        "WKB LineString data too short",
+                    ));
                 }
                 let num_points = read_u32(wkb, 5) as usize;
                 if wkb.len() < 9 + num_points * 16 {
@@ -814,7 +818,9 @@ impl<FS: FileSystem> PagedRTree<FS> {
             }
             3 => {
                 if wkb.len() < 9 {
-                    return Err(TableError::operation_not_supported("WKB Polygon data too short"));
+                    return Err(TableError::operation_not_supported(
+                        "WKB Polygon data too short",
+                    ));
                 }
                 let num_rings = read_u32(wkb, 5) as usize;
                 let mut offset = 9;
@@ -1230,7 +1236,7 @@ mod tests {
         bytes
     }
 
-    fn create_wkb_lineString(points: &[(f64, f64)]) -> Vec<u8> {
+    fn create_wkb_line_string(points: &[(f64, f64)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.push(1);
         bytes.extend_from_slice(&2u32.to_le_bytes());
@@ -1280,9 +1286,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wkb_lineString() {
+    fn test_parse_wkb_line_string() {
         let points = vec![(0.0f64, 0.0f64), (1.0f64, 1.0f64), (2.0f64, 0.0f64)];
-        let wkb = create_wkb_lineString(&points);
+        let wkb = create_wkb_line_string(&points);
         let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&wkb).unwrap();
         assert!((mbr.min[0] - 0.0).abs() < 1e-10);
         assert!((mbr.min[1] - 0.0).abs() < 1e-10);
