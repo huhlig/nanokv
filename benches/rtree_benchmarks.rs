@@ -17,11 +17,11 @@
 //! Benchmarks for R-Tree geospatial operations
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use std::hint::black_box;
 use nanokv::pager::{PageSize, Pager, PagerConfig};
 use nanokv::table::{GeoPoint, GeoSpatial, GeometryRef, PagedRTree, SpatialConfig, SplitStrategy};
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
+use std::hint::black_box;
 use std::sync::Arc;
 
 fn create_test_pager(fs: &MemoryFileSystem, path: &str) -> Arc<Pager<MemoryFileSystem>> {
@@ -148,7 +148,8 @@ fn bench_intersects_query(c: &mut Criterion) {
                 &(count, points.clone(), *query_size),
                 |b, (_, points, query_size)| {
                     let fs = MemoryFileSystem::new();
-                    let mut rtree = create_rtree(&fs, "/bench_intersects.db", SpatialConfig::default());
+                    let mut rtree =
+                        create_rtree(&fs, "/bench_intersects.db", SpatialConfig::default());
 
                     for (id, point) in points {
                         rtree
@@ -195,7 +196,8 @@ fn bench_nearest_query(c: &mut Criterion) {
                 &(count, points.clone(), *k),
                 |b, (_, points, k)| {
                     let fs = MemoryFileSystem::new();
-                    let mut rtree = create_rtree(&fs, "/bench_nearest.db", SpatialConfig::default());
+                    let mut rtree =
+                        create_rtree(&fs, "/bench_nearest.db", SpatialConfig::default());
 
                     for (id, point) in points {
                         rtree
@@ -342,10 +344,7 @@ fn bench_strategy_capacity_matrix(c: &mut Criterion) {
                 .with_split_strategy(*strategy);
 
             group.bench_with_input(
-                BenchmarkId::new(
-                    format!("{}_cap_{}", strategy_name, capacity),
-                    count,
-                ),
+                BenchmarkId::new(format!("{}_cap_{}", strategy_name, capacity), count),
                 &(config, points.clone()),
                 |b, (config, points)| {
                     b.iter(|| {

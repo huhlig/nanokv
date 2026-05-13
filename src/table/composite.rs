@@ -273,11 +273,7 @@ where
         }
 
         // All bloom filters passed (or none exist), query primary
-        let value = (self.get_from_primary)(
-            self.config.primary_table_id,
-            key,
-            self.snapshot_lsn,
-        )?;
+        let value = (self.get_from_primary)(self.config.primary_table_id, key, self.snapshot_lsn)?;
 
         tables_consulted.push(TableConsulted {
             table_id: self.config.primary_table_id,
@@ -297,11 +293,7 @@ where
         let mut tables_consulted = Vec::new();
 
         // Query primary first
-        let value = (self.get_from_primary)(
-            self.config.primary_table_id,
-            key,
-            self.snapshot_lsn,
-        )?;
+        let value = (self.get_from_primary)(self.config.primary_table_id, key, self.snapshot_lsn)?;
 
         tables_consulted.push(TableConsulted {
             table_id: self.config.primary_table_id,
@@ -350,11 +342,8 @@ where
         let mut tables_consulted = Vec::new();
 
         // Query primary
-        let primary_value = (self.get_from_primary)(
-            self.config.primary_table_id,
-            key,
-            self.snapshot_lsn,
-        )?;
+        let primary_value =
+            (self.get_from_primary)(self.config.primary_table_id, key, self.snapshot_lsn)?;
 
         tables_consulted.push(TableConsulted {
             table_id: self.config.primary_table_id,
@@ -366,9 +355,7 @@ where
         // Query all secondaries in parallel (conceptually)
         for secondary in &self.config.secondary_tables {
             let contributed = match secondary.engine_kind {
-                TableEngineKind::Bloom => {
-                    (self.might_contain_in_bloom)(secondary.table_id, key)?
-                }
+                TableEngineKind::Bloom => (self.might_contain_in_bloom)(secondary.table_id, key)?,
                 _ => true,
             };
 
@@ -394,11 +381,7 @@ where
         let mut tables_consulted = Vec::new();
 
         // Try primary first
-        let value = (self.get_from_primary)(
-            self.config.primary_table_id,
-            key,
-            self.snapshot_lsn,
-        )?;
+        let value = (self.get_from_primary)(self.config.primary_table_id, key, self.snapshot_lsn)?;
 
         tables_consulted.push(TableConsulted {
             table_id: self.config.primary_table_id,

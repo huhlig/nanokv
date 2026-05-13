@@ -649,7 +649,11 @@ impl<FS: FileSystem> Transaction<FS> {
     ///     // Bloom filter determined key is absent, no disk read needed
     /// }
     /// ```
-    pub fn with_composite(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    pub fn with_composite(
+        &mut self,
+        config: &CompositeIndexConfig,
+        key: &[u8],
+    ) -> TransactionResult<Option<ValueBuf>> {
         match config.strategy {
             crate::table::CompositionStrategy::BloomFirst => {
                 self.composite_bloom_first(config, key)
@@ -657,16 +661,16 @@ impl<FS: FileSystem> Transaction<FS> {
             crate::table::CompositionStrategy::PrimaryFirst => {
                 self.composite_primary_first(config, key)
             }
-            crate::table::CompositionStrategy::Parallel => {
-                self.composite_parallel(config, key)
-            }
-            crate::table::CompositionStrategy::Sequential => {
-                self.composite_sequential(config, key)
-            }
+            crate::table::CompositionStrategy::Parallel => self.composite_parallel(config, key),
+            crate::table::CompositionStrategy::Sequential => self.composite_sequential(config, key),
         }
     }
 
-    fn composite_bloom_first(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn composite_bloom_first(
+        &mut self,
+        config: &CompositeIndexConfig,
+        key: &[u8],
+    ) -> TransactionResult<Option<ValueBuf>> {
         for bloom_id in config.bloom_filter_ids() {
             if !self.with_bloom(bloom_id, |bloom| bloom.might_contain(key))? {
                 return Ok(None);
@@ -676,7 +680,11 @@ impl<FS: FileSystem> Transaction<FS> {
         self.get(config.primary_table_id, key)
     }
 
-    fn composite_primary_first(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn composite_primary_first(
+        &mut self,
+        config: &CompositeIndexConfig,
+        key: &[u8],
+    ) -> TransactionResult<Option<ValueBuf>> {
         let value = self.get(config.primary_table_id, key)?;
 
         if value.is_some() {
@@ -694,7 +702,11 @@ impl<FS: FileSystem> Transaction<FS> {
         Ok(value)
     }
 
-    fn composite_parallel(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn composite_parallel(
+        &mut self,
+        config: &CompositeIndexConfig,
+        key: &[u8],
+    ) -> TransactionResult<Option<ValueBuf>> {
         let primary_value = self.get(config.primary_table_id, key)?;
 
         if primary_value.is_none() {
@@ -712,7 +724,11 @@ impl<FS: FileSystem> Transaction<FS> {
         Ok(primary_value)
     }
 
-    fn composite_sequential(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+    fn composite_sequential(
+        &mut self,
+        config: &CompositeIndexConfig,
+        key: &[u8],
+    ) -> TransactionResult<Option<ValueBuf>> {
         if let Some(value) = self.get(config.primary_table_id, key)? {
             return Ok(Some(value));
         }
