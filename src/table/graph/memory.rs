@@ -293,7 +293,7 @@ impl GraphAdjacency for MemoryGraphTable {
             label: KeyBuf(label.to_vec()),
             edge_id: KeyBuf(edge_id.to_vec()),
         };
-        self.storage.put(&out_key.encode(), &target, tx_id, lsn)?;
+        self.storage.put(&out_key.encode(), target, tx_id, lsn)?;
 
         // Store incoming edge index
         let in_key = GraphKey::Incoming {
@@ -301,7 +301,7 @@ impl GraphAdjacency for MemoryGraphTable {
             label: KeyBuf(label.to_vec()),
             edge_id: KeyBuf(edge_id.to_vec()),
         };
-        self.storage.put(&in_key.encode(), &source, tx_id, lsn)?;
+        self.storage.put(&in_key.encode(), source, tx_id, lsn)?;
 
         // For undirected graphs, add reverse edge
         if !self.config.directed {
@@ -310,14 +310,14 @@ impl GraphAdjacency for MemoryGraphTable {
                 label: KeyBuf(label.to_vec()),
                 edge_id: KeyBuf(edge_id.to_vec()),
             };
-            self.storage.put(&rev_out_key.encode(), &source, tx_id, lsn)?;
+            self.storage.put(&rev_out_key.encode(), source, tx_id, lsn)?;
 
             let rev_in_key = GraphKey::Incoming {
                 target: KeyBuf(source.to_vec()),
                 label: KeyBuf(label.to_vec()),
                 edge_id: KeyBuf(edge_id.to_vec()),
             };
-            self.storage.put(&rev_in_key.encode(), &target, tx_id, lsn)?;
+            self.storage.put(&rev_in_key.encode(), target, tx_id, lsn)?;
         }
 
         // Update in-memory index
@@ -336,13 +336,13 @@ impl GraphAdjacency for MemoryGraphTable {
             index
                 .outgoing
                 .entry(source.to_vec())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(edge.clone());
 
             index
                 .incoming
                 .entry(target.to_vec())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(edge.clone());
 
             if !self.config.directed {
@@ -356,13 +356,13 @@ impl GraphAdjacency for MemoryGraphTable {
                 index
                     .outgoing
                     .entry(target.to_vec())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(rev_edge.clone());
 
                 index
                     .incoming
                     .entry(source.to_vec())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(rev_edge);
             }
         }

@@ -286,7 +286,7 @@ impl Mbr {
         }
 
         let dimensions = bytes[0] as usize;
-        if dimensions < 2 || dimensions > 3 {
+        if !(2..=3).contains(&dimensions) {
             return Err(format!("Invalid dimensions: {}", dimensions));
         }
 

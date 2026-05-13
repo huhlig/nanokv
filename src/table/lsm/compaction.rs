@@ -356,15 +356,15 @@ impl CompactionPicker {
         let source_files: Vec<FileMetadata> = files
             .iter()
             .filter(|f| {
-                let in_range = match (start_key, end_key) {
+                
+                match (start_key, end_key) {
                     (Some(start), Some(end)) => {
                         f.max_key.as_slice() >= start && f.min_key.as_slice() <= end
                     }
                     (Some(start), None) => f.max_key.as_slice() >= start,
                     (None, Some(end)) => f.min_key.as_slice() <= end,
                     (None, None) => true,
-                };
-                in_range
+                }
             })
             .cloned()
             .collect();
@@ -438,7 +438,7 @@ impl<FS: FileSystem> CompactionExecutor<FS> {
             let mut stats = self.stats.write().unwrap();
             stats.active_compactions -= 1;
 
-            if let Ok((output_files, bytes_read, bytes_written, keys_processed, keys_dropped)) =
+            if let Ok((_output_files, bytes_read, bytes_written, keys_processed, keys_dropped)) =
                 &result
             {
                 stats.record_compaction(
@@ -550,7 +550,7 @@ impl<FS: FileSystem> CompactionExecutor<FS> {
                     // Check if writer is full
                     // Note: We'd need to add a size check method to SStableWriter
                     // For now, we'll just use a simple heuristic
-                    if keys_processed % 1000 == 0 {
+                    if keys_processed.is_multiple_of(1000) {
                         // Finish current writer and start a new one
                         // Take ownership of the writer
                         let writer = current_writer.take().unwrap();
@@ -574,7 +574,7 @@ impl<FS: FileSystem> CompactionExecutor<FS> {
                 }
             }
 
-            merge_iter.next()?;
+            merge_iter.step_forward()?;
         }
 
         // Finish last writer

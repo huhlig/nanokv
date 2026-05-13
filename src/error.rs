@@ -917,7 +917,7 @@ mod tests {
     use crate::pager::{CompressionType, EncryptionType, PageId};
     use crate::table::TableError;
     use crate::txn::TransactionId;
-    use crate::types::{TableId, ValueRef};
+    use crate::types::TableId;
     use crate::wal::LogSequenceNumber;
     use tracing_test::traced_test;
 

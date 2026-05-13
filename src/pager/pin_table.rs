@@ -59,8 +59,8 @@ impl PinTable {
     /// Returns the new reference count, or None if the page was not pinned.
     pub fn unpin(&self, page_id: PageId) -> Option<usize> {
         let mut pins = self.pins.write();
-        if let Some(count) = pins.get_mut(&page_id) {
-            if *count > 0 {
+        if let Some(count) = pins.get_mut(&page_id)
+            && *count > 0 {
                 *count -= 1;
                 let new_count = *count;
                 // Remove entry if count reaches 0 to avoid memory leak
@@ -69,14 +69,13 @@ impl PinTable {
                 }
                 return Some(new_count);
             }
-        }
         None
     }
 
     /// Check if a page is pinned (ref count > 0)
     pub fn is_pinned(&self, page_id: PageId) -> bool {
         let pins = self.pins.read();
-        pins.get(&page_id).map_or(false, |&count| count > 0)
+        pins.get(&page_id).is_some_and(|&count| count > 0)
     }
 
     /// Get the reference count for a page

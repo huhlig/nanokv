@@ -322,8 +322,10 @@ impl<'a> BatchOps for MemoryHashTableWriter<'a> {
     fn apply_batch<'b>(&mut self, batch: WriteBatch<'b>) -> TableResult<BatchReport> {
         use crate::table::Mutation;
 
-        let mut report = BatchReport::default();
-        report.attempted = batch.mutations.len() as u64;
+        let mut report = BatchReport {
+            attempted: batch.mutations.len() as u64,
+            ..Default::default()
+        };
 
         for mutation in batch.mutations {
             match mutation {

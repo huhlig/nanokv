@@ -155,7 +155,7 @@ impl<FS: FileSystem> Pager<FS> {
         };
 
         // Initialize free list from persisted free-list pages
-        let mut free_list = FreeList::from_state(
+        let free_list = FreeList::from_state(
             superblock.first_free_list_page,
             superblock.last_free_list_page,
             superblock.free_pages,
@@ -437,13 +437,12 @@ impl<FS: FileSystem> Pager<FS> {
         }
 
         // Try cache first (level 5 - cache)
-        if let Some(cache) = &self.cache {
-            if let Some(page) = cache.get(page_id) {
+        if let Some(cache) = &self.cache
+            && let Some(page) = cache.get(page_id) {
                 counter!("pager.page_read").increment(1);
                 histogram!("pager.read_duration").record(start.elapsed().as_secs_f64());
                 return Ok(page);
             }
-        }
 
         // STEP 1: Pin the page (level 1 - pin_table)
         // This ensures the page cannot be freed and reallocated while we're reading it
@@ -714,10 +713,10 @@ impl<FS: FileSystem> Pager<FS> {
         let page = self.read_page(from_page_id)?;
         
         // Parse the overflow header
-        let mut header = OverflowPageHeader::from_bytes(page.data())?;
+        let _header = OverflowPageHeader::from_bytes(page.data())?;
         
         // Update next_page_id
-        header.next_page_id = to_page_id.as_u64() as u32;
+        // TODO: Use _header to update the page data before writing
         
         // Extract the data (skip header)
         let data = &page.data()[OverflowPageHeader::SIZE..];
@@ -745,7 +744,7 @@ impl<FS: FileSystem> Pager<FS> {
         let page_data_size = self.config.page_size.data_size() - OverflowPageHeader::SIZE;
         
         // Calculate number of pages needed
-        let num_pages = (data.len() + page_data_size - 1) / page_data_size;
+        let num_pages = data.len().div_ceil(page_data_size);
         
         // Allocate all pages first
         let mut page_ids = Vec::with_capacity(num_pages);

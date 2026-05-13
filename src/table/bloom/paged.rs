@@ -119,7 +119,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         let bits_per_page = pager.page_size().data_size() * 8;
 
         // Calculate number of pages needed
-        let num_pages = (num_bits + bits_per_page - 1) / bits_per_page;
+        let num_pages = num_bits.div_ceil(bits_per_page);
 
         // Allocate bitmap pages
         let mut bitmap_pages = Vec::with_capacity(num_pages);
@@ -134,7 +134,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             pager.write_page(&page)?;
         }
 
-        let mut filter = Self {
+        let filter = Self {
             table_id,
             name,
             pager,
@@ -479,7 +479,7 @@ impl<FS: FileSystem> ApproximateMembership for PagedBloomFilter<FS> {
         };
 
         // Verify metadata consistency
-        let expected_pages = (self.num_bits + self.bits_per_page - 1) / self.bits_per_page;
+        let expected_pages = self.num_bits.div_ceil(self.bits_per_page);
         if self.bitmap_pages.len() != expected_pages {
             report.errors.push(crate::table::ConsistencyError {
                 error_type: crate::table::ConsistencyErrorType::InvalidPointer,
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn test_create_and_insert() {
         let pager = create_test_pager();
-        let mut filter = PagedBloomFilter::new(
+        let filter = PagedBloomFilter::new(
             TableId::from(1),
             "test_bloom".to_string(),
             pager,
@@ -558,7 +558,7 @@ mod tests {
 
         // Create and populate filter
         let root_page_id = {
-            let mut filter =
+            let filter =
                 PagedBloomFilter::new(table_id, name.clone(), pager.clone(), 100, 10, None)
                     .unwrap();
 
@@ -580,7 +580,7 @@ mod tests {
     fn test_false_positive_rate() {
         let pager = create_test_pager();
         let num_items = 1000;
-        let mut filter = PagedBloomFilter::new(
+        let filter = PagedBloomFilter::new(
             TableId::from(1),
             "test_bloom".to_string(),
             pager,
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let pager = create_test_pager();
-        let mut filter = PagedBloomFilter::new(
+        let filter = PagedBloomFilter::new(
             TableId::from(1),
             "test_bloom".to_string(),
             pager,

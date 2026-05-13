@@ -24,6 +24,7 @@ use crate::types::{CompressionKind, EncryptionKind};
 
 /// LSM tree configuration.
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct LsmConfig {
     /// Memtable configuration
     pub memtable: MemtableConfig,
@@ -41,17 +42,6 @@ pub struct LsmConfig {
     pub block_cache: BlockCacheConfig,
 }
 
-impl Default for LsmConfig {
-    fn default() -> Self {
-        Self {
-            memtable: MemtableConfig::default(),
-            sstable: SStableConfig::default(),
-            compaction: CompactionConfig::default(),
-            bloom_filter: BloomFilterConfig::default(),
-            block_cache: BlockCacheConfig::default(),
-        }
-    }
-}
 
 /// Memtable configuration.
 #[derive(Clone, Debug)]

@@ -46,7 +46,7 @@ fn test_sequential_allocation_1000_pages() {
     for i in 0..page_count {
         let page_id = pager
             .allocate_page(PageType::BTreeLeaf)
-            .expect(&format!("Failed to allocate page {}", i));
+            .unwrap_or_else(|_| panic!("Failed to allocate page {}", i));
 
         allocated_pages.push(page_id);
     }
@@ -86,7 +86,7 @@ fn test_sequential_allocation_5000_pages() {
     for i in 0..page_count {
         let page_id = pager
             .allocate_page(PageType::BTreeLeaf)
-            .expect(&format!("Failed to allocate page {}", i));
+            .unwrap_or_else(|_| panic!("Failed to allocate page {}", i));
 
         allocated_pages.push(page_id);
     }
@@ -120,7 +120,7 @@ fn test_mixed_allocation_deallocation_1000_cycles() {
         for _ in 0..5 {
             let page_id = pager
                 .allocate_page(PageType::BTreeLeaf)
-                .expect(&format!("Failed to allocate in cycle {}", cycle));
+                .unwrap_or_else(|_| panic!("Failed to allocate in cycle {}", cycle));
             active_pages.push(page_id);
         }
 
@@ -128,10 +128,8 @@ fn test_mixed_allocation_deallocation_1000_cycles() {
         if active_pages.len() >= 3 {
             for _ in 0..3 {
                 let page_id = active_pages.pop().unwrap();
-                pager.free_page(page_id).expect(&format!(
-                    "Failed to free page {} in cycle {}",
-                    page_id, cycle
-                ));
+                pager.free_page(page_id).unwrap_or_else(|_| panic!("Failed to free page {} in cycle {}",
+                    page_id, cycle));
             }
         }
     }
@@ -179,16 +177,14 @@ fn test_random_allocation_deallocation_patterns() {
             // Allocate a page
             let page_id = pager
                 .allocate_page(PageType::BTreeLeaf)
-                .expect(&format!("Failed to allocate in operation {}", op));
+                .unwrap_or_else(|_| panic!("Failed to allocate in operation {}", op));
             active_pages.push(page_id);
         } else {
             // Free a random page
             let index = (rng_state as usize) % active_pages.len();
             let page_id = active_pages.swap_remove(index);
-            pager.free_page(page_id).expect(&format!(
-                "Failed to free page {} in operation {}",
-                page_id, op
-            ));
+            pager.free_page(page_id).unwrap_or_else(|_| panic!("Failed to free page {} in operation {}",
+                page_id, op));
         }
     }
 
@@ -307,7 +303,7 @@ fn test_free_list_chain_traversal() {
     for i in 0..page_count {
         let page_id = pager
             .allocate_page(PageType::BTreeLeaf)
-            .expect(&format!("Failed to reallocate page {}", i));
+            .unwrap_or_else(|_| panic!("Failed to reallocate page {}", i));
         reallocated.push(page_id);
     }
 
@@ -373,7 +369,7 @@ fn test_persistence_and_recovery_large_database() {
         for (i, &page_id) in allocated_pages.iter().enumerate() {
             let page = pager
                 .read_page(page_id)
-                .expect(&format!("Failed to read page {}", page_id));
+                .unwrap_or_else(|_| panic!("Failed to read page {}", page_id));
 
             let expected_data = format!("Page {} data", i);
             assert_eq!(
@@ -509,7 +505,7 @@ fn test_large_page_id_values() {
     for i in 0..page_count {
         let page_id = pager
             .allocate_page(PageType::BTreeLeaf)
-            .expect(&format!("Failed to allocate page {}", i));
+            .unwrap_or_else(|_| panic!("Failed to allocate page {}", i));
         pages.push(page_id);
     }
 
@@ -601,7 +597,7 @@ fn test_rapid_allocation_deallocation() {
         for _ in 0..10 {
             let page_id = pager
                 .allocate_page(PageType::BTreeLeaf)
-                .expect(&format!("Failed to allocate in cycle {}", cycle));
+                .unwrap_or_else(|_| panic!("Failed to allocate in cycle {}", cycle));
             pages.push(page_id);
         }
 
@@ -609,7 +605,7 @@ fn test_rapid_allocation_deallocation() {
         for page_id in pages {
             pager
                 .free_page(page_id)
-                .expect(&format!("Failed to free in cycle {}", cycle));
+                .unwrap_or_else(|_| panic!("Failed to free in cycle {}", cycle));
         }
     }
 
@@ -652,7 +648,7 @@ fn test_write_read_operations_at_scale() {
     for (page_id, expected_data) in pages {
         let page = pager
             .read_page(page_id)
-            .expect(&format!("Failed to read page {}", page_id));
+            .unwrap_or_else(|_| panic!("Failed to read page {}", page_id));
 
         assert_eq!(
             &page.data()[0..expected_data.len()],
@@ -687,7 +683,7 @@ fn test_sequential_allocation_100k_pages() {
 
         let page_id = pager
             .allocate_page(PageType::BTreeLeaf)
-            .expect(&format!("Failed to allocate page {}", i));
+            .unwrap_or_else(|_| panic!("Failed to allocate page {}", i));
 
         allocated_pages.push(page_id);
     }
@@ -765,7 +761,7 @@ fn test_mixed_allocation_deallocation_100k_pages() {
         for _ in 0..10 {
             let page_id = pager
                 .allocate_page(PageType::BTreeLeaf)
-                .expect(&format!("Failed to allocate at count {}", total_allocated));
+                .unwrap_or_else(|_| panic!("Failed to allocate at count {}", total_allocated));
             active_pages.push(page_id);
             total_allocated += 1;
         }
@@ -776,7 +772,7 @@ fn test_mixed_allocation_deallocation_100k_pages() {
                 let page_id = active_pages.pop().unwrap();
                 pager
                     .free_page(page_id)
-                    .expect(&format!("Failed to free page {}", page_id));
+                    .unwrap_or_else(|_| panic!("Failed to free page {}", page_id));
                 total_freed += 1;
             }
         }
@@ -1111,7 +1107,7 @@ fn test_free_list_chain_100k_pages() {
 
         let page_id = pager
             .allocate_page(PageType::BTreeLeaf)
-            .expect(&format!("Failed to reallocate page {}", i));
+            .unwrap_or_else(|_| panic!("Failed to reallocate page {}", i));
         reallocated.push(page_id);
     }
 
@@ -1216,7 +1212,7 @@ fn test_persistence_recovery_50k_pages() {
             let page_id = allocated_pages[i];
             let page = pager
                 .read_page(page_id)
-                .expect(&format!("Failed to read page {}", page_id));
+                .unwrap_or_else(|_| panic!("Failed to read page {}", page_id));
 
             let expected_data = format!("Page {} data - sample {}", page_id, i);
             assert_eq!(

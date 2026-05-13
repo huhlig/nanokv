@@ -88,7 +88,7 @@ impl AdjacencyList {
         let label = edge.label.clone();
         self.edges_by_label
             .entry(label)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(edge.clone());
         self.all_edges.push(edge);
     }

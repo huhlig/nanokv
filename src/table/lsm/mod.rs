@@ -521,7 +521,7 @@ impl<FS: FileSystem> LsmTree<FS> {
     fn create_iterators(
         &self,
         direction: Direction,
-        snapshot_lsn: LogSequenceNumber,
+        _snapshot_lsn: LogSequenceNumber,
     ) -> TableResult<Vec<Box<dyn LsmIterator>>> {
         let mut iterators: Vec<Box<dyn LsmIterator>> = Vec::new();
         let mut priority = 0;
@@ -529,7 +529,7 @@ impl<FS: FileSystem> LsmTree<FS> {
         // Active memtable (highest priority)
         {
             let memtable = self.active_memtable.read().unwrap();
-            let iter = MemtableIterator::new(&*memtable, direction, priority)?;
+            let iter = MemtableIterator::new(&memtable, direction, priority)?;
             iterators.push(Box::new(iter));
             priority += 1;
         }
@@ -789,8 +789,10 @@ impl<'a, FS: FileSystem> BatchOps for LsmWriter<'a, FS> {
     }
 
     fn apply_batch<'b>(&mut self, batch: WriteBatch<'b>) -> TableResult<BatchReport> {
-        let mut report = BatchReport::default();
-        report.attempted = batch.mutations.len() as u64;
+        let mut report = BatchReport {
+            attempted: batch.mutations.len() as u64,
+            ..Default::default()
+        };
 
         for mutation in batch.mutations {
             match mutation {
@@ -1013,7 +1015,7 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
         }
 
         let merge_iter = self.merge_iterator.as_mut().unwrap();
-        merge_iter.next()?;
+        merge_iter.step_forward()?;
         self.load_current()
     }
 
@@ -1036,7 +1038,7 @@ impl<'a, FS: FileSystem> TableCursor for LsmCursor<'a, FS> {
         if let Some(ref current_key) = self.current_key {
             merge_iter.seek(current_key)?;
             // Move to previous entry
-            merge_iter.next()?;
+            merge_iter.step_forward()?;
         } else {
             // Start from last
             merge_iter.seek_to_last()?;

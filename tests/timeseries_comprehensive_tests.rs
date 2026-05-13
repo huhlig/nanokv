@@ -493,7 +493,7 @@ fn test_negative_timestamps_scan() {
     let cursor = table.scan_series(b"sensor", 1500, 2500).unwrap();
     assert_eq!(cursor.count(), 1);
 
-    let mut c = table.scan_series(b"sensor", 1500, 2500).unwrap();
+    let c = table.scan_series(b"sensor", 1500, 2500).unwrap();
     assert!(c.valid());
     assert_eq!(c.current().unwrap().timestamp, 2000);
 }
@@ -657,13 +657,11 @@ fn test_value_key_preservation() {
     )
     .unwrap();
 
-    let values = vec![
-        b"simple".as_slice(),
+    let values = [b"simple".as_slice(),
         b"with:colon".as_slice(),
         b"with spaces".as_slice(),
         b"special!@#$%^&*()".as_slice(),
-        b"unicode:\xe6\xb5\x8b\xe8\xaf\x95".as_slice(),
-    ];
+        b"unicode:\xe6\xb5\x8b\xe8\xaf\x95".as_slice()];
 
     for (i, value) in values.iter().enumerate() {
         table.append_point(b"sensor", i as i64 * 100, value).unwrap();

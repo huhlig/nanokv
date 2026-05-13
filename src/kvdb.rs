@@ -167,8 +167,8 @@ impl<FS: FileSystem> Database<FS> {
     }
 
     fn current_snapshot_lsn(&self) -> LogSequenceNumber {
-        let current_lsn = *self.current_lsn.read().unwrap();
-        current_lsn.into()
+        
+        *self.current_lsn.read().unwrap()
     }
 
     fn validate_snapshot_lsn(&self, lsn: LogSequenceNumber) -> Result<(), DatabaseError> {

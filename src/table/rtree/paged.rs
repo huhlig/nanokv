@@ -500,11 +500,10 @@ impl<FS: FileSystem> PagedRTree<FS> {
     /// Remove a child reference from an internal parent node.
     fn remove_child_from_parent(&self, parent_page_id: PageId, child_page_id: PageId) -> TableResult<()> {
         let mut parent_node = Self::read_node(&self.pager, parent_page_id)?;
-        if let Some(entries) = parent_node.internal_entries_mut() {
-            if let Some(index) = entries.iter().position(|entry| entry.child_page_id == child_page_id) {
+        if let Some(entries) = parent_node.internal_entries_mut()
+            && let Some(index) = entries.iter().position(|entry| entry.child_page_id == child_page_id) {
                 entries.remove(index);
             }
-        }
         Self::write_node(&self.pager, parent_page_id, &parent_node)
     }
 
@@ -516,11 +515,10 @@ impl<FS: FileSystem> PagedRTree<FS> {
         child_node: &RTreeNode,
     ) -> TableResult<()> {
         let mut parent_node = Self::read_node(&self.pager, parent_page_id)?;
-        if let Some(entries) = parent_node.internal_entries_mut() {
-            if let Some(entry) = entries.iter_mut().find(|entry| entry.child_page_id == child_page_id) {
+        if let Some(entries) = parent_node.internal_entries_mut()
+            && let Some(entry) = entries.iter_mut().find(|entry| entry.child_page_id == child_page_id) {
                 entry.mbr = child_node.calculate_mbr(self.config.dimensions);
             }
-        }
         Self::write_node(&self.pager, parent_page_id, &parent_node)
     }
 
@@ -698,7 +696,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
     /// Recursive helper for intersection search.
     fn search_intersects_recursive(
         &self,
-        page_id: PageId,
+        _page_id: PageId,
         node: &RTreeNode,
         query_mbr: &Mbr,
         results: &mut Vec<GeoHit>,
@@ -760,7 +758,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
             matches!(root_node, RTreeNode::Leaf { .. }),
         )));
 
-        while let Some(std::cmp::Reverse((neg_dist, page_id, is_leaf))) = heap.pop() {
+        while let Some(std::cmp::Reverse((_neg_dist, page_id, _is_leaf))) = heap.pop() {
             if results.len() >= limit {
                 break;
             }

@@ -172,8 +172,8 @@ impl Memtable {
             let mut current = Some(chain);
             
             while let Some(version) = current {
-                if let Some(commit_lsn) = version.commit_lsn {
-                    if commit_lsn <= snapshot_lsn {
+                if let Some(commit_lsn) = version.commit_lsn
+                    && commit_lsn <= snapshot_lsn {
                         // Found visible version
                         // Empty value means tombstone (deleted)
                         if version.value.is_empty() {
@@ -181,7 +181,6 @@ impl Memtable {
                         }
                         return Ok(Some(version.value.clone()));
                     }
-                }
                 
                 current = version.prev_version.as_deref();
             }
@@ -217,8 +216,8 @@ impl Memtable {
             let mut current = Some(chain);
             
             while let Some(version) = current {
-                if let Some(commit_lsn) = version.commit_lsn {
-                    if commit_lsn <= snapshot_lsn {
+                if let Some(commit_lsn) = version.commit_lsn
+                    && commit_lsn <= snapshot_lsn {
                         // Found visible version
                         // Skip tombstones
                         if !version.value.is_empty() {
@@ -226,7 +225,6 @@ impl Memtable {
                         }
                         break;
                     }
-                }
                 
                 current = version.prev_version.as_deref();
             }

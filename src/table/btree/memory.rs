@@ -33,7 +33,7 @@ use crate::table::{
     TableStatistics, TableWriter, VerificationReport, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{Bound, KeyBuf, TableId, ScanBounds, ValueBuf};
+use crate::types::{Bound, TableId, ScanBounds, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -305,13 +305,13 @@ impl<'a> MutableTable for MemoryBTreeWriter<'a> {
                     Bound::Unbounded => None,
                 };
 
-                let range = match (start_key, end_key) {
+                
+                match (start_key, end_key) {
                     (Some(s), Some(e)) => data.range(s..=e).map(|(k, _)| k.clone()).collect(),
                     (Some(s), None) => data.range(s..).map(|(k, _)| k.clone()).collect(),
                     (None, Some(e)) => data.range(..=e).map(|(k, _)| k.clone()).collect(),
                     (None, None) => data.keys().cloned().collect(),
-                };
-                range
+                }
             }
         };
         drop(data);
@@ -353,8 +353,10 @@ impl<'a> BatchOps for MemoryBTreeWriter<'a> {
     }
 
     fn apply_batch<'b>(&mut self, batch: WriteBatch<'b>) -> TableResult<BatchReport> {
-        let mut report = BatchReport::default();
-        report.attempted = batch.mutations.len() as u64;
+        let mut report = BatchReport {
+            attempted: batch.mutations.len() as u64,
+            ..Default::default()
+        };
 
         for mutation in batch.mutations {
             match mutation {
@@ -605,13 +607,12 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
                 return Ok(());
             }
 
-            if let Some(chain) = data.get(&key) {
-                if let Some(value) = self.find_visible_value(chain) {
+            if let Some(chain) = data.get(&key)
+                && let Some(value) = self.find_visible_value(chain) {
                     self.current_key = Some(key);
                     self.current_value = Some(value);
                     return Ok(());
                 }
-            }
         }
 
         self.exhausted = true;
@@ -660,14 +661,13 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
                 continue;
             }
 
-            if let Some(chain) = data.get(&k) {
-                if let Some(value) = self.find_visible_value(chain) {
+            if let Some(chain) = data.get(&k)
+                && let Some(value) = self.find_visible_value(chain) {
                     self.current_key = Some(k);
                     self.current_value = Some(value);
                     self.exhausted = false;
                     return Ok(());
                 }
-            }
         }
 
         self.exhausted = true;
@@ -768,128 +768,6 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
 
     fn snapshot_lsn(&self) -> LogSequenceNumber {
         self.snapshot_lsn
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_basic_operations() {
-        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
-        let tx_id = TransactionId::from(1);
-        let write_lsn = LogSequenceNumber::from(1);
-
-        // Write data
-        let mut writer = table.writer(tx_id, write_lsn).unwrap();
-        writer.put(b"key1", b"value1").unwrap();
-        writer.put(b"key2", b"value2").unwrap();
-        writer.flush().unwrap();
-
-        // Commit the versions
-        {
-            let mut data = table.data.write().unwrap();
-            let commit_lsn = LogSequenceNumber::from(10);
-            for chain in data.values_mut() {
-                chain.commit(commit_lsn);
-            }
-        }
-
-        // Read at a later LSN to see committed data
-        let read_lsn = LogSequenceNumber::from(20);
-        let reader = table.reader(read_lsn).unwrap();
-        assert_eq!(
-            reader.get(b"key1", read_lsn).unwrap(),
-            Some(ValueBuf(b"value1".to_vec()))
-        );
-        assert_eq!(
-            reader.get(b"key2", read_lsn).unwrap(),
-            Some(ValueBuf(b"value2".to_vec()))
-        );
-        assert_eq!(reader.get(b"key3", read_lsn).unwrap(), None);
-    }
-
-    #[test]
-    fn test_cursor_iteration() {
-        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
-        let tx_id = TransactionId::from(1);
-        let write_lsn = LogSequenceNumber::from(1);
-
-        // Write data
-        let mut writer = table.writer(tx_id, write_lsn).unwrap();
-        writer.put(b"a", b"1").unwrap();
-        writer.put(b"b", b"2").unwrap();
-        writer.put(b"c", b"3").unwrap();
-        writer.flush().unwrap();
-
-        // Commit the versions
-        {
-            let mut data = table.data.write().unwrap();
-            let commit_lsn = LogSequenceNumber::from(10);
-            for chain in data.values_mut() {
-                chain.commit(commit_lsn);
-            }
-        }
-
-        // Read at a later LSN
-        let read_lsn = LogSequenceNumber::from(20);
-        let reader = table.reader(read_lsn).unwrap();
-        let mut cursor = reader.scan(ScanBounds::All, read_lsn).unwrap();
-
-        assert!(cursor.valid());
-        assert_eq!(cursor.key(), Some(b"a".as_ref()));
-        assert_eq!(cursor.value(), Some(b"1".as_ref()));
-
-        cursor.next().unwrap();
-        assert_eq!(cursor.key(), Some(b"b".as_ref()));
-
-        cursor.next().unwrap();
-        assert_eq!(cursor.key(), Some(b"c".as_ref()));
-
-        cursor.next().unwrap();
-        assert!(!cursor.valid());
-    }
-
-    #[test]
-    fn test_range_scan() {
-        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
-        let tx_id = TransactionId::from(1);
-        let write_lsn = LogSequenceNumber::from(1);
-
-        // Write data
-        let mut writer = table.writer(tx_id, write_lsn).unwrap();
-        for i in 0..10 {
-            let key = format!("key{:02}", i);
-            let value = format!("value{}", i);
-            writer.put(key.as_bytes(), value.as_bytes()).unwrap();
-        }
-        writer.flush().unwrap();
-
-        // Commit the versions
-        {
-            let mut data = table.data.write().unwrap();
-            let commit_lsn = LogSequenceNumber::from(10);
-            for chain in data.values_mut() {
-                chain.commit(commit_lsn);
-            }
-        }
-
-        // Read at a later LSN
-        let read_lsn = LogSequenceNumber::from(20);
-        let reader = table.reader(read_lsn).unwrap();
-        let bounds = ScanBounds::Range {
-            start: Bound::Included(KeyBuf(b"key03".to_vec())),
-            end: Bound::Excluded(KeyBuf(b"key07".to_vec())),
-        };
-        let mut cursor = reader.scan(bounds, read_lsn).unwrap();
-
-        let mut count = 0;
-        while cursor.valid() {
-            count += 1;
-            cursor.next().unwrap();
-        }
-        assert_eq!(count, 4); // key03, key04, key05, key06
     }
 }
 
@@ -1008,14 +886,13 @@ impl DenseOrdered for MemoryBTree {
                 Vec::new(),
             );
             
-            if let Some(stored_primary_key) = chain.find_visible_version(&snapshot) {
-                if stored_primary_key == primary_key {
+            if let Some(stored_primary_key) = chain.find_visible_version(&snapshot)
+                && stored_primary_key == primary_key {
                     // Remove the entry
                     let removed_chain = data.remove(index_key).unwrap();
                     let size = Self::estimate_entry_size(index_key, &removed_chain);
                     self.update_memory_usage(-(size as isize));
                 }
-            }
         }
 
         Ok(())
@@ -1044,7 +921,7 @@ impl DenseOrdered for MemoryBTree {
     fn verify(&self) -> TableResult<VerificationReport> {
         // Basic verification: check that all entries are valid
         let data = self.data.read().unwrap();
-        let mut report = VerificationReport {
+        let report = VerificationReport {
             checked_items: data.len() as u64,
             errors: Vec::new(),
             warnings: Vec::new(),
@@ -1056,5 +933,128 @@ impl DenseOrdered for MemoryBTree {
         // - Validate key ordering
 
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::KeyBuf;
+
+    #[test]
+    fn test_basic_operations() {
+        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
+        let tx_id = TransactionId::from(1);
+        let write_lsn = LogSequenceNumber::from(1);
+
+        // Write data
+        let mut writer = table.writer(tx_id, write_lsn).unwrap();
+        writer.put(b"key1", b"value1").unwrap();
+        writer.put(b"key2", b"value2").unwrap();
+        writer.flush().unwrap();
+
+        // Commit the versions
+        {
+            let mut data = table.data.write().unwrap();
+            let commit_lsn = LogSequenceNumber::from(10);
+            for chain in data.values_mut() {
+                chain.commit(commit_lsn);
+            }
+        }
+
+        // Read at a later LSN to see committed data
+        let read_lsn = LogSequenceNumber::from(20);
+        let reader = table.reader(read_lsn).unwrap();
+        assert_eq!(
+            reader.get(b"key1", read_lsn).unwrap(),
+            Some(ValueBuf(b"value1".to_vec()))
+        );
+        assert_eq!(
+            reader.get(b"key2", read_lsn).unwrap(),
+            Some(ValueBuf(b"value2".to_vec()))
+        );
+        assert_eq!(reader.get(b"key3", read_lsn).unwrap(), None);
+    }
+
+    #[test]
+    fn test_cursor_iteration() {
+        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
+        let tx_id = TransactionId::from(1);
+        let write_lsn = LogSequenceNumber::from(1);
+
+        // Write data
+        let mut writer = table.writer(tx_id, write_lsn).unwrap();
+        writer.put(b"a", b"1").unwrap();
+        writer.put(b"b", b"2").unwrap();
+        writer.put(b"c", b"3").unwrap();
+        writer.flush().unwrap();
+
+        // Commit the versions
+        {
+            let mut data = table.data.write().unwrap();
+            let commit_lsn = LogSequenceNumber::from(10);
+            for chain in data.values_mut() {
+                chain.commit(commit_lsn);
+            }
+        }
+
+        // Read at a later LSN
+        let read_lsn = LogSequenceNumber::from(20);
+        let reader = table.reader(read_lsn).unwrap();
+        let mut cursor = reader.scan(ScanBounds::All, read_lsn).unwrap();
+
+        assert!(cursor.valid());
+        assert_eq!(cursor.key(), Some(b"a".as_ref()));
+        assert_eq!(cursor.value(), Some(b"1".as_ref()));
+
+        cursor.next().unwrap();
+        assert_eq!(cursor.key(), Some(b"b".as_ref()));
+
+        cursor.next().unwrap();
+        assert_eq!(cursor.key(), Some(b"c".as_ref()));
+
+        cursor.next().unwrap();
+        assert!(!cursor.valid());
+    }
+
+    #[test]
+    fn test_range_scan() {
+        let table = MemoryBTree::new(TableId::from(1), "test".to_string());
+        let tx_id = TransactionId::from(1);
+        let write_lsn = LogSequenceNumber::from(1);
+
+        // Write data
+        let mut writer = table.writer(tx_id, write_lsn).unwrap();
+        for i in 0..10 {
+            let key = format!("key{:02}", i);
+            let value = format!("value{}", i);
+            writer.put(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+        writer.flush().unwrap();
+
+        // Commit the versions
+        {
+            let mut data = table.data.write().unwrap();
+            let commit_lsn = LogSequenceNumber::from(10);
+            for chain in data.values_mut() {
+                chain.commit(commit_lsn);
+            }
+        }
+
+        // Read at a later LSN
+        let read_lsn = LogSequenceNumber::from(20);
+        let reader = table.reader(read_lsn).unwrap();
+        let bounds = ScanBounds::Range {
+            start: Bound::Included(KeyBuf(b"key03".to_vec())),
+            end: Bound::Excluded(KeyBuf(b"key07".to_vec())),
+        };
+        let mut cursor = reader.scan(bounds, read_lsn).unwrap();
+
+        let mut count = 0;
+        while cursor.valid() {
+            count += 1;
+            cursor.next().unwrap();
+        }
+        assert_eq!(count, 4); // key03, key04, key05, key06
     }
 }

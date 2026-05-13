@@ -26,7 +26,7 @@
 
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
-use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, Table, ValueStream};
+use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, ValueStream};
 use nanokv::txn::TransactionId;
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
@@ -151,7 +151,7 @@ fn test_get_stream_small_value() {
     
     // Read using stream
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
-    let mut stream_opt = reader.get_stream(b"key1", LogSequenceNumber::from(100)).unwrap();
+    let stream_opt = reader.get_stream(b"key1", LogSequenceNumber::from(100)).unwrap();
     assert!(stream_opt.is_some());
     
     let mut stream = stream_opt.unwrap();

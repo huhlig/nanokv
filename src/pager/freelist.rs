@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_free_list_manager() {
-        let mut free_list = FreeList::new();
+        let free_list = FreeList::new();
         assert!(free_list.is_empty());
         assert_eq!(free_list.total_free(), 0);
 

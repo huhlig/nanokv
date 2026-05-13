@@ -401,7 +401,7 @@ fn test_file_lock_mode_debug() {
 fn test_file_lock_mode_copy_clone() {
     let mode = FileLockMode::Shared;
     let copied = mode;
-    let cloned = mode.clone();
+    let cloned = mode;
 
     assert_eq!(mode, copied);
     assert_eq!(mode, cloned);

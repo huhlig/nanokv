@@ -19,7 +19,7 @@
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
 use nanokv::types::TableId;
-use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, Table};
+use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable};
 use nanokv::txn::TransactionId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
@@ -150,7 +150,7 @@ fn test_btree_random_inserts() {
     // Verify all keys (read at LSN after writes)
     let read_lsn = LogSequenceNumber::from(200);
     let reader = table.reader(read_lsn).unwrap();
-    for (i, key) in keys.iter().enumerate() {
+    for (_i, key) in keys.iter().enumerate() {
         let result = reader.get(key.as_bytes(), read_lsn).unwrap();
         assert!(result.is_some(), "Key {} should exist", key);
         // Note: Due to overwrites, we can't verify exact values

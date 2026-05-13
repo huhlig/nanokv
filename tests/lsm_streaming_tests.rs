@@ -26,7 +26,7 @@
 
 use nanokv::pager::{PageType, Pager, PagerConfig};
 use nanokv::table::lsm::{LsmConfig, LsmTree};
-use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, Table, ValueStream};
+use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, ValueStream};
 use nanokv::txn::TransactionId;
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
@@ -163,7 +163,7 @@ fn test_get_stream_from_memtable() {
 
     // Read using stream
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
-    let mut stream_opt = reader
+    let stream_opt = reader
         .get_stream(b"stream_key", LogSequenceNumber::from(100))
         .unwrap();
     assert!(stream_opt.is_some());
@@ -418,7 +418,7 @@ fn test_stream_size_hints() {
     let tx_id = TransactionId::from(1);
 
     // Test various sizes with size hints
-    let sizes = vec![100, 1000, 10000, 50000];
+    let sizes = [100, 1000, 10000, 50000];
 
     let mut writer = lsm.writer(tx_id, LogSequenceNumber::from(0)).unwrap();
 

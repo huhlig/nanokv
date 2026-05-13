@@ -321,15 +321,14 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
 
         // Search backwards through buckets
         for (&bid, _) in manager.buckets.range(..=bucket_id).rev() {
-            if let Some(bucket) = manager.get_bucket(bid) {
-                if let Some((ts, value_key)) = bucket.latest_before(timestamp) {
+            if let Some(bucket) = manager.get_bucket(bid)
+                && let Some((ts, value_key)) = bucket.latest_before(timestamp) {
                     return Ok(Some(TimePointRef {
                         series_key: crate::types::KeyBuf(series_key.to_vec()),
                         timestamp: *ts,
                         value_key: crate::types::KeyBuf(value_key.clone()),
                     }));
                 }
-            }
         }
 
         Ok(None)
@@ -454,11 +453,10 @@ fn parse_numeric_value(value_key: &[u8]) -> Option<f64> {
             return Some(value);
         }
 
-        if let Some((_, tail)) = trimmed.rsplit_once(':') {
-            if let Ok(value) = tail.trim().parse::<f64>() {
+        if let Some((_, tail)) = trimmed.rsplit_once(':')
+            && let Ok(value) = tail.trim().parse::<f64>() {
                 return Some(value);
             }
-        }
 
         if let Ok(json) = serde_json::from_str::<Value>(trimmed) {
             match json {

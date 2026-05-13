@@ -160,7 +160,7 @@ pub struct PageCache {
 impl PageCache {
     /// Create a new page cache with the given configuration
     pub fn new(config: CacheConfig) -> Self {
-        let shard_capacity = (config.capacity + NUM_SHARDS - 1) / NUM_SHARDS;
+        let shard_capacity = config.capacity.div_ceil(NUM_SHARDS);
         let write_back = config.write_back;
         let shards = (0..NUM_SHARDS)
             .map(|_| {
@@ -237,10 +237,8 @@ impl PageCache {
                 shard.move_to_front(page_id);
                 None
             }
-            Entry::Vacant(vacant) => {
+            Entry::Vacant(_vacant) => {
                 // Page doesn't exist - need to evict if at capacity before inserting
-                // We must drop the vacant entry to release the borrow before evicting
-                drop(vacant);
                 
                 // Evict if at capacity
                 let evicted = if shard.entries.len() >= shard.capacity {
@@ -260,11 +258,10 @@ impl PageCache {
                 shard.entries.insert(page_id, entry);
 
                 // Update LRU list
-                if let Some(old_head) = shard.lru_head {
-                    if let Some(head_entry) = shard.entries.get_mut(&old_head) {
+                if let Some(old_head) = shard.lru_head
+                    && let Some(head_entry) = shard.entries.get_mut(&old_head) {
                         head_entry.prev = Some(page_id);
                     }
-                }
 
                 shard.lru_head = Some(page_id);
 
@@ -330,7 +327,7 @@ impl PageCache {
     pub fn is_dirty(&self, page_id: PageId) -> bool {
         let shard_idx = self.shard_index(page_id);
         let shard = self.shards[shard_idx].read();
-        shard.entries.get(&page_id).map_or(false, |e| e.dirty)
+        shard.entries.get(&page_id).is_some_and(|e| e.dirty)
     }
 
     /// Get all dirty pages
@@ -451,18 +448,16 @@ impl CacheShard {
             let next = entry.next;
 
             // Update previous node's next pointer
-            if let Some(prev_id) = prev {
-                if let Some(prev_entry) = self.entries.get_mut(&prev_id) {
+            if let Some(prev_id) = prev
+                && let Some(prev_entry) = self.entries.get_mut(&prev_id) {
                     prev_entry.next = next;
                 }
-            }
 
             // Update next node's prev pointer
-            if let Some(next_id) = next {
-                if let Some(next_entry) = self.entries.get_mut(&next_id) {
+            if let Some(next_id) = next
+                && let Some(next_entry) = self.entries.get_mut(&next_id) {
                     next_entry.prev = prev;
                 }
-            }
 
             // Update tail if this was the tail
             if self.lru_tail == Some(page_id) {
@@ -476,11 +471,10 @@ impl CacheShard {
             entry.next = self.lru_head;
         }
 
-        if let Some(old_head) = self.lru_head {
-            if let Some(head_entry) = self.entries.get_mut(&old_head) {
+        if let Some(old_head) = self.lru_head
+            && let Some(head_entry) = self.entries.get_mut(&old_head) {
                 head_entry.prev = Some(page_id);
             }
-        }
 
         self.lru_head = Some(page_id);
 
@@ -543,7 +537,7 @@ mod tests {
     fn create_test_page(id: PageId) -> Page {
         let mut page = Page::new(id, PageType::BTreeLeaf, PageSize::Size4KB.data_size());
         page.data_mut()
-            .extend_from_slice(&format!("page {}", id).as_bytes());
+            .extend_from_slice(format!("page {}", id).as_bytes());
         page
     }
 

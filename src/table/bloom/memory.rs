@@ -58,7 +58,7 @@ impl BloomFilter {
     /// * `num_hash_functions` - Number of hash functions to use (None = auto-calculate)
     pub fn new(num_items: usize, bits_per_key: usize, num_hash_functions: Option<usize>) -> Self {
         let num_bits = num_items * bits_per_key;
-        let num_bytes = (num_bits + 7) / 8;
+        let num_bytes = num_bits.div_ceil(8);
         
         let num_hash_functions = num_hash_functions.unwrap_or_else(|| {
             // Optimal k = (m/n) * ln(2)
@@ -313,7 +313,7 @@ impl ApproximateMembership for BloomFilter {
         };
 
         // Verify bit array size matches expected
-        let expected_bytes = (self.num_bits + 7) / 8;
+        let expected_bytes = self.num_bits.div_ceil(8);
         if self.bits.len() != expected_bytes {
             report.errors.push(crate::table::ConsistencyError {
                 error_type: crate::table::ConsistencyErrorType::InvalidPointer,

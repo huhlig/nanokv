@@ -214,13 +214,12 @@ impl MemtableIterator {
 
     /// Update the current entry cache.
     fn update_current(&mut self) {
-        if let Some(pos) = self.position {
-            if pos < self.entries.len() {
+        if let Some(pos) = self.position
+            && pos < self.entries.len() {
                 let (key, chain) = &self.entries[pos];
                 self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
                 return;
             }
-        }
         self.current = None;
     }
 }
@@ -431,12 +430,11 @@ impl<FS: FileSystem> SStableIterator<FS> {
 
     /// Update the current entry cache from the current block and position.
     fn update_current(&mut self) {
-        if let (Some(block), Some(pos)) = (&self.current_block, self.position_in_block) {
-            if let Some((key, chain)) = block.entries().get(pos) {
+        if let (Some(block), Some(pos)) = (&self.current_block, self.position_in_block)
+            && let Some((key, chain)) = block.entries().get(pos) {
                 self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
                 return;
             }
-        }
         self.current = None;
     }
 
@@ -465,8 +463,8 @@ impl<FS: FileSystem> SStableIterator<FS> {
             if let Some(idx) = next_idx {
                 self.load_block(idx)?;
                 // Position at first/last entry in new block
-                if let Some(block) = &self.current_block {
-                    if !block.is_empty() {
+                if let Some(block) = &self.current_block
+                    && !block.is_empty() {
                         self.position_in_block = match self.direction {
                             Direction::Forward => Some(0),
                             Direction::Backward => Some(block.len() - 1),
@@ -474,7 +472,6 @@ impl<FS: FileSystem> SStableIterator<FS> {
                         self.update_current();
                         return Ok(true);
                     }
-                }
             }
         }
 
@@ -772,8 +769,8 @@ impl MergeIterator {
             // Find visible version in the chain
             let mut current_chain = Some(&entry.chain);
             while let Some(version) = current_chain {
-                if let Some(commit_lsn) = version.commit_lsn {
-                    if commit_lsn <= self.snapshot_lsn {
+                if let Some(commit_lsn) = version.commit_lsn
+                    && commit_lsn <= self.snapshot_lsn {
                         // Found visible version
                         // Check if it's a tombstone (empty value)
                         if !version.value.is_empty() {
@@ -784,7 +781,6 @@ impl MergeIterator {
                             break;
                         }
                     }
-                }
                 current_chain = version.prev_version.as_deref();
             }
 
@@ -807,7 +803,7 @@ impl MergeIterator {
     }
 
     /// Advance to the next entry.
-    pub fn next(&mut self) -> TableResult<bool> {
+    pub fn step_forward(&mut self) -> TableResult<bool> {
         self.advance()?;
         Ok(self.valid())
     }
@@ -1012,7 +1008,7 @@ mod tests {
             let (key, value) = merge_iter.current().unwrap();
             assert_eq!(key, format!("key{}", count).as_bytes());
             assert_eq!(value, format!("value{}", count).as_bytes());
-            merge_iter.next().unwrap();
+            merge_iter.step_forward().unwrap();
             count += 1;
         }
         assert_eq!(count, 5);
@@ -1069,7 +1065,7 @@ mod tests {
                 String::from_utf8(key.to_vec()).unwrap(),
                 String::from_utf8(value.to_vec()).unwrap(),
             ));
-            merge_iter.next().unwrap();
+            merge_iter.step_forward().unwrap();
         }
 
         assert_eq!(results.len(), expected.len());
@@ -1113,7 +1109,7 @@ mod tests {
         while merge_iter.valid() {
             let (key, _) = merge_iter.current().unwrap();
             results.push(String::from_utf8(key.to_vec()).unwrap());
-            merge_iter.next().unwrap();
+            merge_iter.step_forward().unwrap();
         }
 
         assert_eq!(results, vec!["key1", "key3"]);
@@ -1148,7 +1144,7 @@ mod tests {
         // Iterator with snapshot at LSN 150 should see old value
         let iter = MemtableIterator::new(&memtable, Direction::Forward, 0).unwrap();
         let iterators: Vec<Box<dyn LsmIterator>> = vec![Box::new(iter)];
-        let mut merge_iter =
+        let merge_iter =
             MergeIterator::new(iterators, Direction::Forward, create_lsn(150)).unwrap();
 
         assert!(merge_iter.valid());
@@ -1159,7 +1155,7 @@ mod tests {
         let memtable_clone = memtable.clone();
         let iter = MemtableIterator::new(&memtable_clone, Direction::Forward, 0).unwrap();
         let iterators: Vec<Box<dyn LsmIterator>> = vec![Box::new(iter)];
-        let mut merge_iter =
+        let merge_iter =
             MergeIterator::new(iterators, Direction::Forward, create_lsn(200)).unwrap();
 
         assert!(merge_iter.valid());

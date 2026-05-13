@@ -37,7 +37,7 @@ fn create_test_pager() -> Arc<Pager<MemoryFileSystem>> {
 #[test]
 fn test_basic_insert_and_contains() {
     let pager = create_test_pager();
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "test_bloom".to_string(),
         pager,
@@ -78,7 +78,7 @@ fn test_persistence_and_reopen() {
 
     // Create and populate filter
     let root_page_id = {
-        let mut filter =
+        let filter =
             PagedBloomFilter::new(table_id, name.clone(), pager.clone(), 100, 10, None)
                 .unwrap();
 
@@ -101,7 +101,7 @@ fn test_persistence_and_reopen() {
 fn test_false_positive_rate_calculation() {
     let pager = create_test_pager();
     let num_items = 1000;
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "test_bloom".to_string(),
         pager,
@@ -143,7 +143,7 @@ fn test_false_positive_rate_calculation() {
 #[test]
 fn test_clear_operation() {
     let pager = create_test_pager();
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "test_bloom".to_string(),
         pager,
@@ -178,7 +178,7 @@ fn test_clear_operation() {
 fn test_large_filter() {
     let pager = create_test_pager();
     let num_items = 10000;
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "large_bloom".to_string(),
         pager,
@@ -221,7 +221,7 @@ fn test_different_bits_per_key() {
     
     // Test with different bits_per_key values
     for bits_per_key in [5, 10, 15, 20] {
-        let mut filter = PagedBloomFilter::new(
+        let filter = PagedBloomFilter::new(
             TableId::from(1),
             format!("bloom_{}", bits_per_key),
             pager.clone(),
@@ -272,7 +272,7 @@ fn test_custom_hash_functions() {
     
     // Test with different numbers of hash functions
     for num_hash in [3, 5, 7, 10] {
-        let mut filter = PagedBloomFilter::new(
+        let filter = PagedBloomFilter::new(
             TableId::from(1),
             format!("bloom_hash_{}", num_hash),
             pager.clone(),
@@ -352,7 +352,7 @@ fn test_approximate_membership_trait() {
 #[test]
 fn test_verification() {
     let pager = create_test_pager();
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "verify_test".to_string(),
         pager,
@@ -402,7 +402,7 @@ fn test_concurrent_reads() {
     use std::thread;
     
     let pager = create_test_pager();
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "concurrent_test".to_string(),
         pager,
@@ -449,7 +449,7 @@ fn test_concurrent_reads() {
 #[test]
 fn test_statistics() {
     let pager = create_test_pager();
-    let mut filter = PagedBloomFilter::new(
+    let filter = PagedBloomFilter::new(
         TableId::from(1),
         "stats_test".to_string(),
         pager,

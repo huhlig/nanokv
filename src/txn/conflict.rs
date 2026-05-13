@@ -64,8 +64,8 @@ impl ConflictDetector {
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
         let lock_key = (object_id, key.to_vec());
-        if let Some(&other_txn) = self.write_locks.get(&lock_key) {
-            if other_txn != txn_id {
+        if let Some(&other_txn) = self.write_locks.get(&lock_key)
+            && other_txn != txn_id {
                 return Err(TransactionError::write_write_conflict(
                     object_id,
                     key.to_vec(),
@@ -73,7 +73,6 @@ impl ConflictDetector {
                     txn_id,
                 ));
             }
-        }
         Ok(())
     }
 
@@ -101,8 +100,8 @@ impl ConflictDetector {
         txn_id: TransactionId,
     ) -> TransactionResult<()> {
         for (object_id, key) in read_set {
-            if let Some(&other_txn) = self.write_locks.get(&(*object_id, key.clone())) {
-                if other_txn != txn_id {
+            if let Some(&other_txn) = self.write_locks.get(&(*object_id, key.clone()))
+                && other_txn != txn_id {
                     return Err(TransactionError::read_write_conflict(
                         *object_id,
                         key.clone(),
@@ -110,7 +109,6 @@ impl ConflictDetector {
                         other_txn,
                     ));
                 }
-            }
         }
         Ok(())
     }
@@ -149,7 +147,7 @@ impl DeadlockDetector {
     pub fn add_wait(&mut self, waiter: TransactionId, holder: TransactionId) {
         self.wait_for_graph
             .entry(waiter)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(holder);
     }
 
@@ -172,8 +170,8 @@ impl DeadlockDetector {
 
         // Try DFS from each unvisited node
         for &txn_id in self.wait_for_graph.keys() {
-            if !visited.contains(&txn_id) {
-                if let Some(cycle) = self.dfs_detect_cycle(
+            if !visited.contains(&txn_id)
+                && let Some(cycle) = self.dfs_detect_cycle(
                     txn_id,
                     &mut visited,
                     &mut rec_stack,
@@ -181,7 +179,6 @@ impl DeadlockDetector {
                 ) {
                     return Some(cycle);
                 }
-            }
         }
 
         None

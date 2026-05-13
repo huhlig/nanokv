@@ -25,7 +25,7 @@
 
 use nanokv::pager::{OverflowChainStream, Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
-use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, Table, ValueStream};
+use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, ValueStream};
 use nanokv::txn::TransactionId;
 use nanokv::types::{TableId, ValueRef};
 use nanokv::vfs::MemoryFileSystem;
@@ -87,7 +87,7 @@ fn test_end_to_end_streaming_workflow() {
     assert_eq!(value.unwrap().0, large_data);
     
     // Step 3: Read back using get_stream
-    let mut stream_opt = reader.get_stream(b"large_key", LogSequenceNumber::from(100)).unwrap();
+    let stream_opt = reader.get_stream(b"large_key", LogSequenceNumber::from(100)).unwrap();
     assert!(stream_opt.is_some());
     
     let mut result = Vec::new();

@@ -127,7 +127,7 @@ impl<'a, FS: FileSystem> ValueStream for OverflowChainStream<'a, FS> {
                     break;
                 }
                 self.load_next_page()
-                    .map_err(|e| crate::table::TableError::Pager(e))?;
+                    .map_err(crate::table::TableError::Pager)?;
             }
 
             // If buffer is still empty after load, we're done

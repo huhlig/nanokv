@@ -20,7 +20,7 @@ use nanokv::table::{GraphAdjacency, SpecialtyTableCapabilities};
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::{Durability, IsolationLevel, TableId};
 use nanokv::vfs::MemoryFileSystem;
-use nanokv::wal::{LogSequenceNumber, WalWriter};
+use nanokv::wal::LogSequenceNumber;
 use nanokv::table::TableEngineRegistry;
 use std::sync::{Arc, Mutex, RwLock};
 

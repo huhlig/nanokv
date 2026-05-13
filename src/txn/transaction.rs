@@ -16,7 +16,7 @@
 
 use crate::table::{
     ApproximateMembership, EdgeCursor, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency,
-    PointLookup, SearchableTable, SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor,
+    SearchableTable, SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor,
     TableEngineRegistry, TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch,
     VectorSearchOptions, VectorHit, VectorMetric, VerificationReport,
 };
@@ -76,7 +76,7 @@ impl TimeSeriesCursor for TransactionTimeSeriesCursor {
 
 /// Graph edge operation for tracking in transaction write set
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum GraphEdgeOp {
+pub(crate) enum GraphEdgeOp {
     AddEdge {
         source: Vec<u8>,
         label: Vec<u8>,
@@ -93,7 +93,7 @@ enum GraphEdgeOp {
 
 /// Time series operation for tracking in transaction write set
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TimeSeriesOp {
+pub(crate) enum TimeSeriesOp {
     AppendPoint {
         series_key: Vec<u8>,
         timestamp: i64,
@@ -108,7 +108,7 @@ enum TimeSeriesOp {
 
 /// Vector operation for tracking in transaction write set
 #[derive(Clone, Debug, PartialEq)]
-enum VectorOp {
+pub(crate) enum VectorOp {
     InsertVector {
         id: Vec<u8>,
         vector: Vec<f32>,
@@ -120,7 +120,7 @@ enum VectorOp {
 
 /// Geospatial operation for tracking in transaction write set
 #[derive(Clone, Debug, PartialEq)]
-enum GeoSpatialOp {
+pub(crate) enum GeoSpatialOp {
     InsertGeometry {
         id: Vec<u8>,
         geometry: SerializedGeometry,
@@ -132,7 +132,7 @@ enum GeoSpatialOp {
 
 /// Serialized geometry for storage in write set
 #[derive(Clone, Debug, PartialEq)]
-enum SerializedGeometry {
+pub(crate) enum SerializedGeometry {
     Point { x: f64, y: f64 },
     BoundingBox { min_x: f64, min_y: f64, max_x: f64, max_y: f64 },
     Wkb(Vec<u8>),
@@ -567,7 +567,7 @@ impl<FS: FileSystem> Transaction<FS> {
     /// GraphAdjacency::add_edge(&mut txn, source, label, target, edge_id)?;
     /// txn.clear_table_context();
     /// ```
-
+    ///
     /// Set table context for time series operations.
     ///
     /// Note: Unlike `with_bloom()`, there is no `with_timeseries()` helper because
@@ -580,7 +580,7 @@ impl<FS: FileSystem> Transaction<FS> {
     /// TimeSeries::append_point(&mut txn, series_key, timestamp, value_key)?;
     /// txn.clear_table_context();
     /// ```
-
+    ///
     /// Get a value from an object (table or index).
     ///
     /// This method first checks the transaction's write set for uncommitted changes,
@@ -1088,12 +1088,12 @@ impl<FS: FileSystem> Transaction<FS> {
         };
 
         // Apply write set to storage engines
-        use crate::table::{Flushable, MutableTable, Table, TableEngineInstance};
+        use crate::table::{Flushable, MutableTable, TableEngineInstance};
 
         for ((object_id, key), value_opt) in &self.write_set {
             if let Some(engine) = self.engine_registry.get(*object_id) {
                 match &engine {
-                    TableEngineInstance::AppendLog(appendlog) => {
+                    TableEngineInstance::AppendLog(_appendlog) => {
                         // AppendLog doesn't use writer pattern, access directly
                         // Need to get mutable reference - this is a limitation of the current design
                         // In a real implementation, we'd need to handle this differently
@@ -1619,7 +1619,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
     }
 
     fn capabilities(&self) -> SpecialtyTableCapabilities {
-        let Some(table_id) = self.current_table_id else {
+        let Some(_table_id) = self.current_table_id else {
             return SpecialtyTableCapabilities::default();
         };
 
@@ -1735,8 +1735,8 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
 
     fn outgoing(
         &self,
-        source: &[u8],
-        label: Option<&[u8]>,
+        _source: &[u8],
+        _label: Option<&[u8]>,
     ) -> crate::table::TableResult<Self::EdgeCursor<'_>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -1745,7 +1745,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
             )));
         }
 
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for graph operation".to_string(),
             )
@@ -1759,8 +1759,8 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
 
     fn incoming(
         &self,
-        target: &[u8],
-        label: Option<&[u8]>,
+        _target: &[u8],
+        _label: Option<&[u8]>,
     ) -> crate::table::TableResult<Self::EdgeCursor<'_>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -1769,7 +1769,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
             )));
         }
 
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for graph operation".to_string(),
             )
@@ -1782,7 +1782,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
     }
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for graph operation".to_string(),
             )
@@ -1795,7 +1795,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
     }
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for graph operation".to_string(),
             )
@@ -1860,7 +1860,7 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
     }
 
     fn capabilities(&self) -> SpecialtyTableCapabilities {
-        let Some(table_id) = self.current_table_id else {
+        let Some(_table_id) = self.current_table_id else {
             return SpecialtyTableCapabilities::default();
         };
 
@@ -1918,9 +1918,9 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
 
     fn scan_series(
         &self,
-        series_key: &[u8],
-        start_ts: i64,
-        end_ts: i64,
+        _series_key: &[u8],
+        _start_ts: i64,
+        _end_ts: i64,
     ) -> crate::table::TableResult<Self::TimeSeriesCursor<'_>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -1929,7 +1929,7 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
             )));
         }
 
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
@@ -1943,8 +1943,8 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
 
     fn latest_before(
         &self,
-        series_key: &[u8],
-        timestamp: i64,
+        _series_key: &[u8],
+        _timestamp: i64,
     ) -> crate::table::TableResult<Option<TimePointRef>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -1953,7 +1953,7 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
             )));
         }
 
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
@@ -1966,7 +1966,7 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
     }
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )
@@ -1979,7 +1979,7 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
     }
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
-        let table_id = self.current_table_id.ok_or_else(|| {
+        let _table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other(
                 "no table context set for time series operation".to_string(),
             )

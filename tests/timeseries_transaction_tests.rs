@@ -27,7 +27,7 @@ use nanokv::table::{TableEngineRegistry, TimeSeries};
 use nanokv::txn::{ConflictDetector, Transaction};
 use nanokv::types::{Durability, IsolationLevel, TableId};
 use nanokv::vfs::MemoryFileSystem;
-use nanokv::wal::{LogSequenceNumber, WalWriter};
+use nanokv::wal::LogSequenceNumber;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Helper to create a test transaction
@@ -348,7 +348,7 @@ fn test_timeseries_timestamp_ordering() {
     let series_key = b"sensor-1";
     
     // Append points in non-chronological order (should still work)
-    let timestamps = vec![1500i64, 1000i64, 2000i64, 1200i64];
+    let timestamps = [1500i64, 1000i64, 2000i64, 1200i64];
     for (i, &timestamp) in timestamps.iter().enumerate() {
         let value = format!("temperature:{}.5", 20 + i);
         let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value.as_bytes());
@@ -368,7 +368,7 @@ fn test_timeseries_negative_timestamps() {
     let series_key = b"sensor-1";
     
     // Append points with negative timestamps (historical data)
-    let timestamps = vec![-1000i64, -500i64, 0i64, 500i64, 1000i64];
+    let timestamps = [-1000i64, -500i64, 0i64, 500i64, 1000i64];
     for (i, &timestamp) in timestamps.iter().enumerate() {
         let value = format!("temperature:{}.5", 20 + i);
         let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value.as_bytes());

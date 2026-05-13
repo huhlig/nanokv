@@ -107,7 +107,7 @@ impl Cursor {
     }
 
     /// Move to the next entry.
-    pub fn next(&mut self) -> CursorResult<()> {
+    pub fn move_next(&mut self) -> CursorResult<()> {
         self.inner
             .next()
             .map_err(|e| crate::txn::CursorError::Other(e.to_string()))

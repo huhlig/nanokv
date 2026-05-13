@@ -17,8 +17,7 @@
 //! Comprehensive tests for the hash table implementation.
 
 use nanokv::table::{
-    BatchOps, Flushable, MemoryHashTable, MutableTable, PointLookup, SearchableTable, Table,
-    TableCapabilities, TableEngineKind, TableReader, TableWriter, WriteBatch,
+    BatchOps, Flushable, MemoryHashTable, MutableTable, PointLookup, SearchableTable, Table, TableEngineKind, TableReader, WriteBatch,
 };
 use nanokv::txn::TransactionId;
 use nanokv::types::{TableId, ScanBounds, ValueBuf};

@@ -273,7 +273,7 @@ mod tests {
         // Each shard should have roughly 1000/16 = 62.5 pages
         // Allow some variance (40-80 pages per shard)
         for count in shard_counts {
-            assert!(count >= 40 && count <= 80, "Uneven distribution: {}", count);
+            assert!((40..=80).contains(&count), "Uneven distribution: {}", count);
         }
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let mut handles = vec![];
 
         // Find two pages in different shards
-        let mut page1 = PageId::from(0);
+        let page1 = PageId::from(0);
         let mut page2 = PageId::from(1);
         
         for i in 0..1000 {

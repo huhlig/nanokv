@@ -5,11 +5,19 @@ This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get sta
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
+bd ready                # Find available work
+bd show <id>            # View issue details
 bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
+bd close <id>           # Complete work
 ```
+
+## MCP Tools
+
+Use these tools to simplify your work:
+
+* rust-analyzer-mcp - Code Analysis
+* rust-docs-mcp - Documentation Access
+* cargo-mcp - Build & Test MCP Tools
 
 ## Non-Interactive Shell Commands
 

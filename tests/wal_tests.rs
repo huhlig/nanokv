@@ -566,7 +566,7 @@ fn test_wal_compression_recovery() {
     // Write multiple transactions with compression
     for i in 1..=5 {
         let txn_id = TransactionId::from(i);
-        writer.write_begin(TransactionId::from(txn_id)).unwrap();
+        writer.write_begin(txn_id).unwrap();
 
         let value = format!("Compressed value for transaction {}", i)
             .repeat(100)

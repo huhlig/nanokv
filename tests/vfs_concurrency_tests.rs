@@ -39,7 +39,7 @@ fn test_concurrent_read_at_offset_overflow() {
     // Create file with 100 bytes
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
-        file.write_all(&vec![0x42; 100]).expect("Failed to write");
+        file.write_all(&[0x42; 100]).expect("Failed to write");
     }
 
     let thread_count = 4;
@@ -104,7 +104,7 @@ fn test_concurrent_read_buffer_mismatch() {
     // Create file with 100 bytes
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
-        file.write_all(&vec![0x55; 100]).expect("Failed to write");
+        file.write_all(&[0x55; 100]).expect("Failed to write");
     }
 
     let thread_count = 8;
@@ -489,7 +489,7 @@ fn test_concurrent_lock_contention() {
     // Create file
     {
         let mut file = fs.create_file(path).expect("Failed to create file");
-        file.write_all(&vec![0x77; 100]).expect("Failed to write");
+        file.write_all(&[0x77; 100]).expect("Failed to write");
     }
 
     let thread_count = 8;
@@ -634,11 +634,11 @@ fn test_concurrent_deletion_while_reading() {
                 match fs_clone.remove_file(&path) {
                     Ok(_) => {
                         println!("Thread {}: Successfully deleted file", thread_id);
-                        return (thread_id, "deleter", 0, 0);
+                        (thread_id, "deleter", 0, 0)
                     }
                     Err(e) => {
                         println!("Thread {}: Failed to delete file: {:?}", thread_id, e);
-                        return (thread_id, "deleter", 0, 0);
+                        (thread_id, "deleter", 0, 0)
                     }
                 }
             } else {

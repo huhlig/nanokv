@@ -231,10 +231,10 @@ mod tests {
         assert_eq!(records.len(), 6); // 2 begin, 2 write, 1 commit, 1 rollback
 
         // Check first record
-        let txn_id = TransactionId::from(1);
+        let _txn_id = TransactionId::from(1);
         let lsn = LogSequenceNumber::from(1);
         assert_eq!(records[0].lsn, lsn);
-        assert!(matches!(records[0].data, RecordData::Begin { txn_id }));
+        assert!(matches!(records[0].data, RecordData::Begin { txn_id: _ }));
 
         // Check second record
         assert_eq!(records[1].lsn, LogSequenceNumber::from(2));
@@ -256,9 +256,9 @@ mod tests {
         }
 
         // Check third record
-        let txn_id = TransactionId::from(1);
+        let _txn_id = TransactionId::from(1);
         assert_eq!(records[2].lsn, LogSequenceNumber::from(3));
-        assert!(matches!(records[2].data, RecordData::Commit { txn_id }));
+        assert!(matches!(records[2].data, RecordData::Commit { txn_id: _ }));
     }
 
     #[test]

@@ -22,11 +22,10 @@
 //! - Table handle wrapper
 //! - Error handling
 
-use nanokv::kvdb::{Database, DatabaseError, DatabaseErrorKind};
+use nanokv::kvdb::{Database, DatabaseErrorKind};
 use nanokv::table::{TableOptions, TableEngineKind};
-use nanokv::types::{TableId, KeyEncoding, Durability};
+use nanokv::types::{TableId, KeyEncoding};
 use nanokv::vfs::MemoryFileSystem;
-use std::sync::Arc;
 
 /// Helper to create a test database
 fn create_test_db() -> Database<MemoryFileSystem> {

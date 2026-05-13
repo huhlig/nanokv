@@ -39,7 +39,7 @@ impl BucketId {
         } else {
             // For negative timestamps, round down to the bucket
             let abs_ts = (-timestamp) as u64;
-            let bucket_offset = (abs_ts + bucket_size - 1) / bucket_size;
+            let bucket_offset = abs_ts.div_ceil(bucket_size);
             u64::MAX - bucket_offset + 1
         };
         BucketId(bucket_num)
@@ -226,7 +226,7 @@ impl<FS: FileSystem> TimeBucket<FS> {
     /// Deserialize a bucket from bytes.
     pub(crate) fn from_bytes(
         data: &[u8],
-        bucket_size: u64,
+        _bucket_size: u64,
         pager: std::sync::Arc<Pager<FS>>,
     ) -> TableResult<Self> {
         let mut pos = 0;
@@ -393,7 +393,7 @@ impl<FS: FileSystem> TimeBucket<FS> {
     /// Get the estimated size in bytes.
     pub fn estimated_size(&self) -> usize {
         let mut size = 32; // Fixed overhead (id, timestamps, metadata)
-        for (_, value_key) in &self.points {
+        for value_key in self.points.values() {
             size += 8 + 4 + value_key.len(); // timestamp + length + value_key
         }
         size
@@ -493,8 +493,8 @@ impl<FS: FileSystem> BucketManager<FS> {
             .min_by_key(|(_, bucket)| bucket.last_access_time())
             .map(|(id, _)| *id);
 
-        if let Some(bucket_id) = lru_bucket_id {
-            if let Some(mut bucket) = self.buckets.remove(&bucket_id) {
+        if let Some(bucket_id) = lru_bucket_id
+            && let Some(mut bucket) = self.buckets.remove(&bucket_id) {
                 // Flush if dirty
                 if bucket.is_dirty() {
                     bucket.flush()?;
@@ -505,7 +505,6 @@ impl<FS: FileSystem> BucketManager<FS> {
                     self.bucket_page_map.insert(bucket_id, page_id);
                 }
             }
-        }
         Ok(())
     }
 

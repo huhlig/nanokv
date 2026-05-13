@@ -58,7 +58,7 @@ use crate::table::{
     Flushable, MutableTable, OrderedScan, PointLookup, Table, TableCapabilities,
     TableCursor, TableEngineKind, TableResult, TableStatistics,
 };
-use crate::types::{Bound, KeyBuf, ScanBounds, ValueBuf};
+use crate::types::{Bound, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use std::collections::BTreeMap;
@@ -393,7 +393,7 @@ impl<FS: FileSystem> OrderedScan for AppendLog<FS> {
 
 impl<FS: FileSystem> Flushable for AppendLog<FS> {
     fn flush(&mut self) -> TableResult<()> {
-        let mut state = self.state.write().unwrap();
+        let state = self.state.read().unwrap();
         state.active_segment.flush()?;
         Ok(())
     }

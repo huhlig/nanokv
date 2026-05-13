@@ -531,8 +531,8 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let (leaf_page_id, pos) = self.search(key)?;
         let node = self.read_node(leaf_page_id)?;
 
-        if let BTreeNode::Leaf { entries, .. } = node {
-            if pos < entries.len() && entries[pos].key == key {
+        if let BTreeNode::Leaf { entries, .. } = node
+            && pos < entries.len() && entries[pos].key == key {
                 let snapshot = Snapshot::new(
                     crate::snap::SnapshotId::from(0),
                     String::new(),
@@ -548,7 +548,6 @@ impl<FS: FileSystem> PagedBTree<FS> {
                     return Ok(Some(ValueBuf(value.to_vec())));
                 }
             }
-        }
 
         Ok(None)
     }
@@ -1354,7 +1353,7 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
         key: &[u8],
         stream: &mut dyn crate::table::ValueStream,
     ) -> TableResult<u64> {
-        use crate::types::ValueRef;
+        
 
         // Check size hint to determine storage strategy
         let size_hint = stream.size_hint();
@@ -1431,8 +1430,10 @@ impl<'a, FS: FileSystem> BatchOps for PagedBTreeWriter<'a, FS> {
     }
 
     fn apply_batch<'b>(&mut self, batch: WriteBatch<'b>) -> TableResult<BatchReport> {
-        let mut report = BatchReport::default();
-        report.attempted = batch.mutations.len() as u64;
+        let mut report = BatchReport {
+            attempted: batch.mutations.len() as u64,
+            ..Default::default()
+        };
 
         for mutation in batch.mutations {
             match mutation {
@@ -1762,44 +1763,41 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
         // Check if key is within bounds
         if !self.is_in_bounds(key) {
             // Position at first entry if key is before or at start bound
-            match &self.bounds.clone() {
-                ScanBounds::Range { start, .. } => {
-                    let before_or_at_start = match start {
-                        Bound::Included(k) => key < k.0.as_slice(),
-                        Bound::Excluded(k) => key <= k.0.as_slice(), // Include equal for excluded bounds
-                        Bound::Unbounded => false,
-                    };
-                    if before_or_at_start {
-                        // Seek to the start bound instead of calling first() to avoid recursion
-                        match start {
-                            Bound::Included(k) => {
-                                let start_key = k.0.clone();
-                                return self.seek(&start_key);
-                            }
-                            Bound::Excluded(k) => {
-                                let start_key = k.0.clone();
-                                // Use tree search directly to avoid recursion when seeking to excluded bound
-                                let (leaf_page_id, pos) = self.table.search(&start_key)?;
-                                self.current_page_id = leaf_page_id;
-                                self.current_position = pos;
+            if let ScanBounds::Range { start, .. } = &self.bounds.clone() {
+                let before_or_at_start = match start {
+                    Bound::Included(k) => key < k.0.as_slice(),
+                    Bound::Excluded(k) => key <= k.0.as_slice(), // Include equal for excluded bounds
+                    Bound::Unbounded => false,
+                };
+                if before_or_at_start {
+                    // Seek to the start bound instead of calling first() to avoid recursion
+                    match start {
+                        Bound::Included(k) => {
+                            let start_key = k.0.clone();
+                            return self.seek(&start_key);
+                        }
+                        Bound::Excluded(k) => {
+                            let start_key = k.0.clone();
+                            // Use tree search directly to avoid recursion when seeking to excluded bound
+                            let (leaf_page_id, pos) = self.table.search(&start_key)?;
+                            self.current_page_id = leaf_page_id;
+                            self.current_position = pos;
 
-                                // Advance past the excluded key
-                                // Note: We don't call advance_to_next_visible first because it will
-                                // mark us as exhausted when it sees the excluded key is out of bounds.
-                                // Instead, we increment position and then advance.
-                                self.current_position += 1;
-                                return self.advance_to_next_visible();
-                            }
-                            Bound::Unbounded => {
-                                // Navigate to leftmost leaf
-                                self.current_page_id = self.find_leftmost_leaf()?;
-                                self.current_position = 0;
-                                return self.advance_to_next_visible();
-                            }
+                            // Advance past the excluded key
+                            // Note: We don't call advance_to_next_visible first because it will
+                            // mark us as exhausted when it sees the excluded key is out of bounds.
+                            // Instead, we increment position and then advance.
+                            self.current_position += 1;
+                            return self.advance_to_next_visible();
+                        }
+                        Bound::Unbounded => {
+                            // Navigate to leftmost leaf
+                            self.current_page_id = self.find_leftmost_leaf()?;
+                            self.current_position = 0;
+                            return self.advance_to_next_visible();
                         }
                     }
                 }
-                _ => {}
             }
 
             // Key is after end bound
@@ -1827,18 +1825,15 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
         // Check if key is within bounds
         if !self.is_in_bounds(key) {
             // Position at last entry if key is after end bound
-            match &self.bounds {
-                ScanBounds::Range { end, .. } => {
-                    let after_end = match end {
-                        Bound::Included(k) => key > k.0.as_slice(),
-                        Bound::Excluded(k) => key >= k.0.as_slice(),
-                        Bound::Unbounded => false,
-                    };
-                    if after_end {
-                        return self.last();
-                    }
+            if let ScanBounds::Range { end, .. } = &self.bounds {
+                let after_end = match end {
+                    Bound::Included(k) => key > k.0.as_slice(),
+                    Bound::Excluded(k) => key >= k.0.as_slice(),
+                    Bound::Unbounded => false,
+                };
+                if after_end {
+                    return self.last();
                 }
-                _ => {}
             }
 
             // Key is before start bound
@@ -1946,47 +1941,6 @@ impl<'a, FS: FileSystem> TableCursor for PagedBTreeCursor<'a, FS> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_node_serialization() {
-        // Test internal node
-        let mut internal = BTreeNode::new_internal();
-        if let BTreeNode::Internal {
-            entries,
-            rightmost_child,
-        } = &mut internal
-        {
-            entries.push(InternalEntry {
-                key: b"key1".to_vec(),
-                child_page_id: PageId::from(10),
-            });
-            *rightmost_child = PageId::from(20);
-        }
-
-        let bytes = internal.to_bytes();
-        let deserialized = BTreeNode::from_bytes(&bytes).unwrap();
-        assert_eq!(deserialized.node_type(), NodeType::Internal);
-        assert_eq!(deserialized.key_count(), 1);
-
-        // Test leaf node
-        let mut leaf = BTreeNode::new_leaf();
-        if let BTreeNode::Leaf { entries, .. } = &mut leaf {
-            entries.push(LeafEntry {
-                key: b"key1".to_vec(),
-                chain: VersionChain::new(b"value1".to_vec(), TransactionId::from(1)),
-            });
-        }
-
-        let bytes = leaf.to_bytes();
-        let deserialized = BTreeNode::from_bytes(&bytes).unwrap();
-        assert_eq!(deserialized.node_type(), NodeType::Leaf);
-        assert_eq!(deserialized.key_count(), 1);
-    }
-}
-
 // Made with Bob
 
 // =============================================================================
@@ -2077,8 +2031,7 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
         if let BTreeNode::Leaf {
             ref mut entries, ..
         } = leaf_node
-        {
-            if pos < entries.len() && entries[pos].key == index_key {
+            && pos < entries.len() && entries[pos].key == index_key {
                 // Check if the value matches the expected primary key
                 let snapshot = Snapshot::new(
                     crate::snap::SnapshotId::from(0),
@@ -2090,16 +2043,13 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
                 );
 
                 if let Some(stored_primary_key) = entries[pos].chain.find_visible_version(&snapshot)
-                {
-                    if stored_primary_key == primary_key {
+                    && stored_primary_key == primary_key {
                         // Remove the entry
                         entries.remove(pos);
                         self.write_node(leaf_page_id, &leaf_node)?;
                         counter!("btree.index_delete").increment(1);
                     }
-                }
             }
-        }
 
         Ok(())
     }
@@ -2186,5 +2136,46 @@ impl<FS: FileSystem> PagedBTree<FS> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_serialization() {
+        // Test internal node
+        let mut internal = BTreeNode::new_internal();
+        if let BTreeNode::Internal {
+            entries,
+            rightmost_child,
+        } = &mut internal
+        {
+            entries.push(InternalEntry {
+                key: b"key1".to_vec(),
+                child_page_id: PageId::from(10),
+            });
+            *rightmost_child = PageId::from(20);
+        }
+
+        let bytes = internal.to_bytes();
+        let deserialized = BTreeNode::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.node_type(), NodeType::Internal);
+        assert_eq!(deserialized.key_count(), 1);
+
+        // Test leaf node
+        let mut leaf = BTreeNode::new_leaf();
+        if let BTreeNode::Leaf { entries, .. } = &mut leaf {
+            entries.push(LeafEntry {
+                key: b"key1".to_vec(),
+                chain: VersionChain::new(b"value1".to_vec(), TransactionId::from(1)),
+            });
+        }
+
+        let bytes = leaf.to_bytes();
+        let deserialized = BTreeNode::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.node_type(), NodeType::Leaf);
+        assert_eq!(deserialized.key_count(), 1);
     }
 }

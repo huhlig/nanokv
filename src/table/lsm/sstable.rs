@@ -338,14 +338,13 @@ impl DataBlock {
     /// # Errors
     /// Returns error if key is not greater than the last key (entries must be sorted).
     pub fn add(&mut self, key: Vec<u8>, chain: VersionChain) -> TableResult<()> {
-        if let Some((last_key, _)) = self.entries.last() {
-            if &key <= last_key {
+        if let Some((last_key, _)) = self.entries.last()
+            && &key <= last_key {
                 return Err(crate::table::TableError::invalid_operation_state(
                     "DataBlock::add",
                     "Keys must be added in sorted order",
                 ));
             }
-        }
         self.entries.push((key, chain));
         Ok(())
     }
@@ -675,14 +674,13 @@ impl IndexBlock {
     /// # Errors
     /// Returns error if key is not greater than the last key (entries must be sorted).
     pub fn add(&mut self, first_key: Vec<u8>, page_id: PageId, offset: u64) -> TableResult<()> {
-        if let Some(last_entry) = self.entries.last() {
-            if first_key <= last_entry.first_key {
+        if let Some(last_entry) = self.entries.last()
+            && first_key <= last_entry.first_key {
                 return Err(crate::table::TableError::invalid_operation_state(
                     "IndexBlock::add",
                     "Index entries must be added in sorted order",
                 ));
             }
-        }
         self.entries.push(IndexEntry {
             first_key,
             page_id,
@@ -971,7 +969,7 @@ impl<FS: FileSystem> SStableReader<FS> {
         let page_size = pager.page_size().data_size();
         
         // Step 1: Read the first page to get metadata and calculate last page
-        let first_page = pager.read_page(first_page_id)?;
+        let _first_page = pager.read_page(first_page_id)?;
         
         // We need to read enough data to find the footer
         // The footer is at the end of the SSTable, so we need to find it
@@ -983,7 +981,7 @@ impl<FS: FileSystem> SStableReader<FS> {
         // We'll use a heuristic: read pages until we find a valid footer
         
         let mut current_page_id = first_page_id;
-        let mut footer_opt: Option<SStableFooter> = None;
+        let footer_opt: Option<SStableFooter>;
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 1000; // Prevent infinite loops
         
@@ -1127,7 +1125,7 @@ impl<FS: FileSystem> SStableReader<FS> {
         
         while remaining > 0 {
             // Calculate which page contains the current offset
-            let page_index = (current_offset / page_size as u64) as u64;
+            let page_index = current_offset / page_size as u64;
             let page_offset = (current_offset % page_size as u64) as usize;
             let page_id = PageId::from(first_page_id.as_u64() + page_index);
             
@@ -1257,7 +1255,7 @@ impl<FS: FileSystem> SStableReader<FS> {
         let data_block_bytes = &page_data[block_start..block_end];
         
         // Step 5: Deserialize the data block
-        let data_block = DataBlock::from_bytes(&data_block_bytes)?;
+        let data_block = DataBlock::from_bytes(data_block_bytes)?;
         
         // Step 6: Binary search within the data block for the exact key
         let version_chain = match data_block.get(key) {
@@ -1392,14 +1390,13 @@ impl<FS: FileSystem> SStableWriter<FS> {
     /// Keys must be added in sorted order.
     pub fn add(&mut self, key: Vec<u8>, chain: VersionChain) -> TableResult<()> {
         // Verify keys are in sorted order
-        if let Some((last_key, _)) = self.entries.last() {
-            if &key <= last_key {
+        if let Some((last_key, _)) = self.entries.last()
+            && &key <= last_key {
                 return Err(crate::table::TableError::invalid_operation_state(
                     "SStableBuilder::add",
                     "Keys must be added in sorted order",
                 ));
             }
-        }
 
         // Add to bloom filter - will be built when finish() is called
         // The bloom filter is built from all keys at once for efficiency
@@ -1551,13 +1548,13 @@ impl<FS: FileSystem> SStableWriter<FS> {
         current_page_offset += index_bytes.len();
         
         // Step 3: Write bloom filter (if enabled)
-        let bloom_filter_offset = if bloom_filter.is_some() {
+        let bloom_filter_offset = if let Some(bloom) = &bloom_filter {
             let offset = current_offset + current_page_offset as u64;
-            let bloom_bytes = bloom_filter.as_ref().unwrap().as_bytes();
+            let bloom_bytes = bloom.as_bytes();
             
             // Write bloom filter metadata (num_hash_functions as u32, num_bits as u32)
-            let num_hash = bloom_filter.as_ref().unwrap().num_hash_functions() as u32;
-            let num_bits_val = bloom_filter.as_ref().unwrap().num_bits() as u32;
+            let num_hash = bloom.num_hash_functions() as u32;
+            let num_bits_val = bloom.num_bits() as u32;
             let mut bloom_header = Vec::new();
             bloom_header.extend_from_slice(&num_hash.to_le_bytes());
             bloom_header.extend_from_slice(&num_bits_val.to_le_bytes());
@@ -1599,7 +1596,7 @@ impl<FS: FileSystem> SStableWriter<FS> {
             num_entries,
             total_size,
             created_lsn,
-            first_page_id: first_page_id,
+            first_page_id,
             num_pages: self.pages.len() as u32,
             index_offset,
             bloom_filter_offset,
@@ -1608,11 +1605,11 @@ impl<FS: FileSystem> SStableWriter<FS> {
         
         // Calculate checksum of all written data
         let mut hasher = Sha256::new();
-        hasher.update(&metadata.id.as_u64().to_le_bytes());
-        hasher.update(&metadata.level.to_le_bytes());
+        hasher.update(metadata.id.as_u64().to_le_bytes());
+        hasher.update(metadata.level.to_le_bytes());
         hasher.update(&metadata.min_key);
         hasher.update(&metadata.max_key);
-        hasher.update(&metadata.num_entries.to_le_bytes());
+        hasher.update(metadata.num_entries.to_le_bytes());
         let checksum: [u8; 32] = hasher.finalize().into();
         
         // Create footer
@@ -1627,7 +1624,6 @@ impl<FS: FileSystem> SStableWriter<FS> {
             let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
             self.pages.push(new_page_id);
             current_page = Page::new(new_page_id, PageType::LsmData, page_size);
-            current_page_offset = 0;
         }
         
         // Write footer to current page
@@ -1937,11 +1933,7 @@ mod tests {
         
         // Estimate should be reasonably close to actual size
         // Allow 20% margin for estimation error
-        let diff = if estimated > actual {
-            estimated - actual
-        } else {
-            actual - estimated
-        };
+        let diff = estimated.abs_diff(actual);
         
         assert!(diff < actual / 5, "Estimate {} too far from actual {}", estimated, actual);
     }

@@ -35,7 +35,7 @@ fn create_pager() -> Pager<MemoryFileSystem> {
 /// which prevents the corruption scenario described in the bug report.
 #[test]
 fn test_cannot_free_pinned_page() {
-    let pager = Arc::new(create_pager());
+    let _pager = Arc::new(create_pager());
 
     // Create a pager with no cache to ensure reads always go to disk
     let fs = MemoryFileSystem::new();

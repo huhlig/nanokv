@@ -28,7 +28,7 @@ use crate::pager::PhysicalLocation;
 use crate::table::TableResult;
 use crate::txn::TransactionId;
 use crate::types::{
-    Bound, CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, TableId, ScanBounds, ValueBuf,
+    CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, TableId, ScanBounds, ValueBuf,
 };
 use crate::wal::LogSequenceNumber;
 use std::borrow::Cow;

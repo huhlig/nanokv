@@ -41,7 +41,7 @@
 
 use nanokv::kvdb::Database;
 use nanokv::table::{TableEngineKind, TableOptions};
-use nanokv::types::{Durability, KeyEncoding};
+use nanokv::types::KeyEncoding;
 use nanokv::vfs::MemoryFileSystem;
 
 // =============================================================================

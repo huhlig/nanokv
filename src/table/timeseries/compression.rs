@@ -151,7 +151,7 @@ pub fn compress_values_gorilla(values: &[f64]) -> TableResult<Vec<u8>> {
             // Value changed - write XOR with leading/trailing zero compression
             let leading_zeros = xor.leading_zeros();
             let trailing_zeros = xor.trailing_zeros();
-            let significant_bits = 64 - leading_zeros - trailing_zeros;
+            let _significant_bits = 64 - leading_zeros - trailing_zeros;
 
             // Write marker byte: 1 bit (changed) + 6 bits (leading zeros) + 6 bits (significant bits)
             // Simplified: just write the full XOR for now

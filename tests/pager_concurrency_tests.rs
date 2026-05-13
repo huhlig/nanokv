@@ -56,10 +56,8 @@ fn test_concurrent_allocation_2_threads() {
             for i in 0..pages_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -106,10 +104,8 @@ fn test_concurrent_allocation_4_threads() {
             for i in 0..pages_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -146,10 +142,8 @@ fn test_concurrent_allocation_8_threads() {
             for i in 0..pages_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -186,10 +180,8 @@ fn test_concurrent_allocation_16_threads() {
             for i in 0..pages_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -242,10 +234,8 @@ fn test_concurrent_reads_different_pages() {
 
             for i in start..end {
                 let (page_id, expected_data) = &page_ids_clone[i];
-                let page = pager_clone.read_page(*page_id).expect(&format!(
-                    "Thread {} failed to read page {}",
-                    thread_id, page_id
-                ));
+                let page = pager_clone.read_page(*page_id).unwrap_or_else(|_| panic!("Thread {} failed to read page {}",
+                    thread_id, page_id));
 
                 assert_eq!(
                     &page.data()[0..expected_data.len()],
@@ -300,10 +290,8 @@ fn test_concurrent_writes_different_pages() {
                 );
                 let data = format!("Thread {} wrote page {}", thread_id, i);
                 page.data_mut().extend_from_slice(data.as_bytes());
-                pager_clone.write_page(&page).expect(&format!(
-                    "Thread {} failed to write page {}",
-                    thread_id, page_id
-                ));
+                pager_clone.write_page(&page).unwrap_or_else(|_| panic!("Thread {} failed to write page {}",
+                    thread_id, page_id));
             }
         });
         handles.push(handle);
@@ -360,7 +348,7 @@ fn test_concurrent_mixed_read_write() {
             for _ in 0..operations_per_thread {
                 // Simple LCG for deterministic randomness
                 rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                let is_write = (rng_state % 2) == 0;
+                let is_write = rng_state.is_multiple_of(2);
                 let page_index = (rng_state as usize) % page_ids_clone.len();
                 let page_id = page_ids_clone[page_index];
 
@@ -415,10 +403,8 @@ fn test_concurrent_allocation_deallocation() {
                 for _ in 0..3 {
                     let page_id = pager_clone
                         .allocate_page(PageType::BTreeLeaf)
-                        .expect(&format!(
-                            "Thread {} failed to allocate in cycle {}",
-                            thread_id, cycle
-                        ));
+                        .unwrap_or_else(|_| panic!("Thread {} failed to allocate in cycle {}",
+                            thread_id, cycle));
                     active_pages.push(page_id);
                 }
 
@@ -426,10 +412,8 @@ fn test_concurrent_allocation_deallocation() {
                 if active_pages.len() >= 2 {
                     for _ in 0..2 {
                         let page_id = active_pages.pop().unwrap();
-                        pager_clone.free_page(page_id).expect(&format!(
-                            "Thread {} failed to free page {} in cycle {}",
-                            thread_id, page_id, cycle
-                        ));
+                        pager_clone.free_page(page_id).unwrap_or_else(|_| panic!("Thread {} failed to free page {} in cycle {}",
+                            thread_id, page_id, cycle));
                     }
                 }
             }
@@ -500,10 +484,8 @@ fn test_free_list_contention() {
             for i in 0..allocations_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -552,10 +534,8 @@ fn test_concurrent_new_page_allocation_race_condition() {
             for i in 0..allocations_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -687,10 +667,8 @@ fn test_no_duplicate_page_ids_stress() {
             for i in 0..pages_per_thread {
                 let page_id = pager_clone
                     .allocate_page(PageType::BTreeLeaf)
-                    .expect(&format!(
-                        "Thread {} failed to allocate page {}",
-                        thread_id, i
-                    ));
+                    .unwrap_or_else(|_| panic!("Thread {} failed to allocate page {}",
+                        thread_id, i));
                 allocated.push(page_id);
             }
             allocated
@@ -725,12 +703,10 @@ fn test_concurrent_allocation_different_page_types() {
     let thread_count = 4;
     let pages_per_thread = 50;
 
-    let page_types = vec![
-        PageType::BTreeLeaf,
+    let page_types = [PageType::BTreeLeaf,
         PageType::BTreeInternal,
         PageType::Overflow,
-        PageType::LsmData,
-    ];
+        PageType::LsmData];
 
     let mut handles = vec![];
 
@@ -783,7 +759,7 @@ fn test_concurrent_free_list_operations() {
 
             for _ in 0..operations_per_thread {
                 rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                let should_allocate = (rng_state % 2) == 0 || active_pages.is_empty();
+                let should_allocate = rng_state.is_multiple_of(2) || active_pages.is_empty();
 
                 if should_allocate {
                     let page_id = pager_clone.allocate_page(PageType::BTreeLeaf).unwrap();
@@ -905,10 +881,8 @@ fn test_page_level_locking_concurrent_reads() {
             // Perform many reads - these should not block each other
             // if pages are in different shards
             for _ in 0..reads_per_thread {
-                let page = pager_clone.read_page(*page_id).expect(&format!(
-                    "Thread {} failed to read page {}",
-                    thread_id, page_id
-                ));
+                let page = pager_clone.read_page(*page_id).unwrap_or_else(|_| panic!("Thread {} failed to read page {}",
+                    thread_id, page_id));
 
                 assert_eq!(
                     &page.data()[0..expected_data.len()],
@@ -967,10 +941,8 @@ fn test_page_level_locking_concurrent_writes() {
                 );
                 let data = format!("Thread {} write {}", thread_id, i);
                 page.data_mut().extend_from_slice(data.as_bytes());
-                pager_clone.write_page(&page).expect(&format!(
-                    "Thread {} failed to write page {} iteration {}",
-                    thread_id, page_id, i
-                ));
+                pager_clone.write_page(&page).unwrap_or_else(|_| panic!("Thread {} failed to write page {} iteration {}",
+                    thread_id, page_id, i));
             }
         });
         handles.push(handle);
@@ -1010,10 +982,8 @@ fn test_page_level_locking_same_page_serialization() {
             // All threads access the same page - should be serialized
             for i in 0..operations_per_thread {
                 // Read
-                let _page = pager_clone.read_page(page_id).expect(&format!(
-                    "Thread {} failed to read page {} iteration {}",
-                    thread_id, page_id, i
-                ));
+                let _page = pager_clone.read_page(page_id).unwrap_or_else(|_| panic!("Thread {} failed to read page {} iteration {}",
+                    thread_id, page_id, i));
 
                 // Write
                 let mut page = Page::new(
@@ -1023,10 +993,8 @@ fn test_page_level_locking_same_page_serialization() {
                 );
                 let data = format!("Thread {} write {}", thread_id, i);
                 page.data_mut().extend_from_slice(data.as_bytes());
-                pager_clone.write_page(&page).expect(&format!(
-                    "Thread {} failed to write page {} iteration {}",
-                    thread_id, page_id, i
-                ));
+                pager_clone.write_page(&page).unwrap_or_else(|_| panic!("Thread {} failed to write page {} iteration {}",
+                    thread_id, page_id, i));
             }
         });
         handles.push(handle);

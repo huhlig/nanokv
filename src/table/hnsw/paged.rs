@@ -188,14 +188,14 @@ impl Eq for Candidate {}
 
 impl PartialOrd for Candidate {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        // Reverse ordering for min-heap behavior
-        other.distance.partial_cmp(&self.distance)
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
+        // Reverse ordering for min-heap behavior
+        other.distance.partial_cmp(&self.distance).unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -408,8 +408,8 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         let uniform = (*rng_state as f64) / (u64::MAX as f64);
         
         // Use exponential distribution for layer selection
-        let layer = (-uniform.ln() * self.config.read().unwrap().ml).floor() as usize;
-        layer
+        
+        (-uniform.ln() * self.config.read().unwrap().ml).floor() as usize
     }
 
     /// Search for nearest neighbors at a specific layer
@@ -441,11 +441,10 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         // Greedy search
         while let Some(current) = candidates.pop() {
             // Check if we should continue
-            if let Some(furthest) = results.peek() {
-                if current.distance > furthest.distance {
+            if let Some(furthest) = results.peek()
+                && current.distance > furthest.distance {
                     break;
                 }
-            }
 
             // Get neighbors at this layer
             let node = self.load_node(current.node_id)?;
@@ -495,7 +494,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
     }
 
     /// Store a node to storage
-    fn store_node(&self, node: &HnswNode) -> TableResult<NodeId> {
+    fn store_node(&self, _node: &HnswNode) -> TableResult<NodeId> {
         // TODO: Implement actual page-based node storage
         // For now, return a placeholder node ID
         Ok(NodeId(1))
@@ -506,8 +505,8 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         &self,
         candidates: Vec<Candidate>,
         m: usize,
-        layer: usize,
-        extend_candidates: bool,
+        _layer: usize,
+        _extend_candidates: bool,
     ) -> Vec<NodeId> {
         // Simple heuristic: select M closest neighbors
         candidates
@@ -520,16 +519,16 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
     /// Add bidirectional connections between nodes
     fn connect_nodes(
         &self,
-        node_id: NodeId,
-        neighbors: Vec<NodeId>,
-        layer: usize,
+        _node_id: NodeId,
+        _neighbors: Vec<NodeId>,
+        _layer: usize,
     ) -> TableResult<()> {
         // TODO: Implement bidirectional connection updates
         Ok(())
     }
 
     /// Prune connections if a node has too many neighbors
-    fn prune_connections(&self, node_id: NodeId, layer: usize) -> TableResult<()> {
+    fn prune_connections(&self, _node_id: NodeId, _layer: usize) -> TableResult<()> {
         // TODO: Implement connection pruning
         Ok(())
     }
@@ -632,7 +631,7 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         let layer = self.select_layer();
 
         // Create new node
-        let mut node = HnswNode {
+        let node = HnswNode {
             id: id_buf.clone(),
             vector: vector.to_vec(),
             layer,
@@ -640,7 +639,7 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         };
 
         // Get entry point
-        let entry_point = self.entry_point.read().unwrap().clone();
+        let entry_point = *self.entry_point.read().unwrap();
 
         if let Some(ep) = entry_point {
             // Insert into existing graph
@@ -712,7 +711,7 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         let id_buf = KeyBuf(id.to_vec());
 
         // Find node
-        let node_id = self
+        let _node_id = self
             .id_to_node
             .write()
             .unwrap()
@@ -744,7 +743,7 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
             ));
         }
 
-        let entry_point = self.entry_point.read().unwrap().clone();
+        let entry_point = *self.entry_point.read().unwrap();
         if entry_point.is_none() {
             return Ok(Vec::new());
         }

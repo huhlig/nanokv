@@ -75,7 +75,7 @@ impl LockType {
 #[cfg(debug_assertions)]
 thread_local! {
     /// Thread-local stack of currently held locks
-    static LOCK_STACK: RefCell<Vec<LockType>> = RefCell::new(Vec::new());
+    static LOCK_STACK: RefCell<Vec<LockType>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Assert that acquiring a lock follows the lock ordering rules
@@ -104,8 +104,8 @@ pub fn assert_lock_order(lock_type: LockType) {
     {
         LOCK_STACK.with(|stack| {
             let stack = stack.borrow();
-            if let Some(&last_lock) = stack.last() {
-                if lock_type.level() < last_lock.level() {
+            if let Some(&last_lock) = stack.last()
+                && lock_type.level() < last_lock.level() {
                     panic!(
                         "Lock ordering violation: attempted to acquire {} (level {}) \
                          while holding {} (level {}). Locks must be acquired in order: \
@@ -116,7 +116,6 @@ pub fn assert_lock_order(lock_type: LockType) {
                         last_lock.level()
                     );
                 }
-            }
         });
     }
 
