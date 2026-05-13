@@ -481,6 +481,9 @@ impl<FS: FileSystem> Database<FS> {
             // Release lock before persisting to avoid deadlock
             drop(catalog);
 
+            // Unregister the engine from the registry
+            self.engine_registry.remove(table);
+
             // Persist catalog to disk immediately
             self.persist_catalog()?;
 

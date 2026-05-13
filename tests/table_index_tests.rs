@@ -1221,7 +1221,6 @@ fn test_multiple_engines_isolation() {
 }
 
 #[test]
-#[ignore = "drop_table does not unregister engine from registry"]
 fn test_table_drop_and_recreate() {
     let db = create_test_db();
     let table_id = db.create_table("users", default_table_options()).unwrap();
