@@ -22,6 +22,7 @@ pub mod hash;
 pub mod hnsw;
 pub mod lsm;
 pub mod rtree;
+pub mod timeseries;
 mod traits;
 
 use std::collections::HashMap;
@@ -43,6 +44,7 @@ pub use self::lsm::{
     LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
 };
 pub use self::rtree::{PagedRTree, SpatialConfig, SplitStrategy};
+pub use self::timeseries::{TimeSeriesTable, TimeSeriesConfig, TimeSeriesCompression, TimeSeriesRetentionPolicy};
 pub use self::traits::{
     // Core table traits
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
@@ -77,6 +79,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     PagedBloomFilter(Arc<PagedBloomFilter<FS>>),
     PagedHnswVector(Arc<PagedHnswVector<FS>>),
     PagedRTree(Arc<PagedRTree<FS>>),
+    TimeSeriesTable(Arc<TimeSeriesTable<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
     MemoryBlob(Arc<MemoryBlob>),
@@ -94,6 +97,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBloomFilter(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedHnswVector(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedRTree(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::TimeSeriesTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -109,6 +113,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBloomFilter(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedHnswVector(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedRTree(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::TimeSeriesTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
@@ -124,6 +129,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBloomFilter(engine) => engine.kind(),
             Self::PagedHnswVector(engine) => engine.kind(),
             Self::PagedRTree(engine) => engine.kind(),
+            Self::TimeSeriesTable(engine) => engine.kind(),
             Self::MemoryBTree(engine) => engine.kind(),
             Self::MemoryHashTable(engine) => engine.kind(),
             Self::MemoryBlob(engine) => engine.kind(),
@@ -140,6 +146,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedBloomFilter(engine) => Some(engine.root_page_id()),
             Self::PagedHnswVector(_) => None, // TODO: Add root_page_id accessor
             Self::PagedRTree(engine) => Some(engine.root_page_id()),
+            Self::TimeSeriesTable(engine) => Some(engine.root_page_id()),
             Self::MemoryBTree(_) => None,
             Self::MemoryHashTable(_) => None,
             Self::MemoryBlob(_) => None,
@@ -156,6 +163,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::PagedBloomFilter(engine) => Self::PagedBloomFilter(Arc::clone(engine)),
             Self::PagedHnswVector(engine) => Self::PagedHnswVector(Arc::clone(engine)),
             Self::PagedRTree(engine) => Self::PagedRTree(Arc::clone(engine)),
+            Self::TimeSeriesTable(engine) => Self::TimeSeriesTable(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),
@@ -301,6 +309,24 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 let root_page_id = rtree.root_page_id();
                 Ok((TableEngineInstance::PagedRTree(Arc::new(rtree)), Some(root_page_id)))
             }
+            TableEngineKind::TimeSeries => {
+                // Create TimeSeries with default config
+                // TODO: Extract config from options
+                let config = TimeSeriesConfig::default();
+
+                let timeseries = TimeSeriesTable::new(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    config,
+                )
+                .map_err(|e| RegistryError::EngineCreationFailed {
+                    engine: options.engine,
+                    details: format!("Failed to create TimeSeries: {}", e),
+                })?;
+                let root_page_id = timeseries.root_page_id();
+                Ok((TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)), Some(root_page_id)))
+            }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry (doesn't take FS generic)
                 // TODO: Refactor PagedBlob to work with registry
@@ -380,6 +406,21 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     details: format!("Failed to open R-Tree: {}", e),
                 })?;
                 Ok(TableEngineInstance::PagedRTree(Arc::new(rtree)))
+            }
+            TableEngineKind::TimeSeries => {
+                let config = TimeSeriesConfig::default(); // TODO: Extract from options
+                let timeseries = TimeSeriesTable::open(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    root_page_id,
+                    config,
+                )
+                .map_err(|e| RegistryError::EngineOpenFailed {
+                    engine: options.engine,
+                    details: format!("Failed to open TimeSeries: {}", e),
+                })?;
+                Ok(TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)))
             }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry

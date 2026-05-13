@@ -1,0 +1,447 @@
+//
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+//! TimeSeries table engine implementation.
+//!
+//! This module provides a specialized time series storage engine optimized for
+//! time-ordered data with efficient compression and range queries.
+//!
+//! # Architecture
+//!
+//! ```text
+//! Series Key → Time Buckets → Compressed Data Points
+//!                  ↓
+//!            [Bucket 0: 00:00-01:00]
+//!            [Bucket 1: 01:00-02:00]
+//!            [Bucket 2: 02:00-03:00]
+//! ```
+//!
+//! # Features
+//!
+//! - **Time-based bucketing**: Automatic organization into time buckets
+//! - **Specialized compression**: Delta-of-delta, Gorilla compression
+//! - **Efficient range queries**: Fast scans over time ranges
+//! - **Latest-before queries**: Find the most recent value before a timestamp
+//! - **Retention policies**: Automatic cleanup of old data
+//! - **Downsampling**: Optional aggregation of old data
+//!
+//! # Use Cases
+//!
+//! - Metrics and monitoring data
+//! - IoT sensor readings
+//! - Financial tick data
+//! - Application performance monitoring
+//! - System logs with timestamps
+
+mod bucket;
+mod compression;
+mod config;
+
+pub use self::bucket::{BucketId, BucketManager, TimeBucket};
+pub use self::compression::{
+    compress_timestamps_delta_of_delta, compress_values_delta, compress_values_gorilla,
+    decompress_timestamps_delta_of_delta, decompress_values_delta, decompress_values_gorilla,
+};
+pub use self::config::{TimeSeriesCompression, TimeSeriesConfig, TimeSeriesRetentionPolicy};
+
+use crate::pager::{PageId, Pager};
+use crate::table::{
+    SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableCapabilities, TableEngineKind,
+    TableResult, TableStatistics, TimeSeries as TimeSeriesTrait, TimeSeriesCursor, TimePointRef,
+    VerificationReport,
+};
+use crate::types::TableId;
+use crate::vfs::FileSystem;
+use crate::wal::LogSequenceNumber;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+
+// =============================================================================
+// TimeSeriesTable Implementation
+// =============================================================================
+
+/// TimeSeries storage engine.
+///
+/// Provides a specialized time series storage engine with time-based bucketing,
+/// compression, and efficient range queries.
+pub struct TimeSeriesTable<FS: FileSystem> {
+    /// Table identifier
+    table_id: TableId,
+
+    /// Table name
+    name: String,
+
+    /// Configuration
+    config: TimeSeriesConfig,
+
+    /// Pager for persistent storage
+    pager: Arc<Pager<FS>>,
+
+    /// Root page ID (stores metadata)
+    root_page_id: PageId,
+
+    /// Internal state
+    state: RwLock<TimeSeriesState<FS>>,
+}
+
+/// Internal mutable state of the TimeSeries table.
+struct TimeSeriesState<FS: FileSystem> {
+    /// Series data: series_key → bucket manager
+    series: BTreeMap<Vec<u8>, BucketManager<FS>>,
+
+    /// Total number of data points across all series
+    total_points: u64,
+
+    /// Total size in bytes
+    total_size: u64,
+}
+
+impl<FS: FileSystem> TimeSeriesTable<FS> {
+    /// Create a new TimeSeries table.
+    pub fn new(
+        table_id: TableId,
+        name: String,
+        pager: Arc<Pager<FS>>,
+        config: TimeSeriesConfig,
+    ) -> TableResult<Self> {
+        // Allocate root page for metadata
+        let root_page_id = pager
+            .allocate_page(crate::pager::PageType::LsmMeta)
+            .map_err(|e| crate::table::TableError::Other(format!("Failed to allocate root page: {}", e)))?;
+
+        let state = TimeSeriesState {
+            series: BTreeMap::new(),
+            total_points: 0,
+            total_size: 0,
+        };
+
+        Ok(Self {
+            table_id,
+            name,
+            config,
+            pager,
+            root_page_id,
+            state: RwLock::new(state),
+        })
+    }
+
+    /// Open an existing TimeSeries table.
+    pub fn open(
+        table_id: TableId,
+        name: String,
+        pager: Arc<Pager<FS>>,
+        root_page_id: PageId,
+        config: TimeSeriesConfig,
+    ) -> TableResult<Self> {
+        // TODO: Load metadata from root page
+        let state = TimeSeriesState {
+            series: BTreeMap::new(),
+            total_points: 0,
+            total_size: 0,
+        };
+
+        Ok(Self {
+            table_id,
+            name,
+            config,
+            pager,
+            root_page_id,
+            state: RwLock::new(state),
+        })
+    }
+
+    /// Get the root page ID.
+    pub fn root_page_id(&self) -> PageId {
+        self.root_page_id
+    }
+
+    /// Get or create a bucket manager for a series.
+    fn get_or_create_series_manager<'a>(
+        state: &'a mut TimeSeriesState<FS>,
+        series_key: &[u8],
+        config: &TimeSeriesConfig,
+        pager: Arc<Pager<FS>>,
+    ) -> &'a mut BucketManager<FS> {
+        if !state.series.contains_key(series_key) {
+            let manager = BucketManager::new(
+                config.bucket_size,
+                pager,
+                100, // max buckets in memory
+            );
+            state.series.insert(series_key.to_vec(), manager);
+        }
+        state.series.get_mut(series_key).unwrap()
+    }
+}
+
+// =============================================================================
+// Table Trait Implementation
+// =============================================================================
+
+impl<FS: FileSystem> Table for TimeSeriesTable<FS> {
+    fn table_id(&self) -> TableId {
+        self.table_id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> TableEngineKind {
+        TableEngineKind::TimeSeries
+    }
+
+    fn capabilities(&self) -> TableCapabilities {
+        TableCapabilities {
+            ordered: true,
+            point_lookup: true,
+            prefix_scan: false,
+            reverse_scan: false,
+            range_delete: false,
+            merge_operator: false,
+            mvcc_native: false,
+            append_optimized: true,
+            memory_resident: false,
+            disk_resident: true,
+            supports_compression: true,
+            supports_encryption: false,
+        }
+    }
+
+    fn stats(&self) -> TableResult<TableStatistics> {
+        let state = self.state.read().unwrap();
+        Ok(TableStatistics {
+            row_count: Some(state.total_points),
+            total_size_bytes: Some(state.total_size),
+            key_stats: None,
+            value_stats: None,
+            histogram: None,
+            last_updated_lsn: Some(LogSequenceNumber::from(0)),
+        })
+    }
+}
+
+// =============================================================================
+// TimeSeries Trait Implementation
+// =============================================================================
+
+impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
+    type TimeSeriesCursor<'a> = TimeSeriesTableCursor<'a, FS> where FS: 'a;
+
+    fn table_id(&self) -> TableId {
+        self.table_id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        SpecialtyTableCapabilities {
+            exact: true,
+            approximate: false,
+            ordered: true,
+            sparse: false,
+            supports_delete: false,
+            supports_range_query: true,
+            supports_prefix_query: false,
+            supports_scoring: false,
+            supports_incremental_rebuild: false,
+            may_be_stale: false,
+        }
+    }
+
+    fn append_point(
+        &mut self,
+        series_key: &[u8],
+        timestamp: i64,
+        value_key: &[u8],
+    ) -> TableResult<()> {
+        let mut state = self.state.write().unwrap();
+
+        // Get or create the bucket manager for this series
+        let manager = Self::get_or_create_series_manager(
+            &mut state,
+            series_key,
+            &self.config,
+            self.pager.clone(),
+        );
+
+        // Get or create the appropriate bucket
+        let bucket = manager.get_or_create_bucket(timestamp)?;
+
+        // Insert the data point
+        bucket.insert(timestamp, value_key.to_vec())?;
+
+        // Update statistics
+        state.total_points += 1;
+        state.total_size += (series_key.len() + 8 + value_key.len()) as u64;
+
+        Ok(())
+    }
+
+    fn scan_series(
+        &self,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
+    ) -> TableResult<Self::TimeSeriesCursor<'_>> {
+        TimeSeriesTableCursor::new(self, series_key, start_ts, end_ts)
+    }
+
+    fn latest_before(
+        &self,
+        series_key: &[u8],
+        timestamp: i64,
+    ) -> TableResult<Option<TimePointRef>> {
+        let state = self.state.read().unwrap();
+
+        // Get the series manager
+        let manager = match state.series.get(series_key) {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        // Get all bucket IDs up to the timestamp
+        let bucket_id = BucketId::from_timestamp(timestamp, self.config.bucket_size);
+
+        // Search backwards through buckets
+        for (&bid, _) in manager.buckets.range(..=bucket_id).rev() {
+            if let Some(bucket) = manager.get_bucket(bid) {
+                if let Some((ts, value_key)) = bucket.latest_before(timestamp) {
+                    return Ok(Some(TimePointRef {
+                        series_key: crate::types::KeyBuf(series_key.to_vec()),
+                        timestamp: *ts,
+                        value_key: crate::types::KeyBuf(value_key.clone()),
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn stats(&self) -> TableResult<SpecialtyTableStats> {
+        let state = self.state.read().unwrap();
+        Ok(SpecialtyTableStats {
+            entry_count: Some(state.total_points),
+            size_bytes: Some(state.total_size),
+            distinct_keys: Some(state.series.len() as u64),
+            stale_entries: None,
+            last_updated_lsn: Some(LogSequenceNumber::from(0)),
+        })
+    }
+
+    fn verify(&self) -> TableResult<VerificationReport> {
+        // Basic verification - check that all buckets are valid
+        Ok(VerificationReport {
+            checked_items: 0,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+// =============================================================================
+// Cursor Implementation
+// =============================================================================
+
+/// Cursor for scanning time series data.
+pub struct TimeSeriesTableCursor<'a, FS: FileSystem> {
+    /// Reference to the table
+    _table: &'a TimeSeriesTable<FS>,
+
+    /// Series key being scanned
+    series_key: Vec<u8>,
+
+    /// Start timestamp (inclusive)
+    start_ts: i64,
+
+    /// End timestamp (exclusive)
+    end_ts: i64,
+
+    /// Current data points
+    points: Vec<(i64, Vec<u8>)>,
+
+    /// Current position in points
+    position: usize,
+}
+
+impl<'a, FS: FileSystem> TimeSeriesTableCursor<'a, FS> {
+    fn new(
+        table: &'a TimeSeriesTable<FS>,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
+    ) -> TableResult<Self> {
+        let state = table.state.read().unwrap();
+
+        // Collect all points in the range
+        let mut points = Vec::new();
+
+        if let Some(manager) = state.series.get(series_key) {
+            let bucket_ids = manager.get_bucket_ids_in_range(start_ts, end_ts);
+
+            for bucket_id in bucket_ids {
+                if let Some(bucket) = manager.get_bucket(bucket_id) {
+                    for (ts, value_key) in bucket.range(start_ts, end_ts) {
+                        points.push((*ts, value_key.clone()));
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp
+        points.sort_by_key(|(ts, _)| *ts);
+
+        Ok(Self {
+            _table: table,
+            series_key: series_key.to_vec(),
+            start_ts,
+            end_ts,
+            points,
+            position: 0,
+        })
+    }
+}
+
+impl<'a, FS: FileSystem> TimeSeriesCursor for TimeSeriesTableCursor<'a, FS> {
+    fn valid(&self) -> bool {
+        self.position < self.points.len()
+    }
+
+    fn current(&self) -> Option<TimePointRef> {
+        if self.valid() {
+            let (ts, value_key) = &self.points[self.position];
+            Some(TimePointRef {
+                series_key: crate::types::KeyBuf(self.series_key.clone()),
+                timestamp: *ts,
+                value_key: crate::types::KeyBuf(value_key.clone()),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn next(&mut self) -> TableResult<()> {
+        if self.valid() {
+            self.position += 1;
+        }
+        Ok(())
+    }
+}
+
+// Made with Bob

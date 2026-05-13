@@ -681,6 +681,12 @@ impl<FS: FileSystem> Transaction<FS> {
                         "R-Tree tables don't support key-value get operations".to_string(),
                     ));
                 }
+                TableEngineInstance::TimeSeriesTable(_) => {
+                    // TimeSeries tables don't support traditional key-value get operations
+                    return Err(TransactionError::Other(
+                        "TimeSeries tables don't support get operations - use scan_series instead".to_string(),
+                    ));
+                }
             };
             return Ok(result);
         }
@@ -838,6 +844,12 @@ impl<FS: FileSystem> Transaction<FS> {
                             "R-Tree tables don't support contains operations".to_string(),
                         ));
                     }
+                    TableEngineInstance::TimeSeriesTable(_) => {
+                        // TimeSeries tables don't support traditional key-value contains operations
+                        return Err(TransactionError::Other(
+                            "TimeSeries tables don't support contains operations".to_string(),
+                        ));
+                    }
                 }
             } else {
                 false
@@ -964,6 +976,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::PagedRTree(_) => {
                     return Err(TransactionError::Other(
                         "range_delete is not supported for R-Tree tables".to_string(),
+                    ));
+                }
+                TableEngineInstance::TimeSeriesTable(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for TimeSeries tables".to_string(),
                     ));
                 }
             }
@@ -1223,6 +1240,14 @@ impl<FS: FileSystem> Transaction<FS> {
                     TableEngineInstance::PagedRTree(_) => {
                         return Err(TransactionError::Other(
                             "transactional put/delete is not supported for R-Tree tables; use GeoSpatial API"
+                                .to_string(),
+                        ));
+                    }
+                    TableEngineInstance::TimeSeriesTable(_) => {
+                        // TimeSeries tables don't support transactional put/delete operations
+                        // They should be updated through their specialized TimeSeries API
+                        return Err(TransactionError::Other(
+                            "transactional put/delete is not supported for TimeSeries tables; use TimeSeries API"
                                 .to_string(),
                         ));
                     }
