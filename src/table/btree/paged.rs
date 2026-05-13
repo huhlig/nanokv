@@ -179,8 +179,8 @@ impl BTreeNode {
                     bytes.extend_from_slice(&(entry.key.len() as u32).to_le_bytes());
                     // Key data
                     bytes.extend_from_slice(&entry.key);
-                    // Version chain (serialized using bincode)
-                    let chain_bytes = bincode::serialize(&entry.chain).unwrap();
+                    // Version chain (serialized using postcard)
+                    let chain_bytes = postcard::to_allocvec(&entry.chain).unwrap();
                     bytes.extend_from_slice(&(chain_bytes.len() as u32).to_le_bytes());
                     bytes.extend_from_slice(&chain_bytes);
                 }
@@ -339,7 +339,7 @@ impl BTreeNode {
                         ));
                     }
                     let chain: VersionChain =
-                        bincode::deserialize(&bytes[offset..offset + chain_len]).map_err(|e| {
+                        postcard::from_bytes(&bytes[offset..offset + chain_len]).map_err(|e| {
                             crate::table::TableError::corruption(
                                 "BTreeNode::from_bytes",
                                 "deserialization_error",

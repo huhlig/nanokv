@@ -29,7 +29,7 @@
 //!
 //! # Storage Format
 //!
-//! The manifest is serialized as a binary snapshot using `bincode` and written across
+//! The manifest is serialized as a binary snapshot using `postcard` and written across
 //! one or more contiguous `PageType::LsmMeta` pages. The first page stores a small
 //! header followed by manifest payload bytes. Remaining pages store continuation data.
 //!
@@ -713,7 +713,7 @@ impl<FS: FileSystem> Manifest<FS> {
             ));
         }
 
-        let snapshot: ManifestSnapshot = bincode::deserialize(&payload).map_err(|e| {
+        let snapshot: ManifestSnapshot = postcard::from_bytes(&payload).map_err(|e| {
             TableError::corruption(
                 "Manifest::recover_from_pages",
                 "deserialization_error",
@@ -728,7 +728,7 @@ impl<FS: FileSystem> Manifest<FS> {
         let snapshot = ManifestSnapshot {
             version: VersionDisk::from(version),
         };
-        let payload = bincode::serialize(&snapshot)
+        let payload = postcard::to_allocvec(&snapshot)
             .map_err(|e| TableError::serialization_error("manifest_snapshot", e.to_string()))?;
 
         let page_capacity = self.pager.page_size().data_size();

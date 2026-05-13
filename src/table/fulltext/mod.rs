@@ -214,7 +214,7 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
             index_data.extend_from_slice(&(term.len() as u32).to_le_bytes());
             index_data.extend_from_slice(term.as_bytes());
 
-            // Encode posting list using bincode
+            // Encode posting list using postcard
             let posting_bytes = posting_list.to_bytes().map_err(|e| {
                 TableError::Other(format!("Failed to serialize posting list: {}", e))
             })?;
@@ -232,7 +232,7 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
             doc_data.extend_from_slice(&(doc_id.len() as u32).to_le_bytes());
             doc_data.extend_from_slice(doc_id);
 
-            // Encode document entry using bincode
+            // Encode document entry using postcard
             let entry_bytes = doc_entry.to_bytes().map_err(|e| {
                 TableError::Other(format!("Failed to serialize document entry: {}", e))
             })?;

@@ -29,7 +29,7 @@ rand = "0.10"
 crossbeam-channel = "0.5"
 crossbeam = "0.8"
 serde = { version = "1", features = ["derive"] }
-bincode = "1"
+postcard = { version = "1", features = ["alloc"] }
 serde_json = "1.0.149"
 hex = "0.4.3"
 crc32fast = "1.5.0"

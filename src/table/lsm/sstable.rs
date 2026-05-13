@@ -302,7 +302,7 @@ impl SStableFooter {
 ///   - key_len (4 bytes)
 ///   - key (variable)
 ///   - version_chain_len (4 bytes)
-///   - serialized_version_chain (variable, bincode format)
+///   - serialized_version_chain (variable, postcard format)
 ///
 /// Entries are stored in sorted order by key for efficient binary search.
 #[derive(Clone, Debug)]
@@ -403,7 +403,7 @@ impl DataBlock {
     ///   - key_len (4 bytes)
     ///   - key (variable)
     ///   - version_chain_len (4 bytes)
-    ///   - serialized_version_chain (variable, bincode)
+    ///   - serialized_version_chain (variable, postcard)
     pub fn to_bytes(&self, compress: bool) -> TableResult<Vec<u8>> {
         // Serialize entries
         let mut data = Vec::new();
@@ -412,8 +412,8 @@ impl DataBlock {
             data.extend_from_slice(&(key.len() as u32).to_le_bytes());
             data.extend_from_slice(key);
 
-            // Serialize version chain using bincode
-            let chain_bytes = bincode::serialize(chain).map_err(|e| {
+            // Serialize version chain using postcard
+            let chain_bytes = postcard::to_allocvec(chain).map_err(|e| {
                 crate::table::TableError::serialization_error("version_chain", e.to_string())
             })?;
 
@@ -566,7 +566,7 @@ impl DataBlock {
             let chain_bytes = &data[offset..offset + chain_len];
             offset += chain_len;
 
-            let chain: VersionChain = bincode::deserialize(chain_bytes).map_err(|e| {
+            let chain: VersionChain = postcard::from_bytes(chain_bytes).map_err(|e| {
                 use crate::table::TableError;
                 TableError::corruption(
                     "DataBlock::from_bytes",
@@ -601,7 +601,7 @@ impl DataBlock {
             size += key.len();
             size += 4; // chain_len
             // Rough estimate for version chain size
-            size += bincode::serialized_size(chain).unwrap_or(0) as usize;
+            size += postcard::to_allocvec(chain).map(|b| b.len()).unwrap_or(0);
         }
         size
     }
@@ -1463,8 +1463,8 @@ impl<FS: FileSystem> SStableWriter<FS> {
 
         for (key, chain) in self.entries {
             // Estimate entry size: key_len (4) + key + chain_len (4) + serialized chain
-            // Use bincode to get accurate size of serialized chain
-            let chain_size = bincode::serialize(&chain)
+            // Use postcard to get accurate size of serialized chain
+            let chain_size = postcard::to_allocvec(&chain)
                 .map(|bytes| bytes.len())
                 .unwrap_or(chain.value.len() + 64); // Fallback estimate
             let entry_size = 4 + key.len() + 4 + chain_size;
