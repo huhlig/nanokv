@@ -490,27 +490,27 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 
     /// Record a graph edge operation for commit/rollback.
-    pub fn record_graph_operation(&mut self, object_id: TableId, op: GraphEdgeOp) {
+    pub(crate) fn record_graph_operation(&mut self, object_id: TableId, op: GraphEdgeOp) {
         self.graph_write_set.push((object_id, op));
     }
 
     /// Record a time series operation for commit/rollback.
-    pub fn record_timeseries_operation(&self, object_id: TableId, op: TimeSeriesOp) {
+    pub(crate) fn record_timeseries_operation(&self, object_id: TableId, op: TimeSeriesOp) {
         self.timeseries_write_set.borrow_mut().push((object_id, op));
     }
 
     /// Record a vector operation for commit/rollback.
-    pub fn record_vector_operation(&self, object_id: TableId, op: VectorOp) {
+    pub(crate) fn record_vector_operation(&self, object_id: TableId, op: VectorOp) {
         self.vector_write_set.write().unwrap().push((object_id, op));
     }
 
     /// Record a geospatial operation for commit/rollback.
-    pub fn record_geospatial_operation(&mut self, object_id: TableId, op: GeoSpatialOp) {
+    pub(crate) fn record_geospatial_operation(&mut self, object_id: TableId, op: GeoSpatialOp) {
         self.geospatial_write_set.push((object_id, op));
     }
 
     /// Record a full-text operation for commit/rollback.
-    pub fn record_fulltext_operation(&mut self, object_id: TableId, op: FullTextOp) {
+    pub(crate) fn record_fulltext_operation(&mut self, object_id: TableId, op: FullTextOp) {
         self.fulltext_write_set.push((object_id, op));
     }
 
