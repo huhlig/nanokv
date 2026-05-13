@@ -18,6 +18,7 @@ pub mod blob;
 pub mod bloom;
 pub mod btree;
 mod error;
+pub mod graph;
 pub mod hash;
 pub mod hnsw;
 pub mod lsm;
@@ -37,6 +38,7 @@ pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
+pub use self::graph::{GraphConfig, GraphStorageBackend, MemoryGraphTable};
 pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
 pub use self::hnsw::{HnswConfig, PagedHnswVector};
 pub use self::lsm::{
@@ -82,6 +84,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     TimeSeriesTable(Arc<TimeSeriesTable<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
+    MemoryGraphTable(Arc<MemoryGraphTable>),
     MemoryBlob(Arc<MemoryBlob>),
     // Note: PagedBlob is not included as it doesn't take FS generic parameter
     // TODO: Refactor PagedBlob to take Pager parameter
@@ -100,6 +103,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::TimeSeriesTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::MemoryGraphTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
         }
     }
@@ -116,6 +120,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::TimeSeriesTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::MemoryGraphTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
         }
     }
@@ -132,6 +137,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::TimeSeriesTable(engine) => engine.kind(),
             Self::MemoryBTree(engine) => engine.kind(),
             Self::MemoryHashTable(engine) => engine.kind(),
+            Self::MemoryGraphTable(engine) => engine.kind(),
             Self::MemoryBlob(engine) => engine.kind(),
         }
     }
@@ -149,6 +155,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::TimeSeriesTable(engine) => Some(engine.root_page_id()),
             Self::MemoryBTree(_) => None,
             Self::MemoryHashTable(_) => None,
+            Self::MemoryGraphTable(_) => None,
             Self::MemoryBlob(_) => None,
         }
     }
@@ -166,6 +173,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::TimeSeriesTable(engine) => Self::TimeSeriesTable(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
+            Self::MemoryGraphTable(engine) => Self::MemoryGraphTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),
         }
     }

@@ -20,10 +20,11 @@
 //! into manageable chunks. Each bucket contains data points within a specific
 //! time range, enabling efficient range queries and data management.
 
-use crate::pager::{PageId, Pager};
+use crate::pager::{Page, PageId, PageType, Pager};
 use crate::table::TableResult;
 use crate::vfs::FileSystem;
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Unique identifier for a time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,6 +84,9 @@ pub struct TimeBucket<FS: FileSystem> {
 
     /// Whether the bucket has been modified since last flush
     dirty: bool,
+
+    /// Last access time (for LRU eviction)
+    last_access_time: u64,
 }
 
 impl<FS: FileSystem> TimeBucket<FS> {
@@ -103,7 +107,21 @@ impl<FS: FileSystem> TimeBucket<FS> {
             page_id: None,
             pager,
             dirty: false,
+            last_access_time: Self::current_timestamp(),
         }
+    }
+
+    /// Get current timestamp in seconds since UNIX epoch.
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// Update the last access time.
+    fn touch(&mut self) {
+        self.last_access_time = Self::current_timestamp();
     }
 
     /// Get the bucket ID.
@@ -141,7 +159,8 @@ impl<FS: FileSystem> TimeBucket<FS> {
     }
 
     /// Get a data point by timestamp.
-    pub fn get(&self, timestamp: i64) -> Option<&Vec<u8>> {
+    pub fn get(&mut self, timestamp: i64) -> Option<&Vec<u8>> {
+        self.touch();
         self.points.get(&timestamp)
     }
 
@@ -175,16 +194,185 @@ impl<FS: FileSystem> TimeBucket<FS> {
         self.points.range(..=timestamp).next_back()
     }
 
-    /// Flush the bucket to disk.
-    pub fn flush(&mut self) -> TableResult<()> {
-        if !self.dirty {
-            return Ok(());
+    /// Serialize the bucket to bytes.
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        // Write bucket ID (8 bytes)
+        bytes.extend_from_slice(&self.id.0.to_le_bytes());
+
+        // Write start timestamp (8 bytes)
+        bytes.extend_from_slice(&self.start_ts.to_le_bytes());
+
+        // Write end timestamp (8 bytes)
+        bytes.extend_from_slice(&self.end_ts.to_le_bytes());
+
+        // Write last access time (8 bytes)
+        bytes.extend_from_slice(&self.last_access_time.to_le_bytes());
+
+        // Write number of points (4 bytes)
+        bytes.extend_from_slice(&(self.points.len() as u32).to_le_bytes());
+
+        // Write each point: timestamp (8 bytes) + value_key_len (4 bytes) + value_key
+        for (timestamp, value_key) in &self.points {
+            bytes.extend_from_slice(&timestamp.to_le_bytes());
+            bytes.extend_from_slice(&(value_key.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(value_key);
         }
 
-        // TODO: Implement actual persistence
-        // For now, just mark as clean
+        bytes
+    }
+
+    /// Deserialize a bucket from bytes.
+    pub(crate) fn from_bytes(
+        data: &[u8],
+        bucket_size: u64,
+        pager: std::sync::Arc<Pager<FS>>,
+    ) -> TableResult<Self> {
+        let mut pos = 0;
+
+        // Read bucket ID
+        if data.len() < pos + 8 {
+            return Err(crate::table::TableError::Other(
+                "Insufficient data for bucket ID".to_string(),
+            ));
+        }
+        let bucket_id = BucketId(u64::from_le_bytes(
+            data[pos..pos + 8].try_into().unwrap(),
+        ));
+        pos += 8;
+
+        // Read start timestamp
+        if data.len() < pos + 8 {
+            return Err(crate::table::TableError::Other(
+                "Insufficient data for start timestamp".to_string(),
+            ));
+        }
+        let start_ts = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+
+        // Read end timestamp
+        if data.len() < pos + 8 {
+            return Err(crate::table::TableError::Other(
+                "Insufficient data for end timestamp".to_string(),
+            ));
+        }
+        let end_ts = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+
+        // Read last access time
+        if data.len() < pos + 8 {
+            return Err(crate::table::TableError::Other(
+                "Insufficient data for last access time".to_string(),
+            ));
+        }
+        let last_access_time = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+
+        // Read number of points
+        if data.len() < pos + 4 {
+            return Err(crate::table::TableError::Other(
+                "Insufficient data for point count".to_string(),
+            ));
+        }
+        let point_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+
+        // Read points
+        let mut points = BTreeMap::new();
+        for _ in 0..point_count {
+            // Read timestamp
+            if data.len() < pos + 8 {
+                return Err(crate::table::TableError::Other(
+                    "Insufficient data for point timestamp".to_string(),
+                ));
+            }
+            let timestamp = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+
+            // Read value_key length
+            if data.len() < pos + 4 {
+                return Err(crate::table::TableError::Other(
+                    "Insufficient data for value_key length".to_string(),
+                ));
+            }
+            let value_key_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+
+            // Read value_key
+            if data.len() < pos + value_key_len {
+                return Err(crate::table::TableError::Other(
+                    "Insufficient data for value_key".to_string(),
+                ));
+            }
+            let value_key = data[pos..pos + value_key_len].to_vec();
+            pos += value_key_len;
+
+            points.insert(timestamp, value_key);
+        }
+
+        Ok(Self {
+            id: bucket_id,
+            start_ts,
+            end_ts,
+            points,
+            page_id: None,
+            pager,
+            dirty: false,
+            last_access_time,
+        })
+    }
+
+    /// Flush the bucket to disk.
+    pub fn flush(&mut self) -> TableResult<()> {
+        // Always flush to ensure we have a page ID, even for empty buckets
+        // Serialize the bucket
+        let bucket_data = self.to_bytes();
+
+        // Allocate or reuse a page
+        let page_id = if let Some(existing_page_id) = self.page_id {
+            existing_page_id
+        } else {
+            // Allocate a new page
+            let new_page_id = self
+                .pager
+                .allocate_page(PageType::BTreeLeaf)
+                .map_err(|e| crate::table::TableError::Other(format!("Failed to allocate page: {}", e)))?;
+            self.page_id = Some(new_page_id);
+            new_page_id
+        };
+
+        // Create a page with the bucket data
+        let page_size = self.pager.page_size();
+        let mut page = Page::new(page_id, PageType::BTreeLeaf, page_size.data_size());
+        page.data_mut().extend_from_slice(&bucket_data);
+
+        // Write the page to disk
+        self.pager
+            .write_page(&page)
+            .map_err(|e| crate::table::TableError::Other(format!("Failed to write page: {}", e)))?;
+
         self.dirty = false;
         Ok(())
+    }
+
+    /// Load a bucket from disk.
+    pub fn load(
+        page_id: PageId,
+        bucket_size: u64,
+        pager: std::sync::Arc<Pager<FS>>,
+    ) -> TableResult<Self> {
+        // Read the page from disk
+        let page = pager
+            .read_page(page_id)
+            .map_err(|e| crate::table::TableError::Other(format!("Failed to read page: {}", e)))?;
+
+        // Deserialize the bucket
+        let mut bucket = Self::from_bytes(page.data(), bucket_size, pager)?;
+        bucket.page_id = Some(page_id);
+        bucket.touch();
+
+        Ok(bucket)
     }
 
     /// Get the page ID where this bucket is stored.
@@ -195,6 +383,20 @@ impl<FS: FileSystem> TimeBucket<FS> {
     /// Set the page ID where this bucket is stored.
     pub fn set_page_id(&mut self, page_id: PageId) {
         self.page_id = Some(page_id);
+    }
+
+    /// Get the last access time.
+    pub fn last_access_time(&self) -> u64 {
+        self.last_access_time
+    }
+
+    /// Get the estimated size in bytes.
+    pub fn estimated_size(&self) -> usize {
+        let mut size = 32; // Fixed overhead (id, timestamps, metadata)
+        for (_, value_key) in &self.points {
+            size += 8 + 4 + value_key.len(); // timestamp + length + value_key
+        }
+        size
     }
 }
 
@@ -211,6 +413,9 @@ pub struct BucketManager<FS: FileSystem> {
 
     /// Maximum number of buckets to keep in memory
     max_buckets_in_memory: usize,
+
+    /// Mapping of bucket IDs to their page IDs (for lazy loading)
+    bucket_page_map: BTreeMap<BucketId, PageId>,
 }
 
 impl<FS: FileSystem> BucketManager<FS> {
@@ -225,6 +430,7 @@ impl<FS: FileSystem> BucketManager<FS> {
             buckets: BTreeMap::new(),
             pager,
             max_buckets_in_memory,
+            bucket_page_map: BTreeMap::new(),
         }
     }
 
@@ -232,13 +438,24 @@ impl<FS: FileSystem> BucketManager<FS> {
     pub fn get_or_create_bucket(&mut self, timestamp: i64) -> TableResult<&mut TimeBucket<FS>> {
         let bucket_id = BucketId::from_timestamp(timestamp, self.bucket_size);
 
-        // Check if we need to evict old buckets
-        if self.buckets.len() >= self.max_buckets_in_memory && !self.buckets.contains_key(&bucket_id) {
-            self.evict_oldest_bucket()?;
+        // Check if bucket is already in memory
+        if self.buckets.contains_key(&bucket_id) {
+            let bucket = self.buckets.get_mut(&bucket_id).unwrap();
+            bucket.touch();
+            return Ok(bucket);
         }
 
-        // Get or create the bucket
-        if !self.buckets.contains_key(&bucket_id) {
+        // Check if we need to evict old buckets before loading/creating
+        if self.buckets.len() >= self.max_buckets_in_memory {
+            self.evict_lru_bucket()?;
+        }
+
+        // Try to load from disk if we have a page ID for this bucket
+        if let Some(&page_id) = self.bucket_page_map.get(&bucket_id) {
+            let bucket = TimeBucket::load(page_id, self.bucket_size, self.pager.clone())?;
+            self.buckets.insert(bucket_id, bucket);
+        } else {
+            // Create a new bucket
             let bucket = TimeBucket::new(bucket_id, self.bucket_size, self.pager.clone());
             self.buckets.insert(bucket_id, bucket);
         }
@@ -267,11 +484,26 @@ impl<FS: FileSystem> BucketManager<FS> {
             .collect()
     }
 
-    /// Evict the oldest bucket from memory.
-    fn evict_oldest_bucket(&mut self) -> TableResult<()> {
-        if let Some((&bucket_id, _)) = self.buckets.iter().next() {
+    /// Evict the least recently used bucket from memory.
+    fn evict_lru_bucket(&mut self) -> TableResult<()> {
+        // Find the bucket with the oldest access time
+        let lru_bucket_id = self
+            .buckets
+            .iter()
+            .min_by_key(|(_, bucket)| bucket.last_access_time())
+            .map(|(id, _)| *id);
+
+        if let Some(bucket_id) = lru_bucket_id {
             if let Some(mut bucket) = self.buckets.remove(&bucket_id) {
-                bucket.flush()?;
+                // Flush if dirty
+                if bucket.is_dirty() {
+                    bucket.flush()?;
+                }
+                
+                // Store the page ID mapping for lazy loading
+                if let Some(page_id) = bucket.page_id() {
+                    self.bucket_page_map.insert(bucket_id, page_id);
+                }
             }
         }
         Ok(())
@@ -279,8 +511,14 @@ impl<FS: FileSystem> BucketManager<FS> {
 
     /// Flush all dirty buckets to disk.
     pub fn flush_all(&mut self) -> TableResult<()> {
-        for bucket in self.buckets.values_mut() {
-            bucket.flush()?;
+        for (bucket_id, bucket) in self.buckets.iter_mut() {
+            if bucket.is_dirty() {
+                bucket.flush()?;
+                // Update page mapping
+                if let Some(page_id) = bucket.page_id() {
+                    self.bucket_page_map.insert(*bucket_id, page_id);
+                }
+            }
         }
         Ok(())
     }
@@ -288,6 +526,21 @@ impl<FS: FileSystem> BucketManager<FS> {
     /// Get the number of buckets in memory.
     pub fn bucket_count(&self) -> usize {
         self.buckets.len()
+    }
+
+    /// Get the total number of tracked buckets (in memory + on disk).
+    pub fn total_bucket_count(&self) -> usize {
+        self.bucket_page_map.len()
+    }
+
+    /// Register a bucket's page ID for lazy loading.
+    pub fn register_bucket_page(&mut self, bucket_id: BucketId, page_id: PageId) {
+        self.bucket_page_map.insert(bucket_id, page_id);
+    }
+
+    /// Get the page ID for a bucket if it exists.
+    pub fn get_bucket_page_id(&self, bucket_id: BucketId) -> Option<PageId> {
+        self.bucket_page_map.get(&bucket_id).copied()
     }
 }
 

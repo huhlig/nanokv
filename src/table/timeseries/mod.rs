@@ -66,6 +66,7 @@ use crate::table::{
 use crate::types::TableId;
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -359,6 +360,124 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
 // Cursor Implementation
 // =============================================================================
 
+/// Aggregation functions supported by the TimeSeries cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSeriesAggregation {
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Count,
+}
+
+/// Result of an aggregation over a time range.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregationResult {
+    Sum(f64),
+    Avg(f64),
+    Min(f64),
+    Max(f64),
+    Count(u64),
+}
+
+impl AggregationResult {
+    /// Get the numeric value as f64.
+    pub fn as_f64(&self) -> f64 {
+        match self {
+            Self::Sum(value) | Self::Avg(value) | Self::Min(value) | Self::Max(value) => *value,
+            Self::Count(value) => *value as f64,
+        }
+    }
+
+    /// Get the count value if this is a count aggregation.
+    pub fn as_count(&self) -> Option<u64> {
+        match self {
+            Self::Count(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+/// A downsampled aggregation window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DownsampledPoint {
+    pub start_ts: i64,
+    pub end_ts: i64,
+    pub aggregation: AggregationResult,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AggregationState {
+    sum: f64,
+    count: u64,
+    min: f64,
+    max: f64,
+}
+
+impl AggregationState {
+    fn new(value: f64) -> Self {
+        Self {
+            sum: value,
+            count: 1,
+            min: value,
+            max: value,
+        }
+    }
+
+    fn update(&mut self, value: f64) {
+        self.sum += value;
+        self.count += 1;
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+    }
+
+    fn finalize(&self, aggregation: TimeSeriesAggregation) -> AggregationResult {
+        match aggregation {
+            TimeSeriesAggregation::Sum => AggregationResult::Sum(self.sum),
+            TimeSeriesAggregation::Avg => AggregationResult::Avg(self.sum / self.count as f64),
+            TimeSeriesAggregation::Min => AggregationResult::Min(self.min),
+            TimeSeriesAggregation::Max => AggregationResult::Max(self.max),
+            TimeSeriesAggregation::Count => AggregationResult::Count(self.count),
+        }
+    }
+}
+
+fn parse_numeric_value(value_key: &[u8]) -> Option<f64> {
+    if value_key.is_empty() {
+        return None;
+    }
+
+    if let Ok(text) = std::str::from_utf8(value_key) {
+        let trimmed = text.trim();
+
+        if let Ok(value) = trimmed.parse::<f64>() {
+            return Some(value);
+        }
+
+        if let Some((_, tail)) = trimmed.rsplit_once(':') {
+            if let Ok(value) = tail.trim().parse::<f64>() {
+                return Some(value);
+            }
+        }
+
+        if let Ok(json) = serde_json::from_str::<Value>(trimmed) {
+            match json {
+                Value::Number(number) => number.as_f64(),
+                Value::Object(map) => map
+                    .get("value")
+                    .and_then(|value| value.as_f64())
+                    .or_else(|| map.get("avg").and_then(|value| value.as_f64()))
+                    .or_else(|| map.get("sum").and_then(|value| value.as_f64())),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Cursor for scanning time series data.
 pub struct TimeSeriesTableCursor<'a, FS: FileSystem> {
     /// Reference to the table
@@ -415,6 +534,92 @@ impl<'a, FS: FileSystem> TimeSeriesTableCursor<'a, FS> {
             points,
             position: 0,
         })
+    }
+
+    fn aggregate_state(&self) -> Option<AggregationState> {
+        let mut iter = self
+            .points
+            .iter()
+            .filter_map(|(_, value_key)| parse_numeric_value(value_key));
+
+        let first = iter.next()?;
+        let mut state = AggregationState::new(first);
+        for value in iter {
+            state.update(value);
+        }
+        Some(state)
+    }
+
+    pub fn sum(&self) -> Option<f64> {
+        self.aggregate_state().map(|state| state.sum)
+    }
+
+    pub fn avg(&self) -> Option<f64> {
+        self.aggregate_state()
+            .map(|state| state.sum / state.count as f64)
+    }
+
+    pub fn min(&self) -> Option<f64> {
+        self.aggregate_state().map(|state| state.min)
+    }
+
+    pub fn max(&self) -> Option<f64> {
+        self.aggregate_state().map(|state| state.max)
+    }
+
+    pub fn count(&self) -> u64 {
+        self.points.len() as u64
+    }
+
+    pub fn aggregate(&self, aggregation: TimeSeriesAggregation) -> Option<AggregationResult> {
+        match aggregation {
+            TimeSeriesAggregation::Count => Some(AggregationResult::Count(self.count())),
+            _ => self
+                .aggregate_state()
+                .map(|state| state.finalize(aggregation)),
+        }
+    }
+
+    pub fn downsample(
+        &self,
+        interval: u64,
+        aggregation: TimeSeriesAggregation,
+    ) -> TableResult<Vec<DownsampledPoint>> {
+        if interval == 0 {
+            return Err(crate::table::TableError::Other(
+                "Downsample interval must be greater than zero".to_string(),
+            ));
+        }
+
+        let mut windows: BTreeMap<i64, AggregationState> = BTreeMap::new();
+        let interval = interval as i64;
+
+        for (timestamp, value_key) in &self.points {
+            let value = match aggregation {
+                TimeSeriesAggregation::Count => 1.0,
+                _ => match parse_numeric_value(value_key) {
+                    Some(value) => value,
+                    None => continue,
+                },
+            };
+
+            let offset = timestamp.saturating_sub(self.start_ts);
+            let window_start = self.start_ts + offset.div_euclid(interval) * interval;
+
+            windows
+                .entry(window_start)
+                .and_modify(|state| state.update(value))
+                .or_insert_with(|| AggregationState::new(value));
+        }
+
+        Ok(windows
+            .into_iter()
+            .map(|(window_start, state)| DownsampledPoint {
+                start_ts: window_start,
+                end_ts: window_start.saturating_add(interval).min(self.end_ts),
+                aggregation: state.finalize(aggregation),
+            })
+            .collect())
     }
 }
 

@@ -681,6 +681,12 @@ impl<FS: FileSystem> Transaction<FS> {
                         "R-Tree tables don't support key-value get operations".to_string(),
                     ));
                 }
+                TableEngineInstance::MemoryGraphTable(_) => {
+                    // Graph tables don't support traditional key-value get operations
+                    return Err(TransactionError::Other(
+                        "Graph tables don't support get operations - use outgoing/incoming instead".to_string(),
+                    ));
+                }
                 TableEngineInstance::TimeSeriesTable(_) => {
                     // TimeSeries tables don't support traditional key-value get operations
                     return Err(TransactionError::Other(
@@ -844,6 +850,12 @@ impl<FS: FileSystem> Transaction<FS> {
                             "R-Tree tables don't support contains operations".to_string(),
                         ));
                     }
+                    TableEngineInstance::MemoryGraphTable(_) => {
+                        // Graph tables don't support traditional key-value contains operations
+                        return Err(TransactionError::Other(
+                            "Graph tables don't support contains operations".to_string(),
+                        ));
+                    }
                     TableEngineInstance::TimeSeriesTable(_) => {
                         // TimeSeries tables don't support traditional key-value contains operations
                         return Err(TransactionError::Other(
@@ -976,6 +988,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::PagedRTree(_) => {
                     return Err(TransactionError::Other(
                         "range_delete is not supported for R-Tree tables".to_string(),
+                    ));
+                }
+                TableEngineInstance::MemoryGraphTable(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for graph tables".to_string(),
                     ));
                 }
                 TableEngineInstance::TimeSeriesTable(_) => {
@@ -1240,6 +1257,14 @@ impl<FS: FileSystem> Transaction<FS> {
                     TableEngineInstance::PagedRTree(_) => {
                         return Err(TransactionError::Other(
                             "transactional put/delete is not supported for R-Tree tables; use GeoSpatial API"
+                                .to_string(),
+                        ));
+                    }
+                    TableEngineInstance::MemoryGraphTable(_) => {
+                        // Graph tables don't support transactional put/delete operations
+                        // They should be updated through their specialized GraphAdjacency API
+                        return Err(TransactionError::Other(
+                            "transactional put/delete is not supported for graph tables; use GraphAdjacency API"
                                 .to_string(),
                         ));
                     }
