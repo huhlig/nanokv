@@ -739,13 +739,238 @@ impl<FS: FileSystem> PagedRTree<FS> {
         match geometry {
             GeometryRef::Point(point) => Ok(Mbr::from_point_2d(point)),
             GeometryRef::BoundingBox { min, max } => Ok(Mbr::from_points_2d(min, max)),
-            GeometryRef::Wkb(_wkb) => {
-                // TODO: Parse WKB format
-                Err(TableError::operation_not_supported(
-                    "WKB geometry parsing not yet implemented",
+            GeometryRef::Wkb(wkb) => Self::parse_wkb_mbr(wkb),
+        }
+    }
+
+    /// Parse WKB format and extract MBR.
+    fn parse_wkb_mbr(wkb: &[u8]) -> TableResult<Mbr> {
+        if wkb.len() < 5 {
+            return Err(TableError::operation_not_supported("WKB data too short"));
+        }
+
+        let byte_order = wkb[0];
+        let little_endian = byte_order == 1;
+
+        let read_u32 = |bytes: &[u8], offset: usize| -> u32 {
+            let slice = &bytes[offset..offset + 4];
+            let arr: [u8; 4] = slice.try_into().unwrap();
+            if little_endian {
+                u32::from_le_bytes(arr)
+            } else {
+                u32::from_be_bytes(arr)
+            }
+        };
+
+        let read_f64 = |bytes: &[u8], offset: usize| -> f64 {
+            let slice = &bytes[offset..offset + 8];
+            let arr: [u8; 8] = slice.try_into().unwrap();
+            if little_endian {
+                f64::from_le_bytes(arr)
+            } else {
+                f64::from_be_bytes(arr)
+            }
+        };
+
+        let geom_type = read_u32(wkb, 1);
+        let base_type = geom_type & 0xFFFF;
+
+        match base_type {
+            1 => {
+                if wkb.len() < 21 {
+                    return Err(TableError::operation_not_supported("WKB Point data too short"));
+                }
+                let x = read_f64(wkb, 5);
+                let y = read_f64(wkb, 13);
+                Ok(Mbr::from_point_2d(GeoPoint { x, y }))
+            }
+            2 => {
+                if wkb.len() < 9 {
+                    return Err(TableError::operation_not_supported("WKB LineString data too short"));
+                }
+                let num_points = read_u32(wkb, 5) as usize;
+                if wkb.len() < 9 + num_points * 16 {
+                    return Err(TableError::operation_not_supported(
+                        "WKB LineString data too short for claimed point count",
+                    ));
+                }
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                for i in 0..num_points {
+                    let offset = 9 + i * 16;
+                    let x = read_f64(wkb, offset);
+                    let y = read_f64(wkb, offset + 8);
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+                Ok(Mbr::from_points_2d(
+                    GeoPoint { x: min_x, y: min_y },
+                    GeoPoint { x: max_x, y: max_y },
                 ))
             }
+            3 => {
+                if wkb.len() < 9 {
+                    return Err(TableError::operation_not_supported("WKB Polygon data too short"));
+                }
+                let num_rings = read_u32(wkb, 5) as usize;
+                let mut offset = 9;
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                for _ in 0..num_rings {
+                    if offset + 4 > wkb.len() {
+                        return Err(TableError::operation_not_supported(
+                            "WKB Polygon ring header out of bounds",
+                        ));
+                    }
+                    let num_points = read_u32(wkb, offset) as usize;
+                    offset += 4;
+                    if offset + num_points * 16 > wkb.len() {
+                        return Err(TableError::operation_not_supported(
+                            "WKB Polygon ring data out of bounds",
+                        ));
+                    }
+                    for _ in 0..num_points {
+                        let x = read_f64(wkb, offset);
+                        let y = read_f64(wkb, offset + 8);
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                        offset += 16;
+                    }
+                }
+                Ok(Mbr::from_points_2d(
+                    GeoPoint { x: min_x, y: min_y },
+                    GeoPoint { x: max_x, y: max_y },
+                ))
+            }
+            4..=7 => Self::parse_wkb_multi_geometry(wkb, &read_u32, &read_f64),
+            _ => Err(TableError::operation_not_supported(format!(
+                "Unsupported WKB geometry type: {}",
+                base_type
+            ))),
         }
+    }
+
+    /// Parse multi-geometry WKB types.
+    fn parse_wkb_multi_geometry(
+        wkb: &[u8],
+        read_u32: &impl Fn(&[u8], usize) -> u32,
+        read_f64: &impl Fn(&[u8], usize) -> f64,
+    ) -> TableResult<Mbr> {
+        if wkb.len() < 9 {
+            return Err(TableError::operation_not_supported(
+                "WKB multi-geometry data too short",
+            ));
+        }
+
+        let num_geometries = read_u32(wkb, 5) as usize;
+        let mut offset = 9;
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+
+        for _ in 0..num_geometries {
+            if offset + 5 > wkb.len() {
+                return Err(TableError::operation_not_supported(
+                    "WKB multi-geometry header out of bounds",
+                ));
+            }
+
+            let _byte_order = wkb[offset];
+            let sub_type = read_u32(wkb, offset + 1) & 0xFFFF;
+            offset += 5;
+
+            match sub_type {
+                1 => {
+                    if offset + 16 > wkb.len() {
+                        return Err(TableError::operation_not_supported(
+                            "WKB MultiPoint geometry data out of bounds",
+                        ));
+                    }
+                    let x = read_f64(wkb, offset);
+                    let y = read_f64(wkb, offset + 8);
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                    offset += 16;
+                }
+                2 => {
+                    if offset + 4 > wkb.len() {
+                        return Err(TableError::operation_not_supported(
+                            "WKB MultiLineString header out of bounds",
+                        ));
+                    }
+                    let num_points = read_u32(wkb, offset) as usize;
+                    offset += 4;
+                    if offset + num_points * 16 > wkb.len() {
+                        return Err(TableError::operation_not_supported(
+                            "WKB MultiLineString data out of bounds",
+                        ));
+                    }
+                    for _ in 0..num_points {
+                        let x = read_f64(wkb, offset);
+                        let y = read_f64(wkb, offset + 8);
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                        offset += 16;
+                    }
+                }
+                3 => {
+                    if offset + 4 > wkb.len() {
+                        return Err(TableError::operation_not_supported(
+                            "WKB MultiPolygon header out of bounds",
+                        ));
+                    }
+                    let num_rings = read_u32(wkb, offset) as usize;
+                    offset += 4;
+                    for _ in 0..num_rings {
+                        if offset + 4 > wkb.len() {
+                            return Err(TableError::operation_not_supported(
+                                "WKB MultiPolygon ring header out of bounds",
+                            ));
+                        }
+                        let num_points = read_u32(wkb, offset) as usize;
+                        offset += 4;
+                        if offset + num_points * 16 > wkb.len() {
+                            return Err(TableError::operation_not_supported(
+                                "WKB MultiPolygon ring data out of bounds",
+                            ));
+                        }
+                        for _ in 0..num_points {
+                            let x = read_f64(wkb, offset);
+                            let y = read_f64(wkb, offset + 8);
+                            min_x = min_x.min(x);
+                            min_y = min_y.min(y);
+                            max_x = max_x.max(x);
+                            max_y = max_y.max(y);
+                            offset += 16;
+                        }
+                    }
+                }
+                _ => {
+                    return Err(TableError::operation_not_supported(format!(
+                        "Unsupported geometry type {} in multi-geometry",
+                        sub_type
+                    )));
+                }
+            }
+        }
+
+        Ok(Mbr::from_points_2d(
+            GeoPoint { x: min_x, y: min_y },
+            GeoPoint { x: max_x, y: max_y },
+        ))
     }
 
     /// Search for geometries that intersect with a query geometry.
@@ -989,6 +1214,157 @@ impl<FS: FileSystem> GeoSpatial for PagedRTree<FS> {
             errors: Vec::new(),
             warnings: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_wkb_point(x: f64, y: f64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.push(1);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&x.to_le_bytes());
+        bytes.extend_from_slice(&y.to_le_bytes());
+        bytes
+    }
+
+    fn create_wkb_lineString(points: &[(f64, f64)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.push(1);
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(points.len() as u32).to_le_bytes());
+        for (x, y) in points {
+            bytes.extend_from_slice(&x.to_le_bytes());
+            bytes.extend_from_slice(&y.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn create_wkb_polygon(rings: &[Vec<(f64, f64)>]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.push(1);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(rings.len() as u32).to_le_bytes());
+        for ring in rings {
+            bytes.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+            for (x, y) in ring {
+                bytes.extend_from_slice(&x.to_le_bytes());
+                bytes.extend_from_slice(&y.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn test_parse_wkb_point_little_endian() {
+        let wkb = create_wkb_point(1.0f64, 2.0f64);
+        let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&wkb).unwrap();
+        assert!((mbr.min[0] - 1.0).abs() < 1e-10);
+        assert!((mbr.min[1] - 2.0).abs() < 1e-10);
+        assert!((mbr.max[0] - 1.0).abs() < 1e-10);
+        assert!((mbr.max[1] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_wkb_point_big_endian() {
+        let mut bytes = Vec::new();
+        bytes.push(0);
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&1.0f64.to_be_bytes());
+        bytes.extend_from_slice(&2.0f64.to_be_bytes());
+        let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&bytes).unwrap();
+        assert!((mbr.min[0] - 1.0).abs() < 1e-10);
+        assert!((mbr.min[1] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_wkb_lineString() {
+        let points = vec![(0.0f64, 0.0f64), (1.0f64, 1.0f64), (2.0f64, 0.0f64)];
+        let wkb = create_wkb_lineString(&points);
+        let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&wkb).unwrap();
+        assert!((mbr.min[0] - 0.0).abs() < 1e-10);
+        assert!((mbr.min[1] - 0.0).abs() < 1e-10);
+        assert!((mbr.max[0] - 2.0).abs() < 1e-10);
+        assert!((mbr.max[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_wkb_polygon() {
+        let outer_ring = vec![
+            (0.0f64, 0.0f64),
+            (4.0f64, 0.0f64),
+            (4.0f64, 4.0f64),
+            (0.0f64, 4.0f64),
+            (0.0f64, 0.0f64),
+        ];
+        let wkb = create_wkb_polygon(&[outer_ring]);
+        let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&wkb).unwrap();
+        assert!((mbr.min[0] - 0.0).abs() < 1e-10);
+        assert!((mbr.min[1] - 0.0).abs() < 1e-10);
+        assert!((mbr.max[0] - 4.0).abs() < 1e-10);
+        assert!((mbr.max[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_wkb_polygon_with_hole() {
+        let outer_ring = vec![
+            (0.0f64, 0.0f64),
+            (10.0f64, 0.0f64),
+            (10.0f64, 10.0f64),
+            (0.0f64, 10.0f64),
+            (0.0f64, 0.0f64),
+        ];
+        let hole_ring = vec![
+            (2.0f64, 2.0f64),
+            (8.0f64, 2.0f64),
+            (8.0f64, 8.0f64),
+            (2.0f64, 8.0f64),
+            (2.0f64, 2.0f64),
+        ];
+        let wkb = create_wkb_polygon(&[outer_ring, hole_ring]);
+        let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&wkb).unwrap();
+        assert!((mbr.min[0] - 0.0).abs() < 1e-10);
+        assert!((mbr.min[1] - 0.0).abs() < 1e-10);
+        assert!((mbr.max[0] - 10.0).abs() < 1e-10);
+        assert!((mbr.max[1] - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_wkb_multipoint() {
+        let mut bytes = Vec::new();
+        bytes.push(1);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+
+        for (x, y) in [(1.0f64, 2.0f64), (3.0f64, 4.0f64)] {
+            bytes.push(1);
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&x.to_le_bytes());
+            bytes.extend_from_slice(&y.to_le_bytes());
+        }
+
+        let mbr = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&bytes).unwrap();
+        assert!((mbr.min[0] - 1.0).abs() < 1e-10);
+        assert!((mbr.min[1] - 2.0).abs() < 1e-10);
+        assert!((mbr.max[0] - 3.0).abs() < 1e-10);
+        assert!((mbr.max[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_wkb_invalid_type() {
+        let mut bytes = vec![1; 5];
+        bytes[1..5].copy_from_slice(&99u32.to_le_bytes());
+        let result = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_wkb_too_short() {
+        let bytes = vec![1, 2, 3];
+        let result = PagedRTree::<crate::vfs::MemoryFileSystem>::parse_wkb_mbr(&bytes);
+        assert!(result.is_err());
     }
 }
 
