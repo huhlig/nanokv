@@ -594,6 +594,11 @@ impl<FS: FileSystem> Transaction<FS> {
                         "HNSW vector tables don't support get operations".to_string(),
                     ));
                 }
+                TableEngineInstance::PagedRTree(_) => {
+                    return Err(TransactionError::Other(
+                        "R-Tree tables don't support key-value get operations".to_string(),
+                    ));
+                }
             };
             return Ok(result);
         }
@@ -741,6 +746,11 @@ impl<FS: FileSystem> Transaction<FS> {
                             "HNSW vector tables don't support contains operations".to_string(),
                         ));
                     }
+                    TableEngineInstance::PagedRTree(_) => {
+                        return Err(TransactionError::Other(
+                            "R-Tree tables don't support contains operations".to_string(),
+                        ));
+                    }
                 }
             } else {
                 false
@@ -857,6 +867,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::PagedHnswVector(_) => {
                     return Err(TransactionError::Other(
                         "range_delete is not supported for HNSW vector tables".to_string(),
+                    ));
+                }
+                TableEngineInstance::PagedRTree(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for R-Tree tables".to_string(),
                     ));
                 }
             }
@@ -1103,6 +1118,12 @@ impl<FS: FileSystem> Transaction<FS> {
                         // They should be updated through their specialized VectorSearch API
                         return Err(TransactionError::Other(
                             "transactional put/delete is not supported for HNSW vector tables; use VectorSearch API"
+                                .to_string(),
+                        ));
+                    }
+                    TableEngineInstance::PagedRTree(_) => {
+                        return Err(TransactionError::Other(
+                            "transactional put/delete is not supported for R-Tree tables; use GeoSpatial API"
                                 .to_string(),
                         ));
                     }

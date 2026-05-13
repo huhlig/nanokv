@@ -31,7 +31,7 @@
 //! ## Design Philosophy: "All Collections Are Tables"
 //!
 //! Following ADR-007 and ADR-011, this implementation treats indexes as specialty tables:
-//! - Both tables and indexes use ObjectId at the storage layer
+//! - Both tables and indexes use TableId at the storage layer
 //! - Transaction layer treats them uniformly
 //! - Database layer maintains semantic distinction and handles index maintenance
 //! - Index updates are explicit and visible in transaction write sets
@@ -497,7 +497,7 @@ impl<FS: FileSystem> Database<FS> {
         Ok(catalog.get(name).map(|info| info.id))
     }
 
-    /// Get table or index info by ObjectId.
+    /// Get table or index info by TableId.
     pub fn get_object_info(&self, id: TableId) -> Result<Option<TableInfo>, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().find(|info| info.id == id).cloned())
@@ -509,7 +509,7 @@ impl<FS: FileSystem> Database<FS> {
         Ok(catalog.get(name).cloned())
     }
 
-    /// Check if an ObjectId refers to a table.
+    /// Check if a TableId refers to a table.
     pub fn is_table(&self, id: TableId) -> Result<bool, DatabaseError> {
         let catalog = self.table_catalog.read().unwrap();
         Ok(catalog.values().any(|info| info.id == id))
