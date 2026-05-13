@@ -17,6 +17,7 @@ pub mod appendlog;
 pub mod blob;
 pub mod bloom;
 pub mod btree;
+pub mod fulltext;
 mod error;
 pub mod graph;
 pub mod hash;
@@ -38,6 +39,7 @@ pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
+pub use self::fulltext::{FullTextConfig, PagedFullTextIndex, Tokenizer, TokenizerConfig, TokenizerKind};
 pub use self::graph::{GraphConfig, GraphStorageBackend, MemoryGraphTable};
 pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
 pub use self::hnsw::{HnswConfig, PagedHnswVector};
@@ -82,6 +84,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     PagedHnswVector(Arc<PagedHnswVector<FS>>),
     PagedRTree(Arc<PagedRTree<FS>>),
     TimeSeriesTable(Arc<TimeSeriesTable<FS>>),
+    PagedFullTextIndex(Arc<PagedFullTextIndex<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
     MemoryGraphTable(Arc<MemoryGraphTable>),
@@ -101,6 +104,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedHnswVector(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedRTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::TimeSeriesTable(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::PagedFullTextIndex(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryGraphTable(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -118,6 +122,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedHnswVector(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedRTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::TimeSeriesTable(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::PagedFullTextIndex(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryGraphTable(engine) => crate::table::Table::name(engine.as_ref()),
@@ -135,6 +140,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedHnswVector(engine) => engine.kind(),
             Self::PagedRTree(engine) => engine.kind(),
             Self::TimeSeriesTable(engine) => engine.kind(),
+            Self::PagedFullTextIndex(engine) => engine.kind(),
             Self::MemoryBTree(engine) => engine.kind(),
             Self::MemoryHashTable(engine) => engine.kind(),
             Self::MemoryGraphTable(engine) => engine.kind(),
@@ -153,6 +159,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::PagedHnswVector(_) => None, // TODO: Add root_page_id accessor
             Self::PagedRTree(engine) => Some(engine.root_page_id()),
             Self::TimeSeriesTable(engine) => Some(engine.root_page_id()),
+            Self::PagedFullTextIndex(engine) => Some(engine.root_page_id()),
             Self::MemoryBTree(_) => None,
             Self::MemoryHashTable(_) => None,
             Self::MemoryGraphTable(_) => None,
@@ -171,6 +178,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::PagedHnswVector(engine) => Self::PagedHnswVector(Arc::clone(engine)),
             Self::PagedRTree(engine) => Self::PagedRTree(Arc::clone(engine)),
             Self::TimeSeriesTable(engine) => Self::TimeSeriesTable(Arc::clone(engine)),
+            Self::PagedFullTextIndex(engine) => Self::PagedFullTextIndex(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryGraphTable(engine) => Self::MemoryGraphTable(Arc::clone(engine)),
@@ -335,6 +343,24 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 let root_page_id = timeseries.root_page_id();
                 Ok((TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)), Some(root_page_id)))
             }
+            TableEngineKind::FullText => {
+                // Create FullText index with default config
+                // TODO: Extract config from options
+                let config = FullTextConfig::default();
+
+                let fulltext = PagedFullTextIndex::new(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    config,
+                )
+                .map_err(|e| RegistryError::EngineCreationFailed {
+                    engine: options.engine,
+                    details: format!("Failed to create FullText index: {}", e),
+                })?;
+                let root_page_id = fulltext.root_page_id();
+                Ok((TableEngineInstance::PagedFullTextIndex(Arc::new(fulltext)), Some(root_page_id)))
+            }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry (doesn't take FS generic)
                 // TODO: Refactor PagedBlob to work with registry
@@ -429,6 +455,19 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     details: format!("Failed to open TimeSeries: {}", e),
                 })?;
                 Ok(TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)))
+            }
+            TableEngineKind::FullText => {
+                let fulltext = PagedFullTextIndex::open(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    root_page_id,
+                )
+                .map_err(|e| RegistryError::EngineOpenFailed {
+                    engine: options.engine,
+                    details: format!("Failed to open FullText index: {}", e),
+                })?;
+                Ok(TableEngineInstance::PagedFullTextIndex(Arc::new(fulltext)))
             }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry

@@ -693,6 +693,12 @@ impl<FS: FileSystem> Transaction<FS> {
                         "TimeSeries tables don't support get operations - use scan_series instead".to_string(),
                     ));
                 }
+                TableEngineInstance::PagedFullTextIndex(_) => {
+                    // Full-text indexes don't support traditional key-value get operations
+                    return Err(TransactionError::Other(
+                        "Full-text indexes don't support get operations - use search instead".to_string(),
+                    ));
+                }
             };
             return Ok(result);
         }
@@ -862,6 +868,12 @@ impl<FS: FileSystem> Transaction<FS> {
                             "TimeSeries tables don't support contains operations".to_string(),
                         ));
                     }
+                    TableEngineInstance::PagedFullTextIndex(_) => {
+                        // Full-text indexes don't support traditional key-value contains operations
+                        return Err(TransactionError::Other(
+                            "Full-text indexes don't support contains operations".to_string(),
+                        ));
+                    }
                 }
             } else {
                 false
@@ -998,6 +1010,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::TimeSeriesTable(_) => {
                     return Err(TransactionError::Other(
                         "range_delete is not supported for TimeSeries tables".to_string(),
+                    ));
+                }
+                TableEngineInstance::PagedFullTextIndex(_) => {
+                    return Err(TransactionError::Other(
+                        "range_delete is not supported for FullText index tables".to_string(),
                     ));
                 }
             }
@@ -1273,6 +1290,14 @@ impl<FS: FileSystem> Transaction<FS> {
                         // They should be updated through their specialized TimeSeries API
                         return Err(TransactionError::Other(
                             "transactional put/delete is not supported for TimeSeries tables; use TimeSeries API"
+                                .to_string(),
+                        ));
+                    }
+                    TableEngineInstance::PagedFullTextIndex(_) => {
+                        // Full-text indexes don't support transactional put/delete operations
+                        // They should be updated through their specialized FullTextSearch API
+                        return Err(TransactionError::Other(
+                            "transactional put/delete is not supported for FullText index tables; use FullTextSearch API"
                                 .to_string(),
                         ));
                     }
