@@ -304,8 +304,7 @@ mod tests {
         let pager = create_test_pager(&fs, "/test_bulk_load_empty.db");
         let config = SpatialConfig::default();
 
-        let (root_page_id, height, count) =
-            str_bulk_load(&pager, Vec::new(), &config).unwrap();
+        let (root_page_id, height, count) = str_bulk_load(&pager, Vec::new(), &config).unwrap();
 
         assert!(root_page_id.as_u64() > 0);
         assert_eq!(height, 1);
@@ -411,7 +410,8 @@ mod tests {
         let (root_page_id, _, _) = str_bulk_load(&pager, entries, &config).unwrap();
 
         // Perform intersection query
-        let query_mbr = Mbr::from_points_2d(GeoPoint { x: 10.0, y: 5.0 }, GeoPoint { x: 20.0, y: 10.0 });
+        let query_mbr =
+            Mbr::from_points_2d(GeoPoint { x: 10.0, y: 5.0 }, GeoPoint { x: 20.0, y: 10.0 });
 
         fn search_intersects<FS: FileSystem>(
             pager: &Pager<FS>,
@@ -443,7 +443,11 @@ mod tests {
         search_intersects(&pager, root_page_id, &query_mbr, &mut results).unwrap();
 
         // Should find points in the range [10,20] x [5,10]
-        assert!(results.len() >= 11 * 5, "Expected at least 55 results, got {}", results.len());
+        assert!(
+            results.len() >= 11 * 5,
+            "Expected at least 55 results, got {}",
+            results.len()
+        );
     }
 
     #[test]
@@ -487,7 +491,10 @@ mod tests {
 
         while current_page.as_u64() != 0 {
             let node = read_node(&pager, current_page)?;
-            if let RTreeNode::Leaf { entries, next_leaf, .. } = node {
+            if let RTreeNode::Leaf {
+                entries, next_leaf, ..
+            } = node
+            {
                 leaf_count += 1;
                 total_objects += entries.len();
                 current_page = next_leaf;

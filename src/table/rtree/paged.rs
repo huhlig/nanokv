@@ -148,8 +148,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
             .collect::<TableResult<Vec<_>>>()?;
 
         // Perform bulk loading
-        let (root_page_id, height, object_count) =
-            str_bulk_load(&pager, leaf_entries, &config)?;
+        let (root_page_id, height, object_count) = str_bulk_load(&pager, leaf_entries, &config)?;
 
         Ok(Self {
             table_id,

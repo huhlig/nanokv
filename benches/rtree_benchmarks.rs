@@ -386,7 +386,11 @@ fn bench_bulk_loading(c: &mut Criterion) {
             |b, points| {
                 b.iter(|| {
                     let fs = MemoryFileSystem::new();
-                    let mut rtree = create_rtree(&fs, "/bench_sequential.db", SpatialConfig::default().with_max_entries(64));
+                    let mut rtree = create_rtree(
+                        &fs,
+                        "/bench_sequential.db",
+                        SpatialConfig::default().with_max_entries(64),
+                    );
 
                     for (id, point) in points {
                         rtree
@@ -445,7 +449,11 @@ fn bench_bulk_query_performance(c: &mut Criterion) {
 
     // Create sequentially loaded tree
     let fs_seq = MemoryFileSystem::new();
-    let mut rtree_seq = create_rtree(&fs_seq, "/bench_seq_query.db", SpatialConfig::default().with_max_entries(64));
+    let mut rtree_seq = create_rtree(
+        &fs_seq,
+        "/bench_seq_query.db",
+        SpatialConfig::default().with_max_entries(64),
+    );
     for (id, point) in &points {
         rtree_seq
             .insert_geometry(id, GeometryRef::Point(*point))
