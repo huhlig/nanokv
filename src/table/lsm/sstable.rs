@@ -976,68 +976,71 @@ impl<FS: FileSystem> SStableReader<FS> {
     ) -> TableResult<Self> {
         let page_size = pager.page_size().data_size();
 
-        // Step 1: Read the first page to get metadata and calculate last page
-        let _first_page = pager.read_page(first_page_id)?;
-
-        // We need to read enough data to find the footer
-        // The footer is at the end of the SSTable, so we need to find it
-        // For now, we'll read pages sequentially until we find the footer
-        // A more efficient approach would be to store num_pages in a known location
-
-        // Try to find the footer by reading pages starting from first_page_id
-        // The footer should be in the last page, but we don't know how many pages yet
-        // We'll use a heuristic: read pages until we find a valid footer
-
+        // Find the footer by reading pages sequentially.
+        // To avoid false positives, we validate that the footer's num_pages
+        // is consistent with the number of pages we've traversed.
         let mut current_page_id = first_page_id;
-        let footer_opt: Option<SStableFooter>;
-        let mut attempts = 0;
-        const MAX_ATTEMPTS: u32 = 1000; // Prevent infinite loops
+        let mut page_count = 0u32;
+        let mut footer: Option<SStableFooter> = None;
 
-        // Try to find footer by checking each page
         loop {
-            if attempts >= MAX_ATTEMPTS {
+            let page = pager.read_page(current_page_id).map_err(|_| {
                 use crate::table::TableError;
-                return Err(TableError::corruption(
+                TableError::corruption(
                     "SSTableReader::open",
                     "footer_not_found",
-                    "Could not find SSTable footer after max attempts",
-                ));
-            }
+                    "Reached end of file without finding valid footer",
+                )
+            })?;
 
-            let page = pager.read_page(current_page_id)?;
             let data = page.data();
+            page_count += 1;
 
             // Check if this page contains a footer at the end
             if data.len() >= SStableFooter::SIZE {
-                // Try to read footer from the end of the page
                 let footer_start = data.len() - SStableFooter::SIZE;
                 let footer_bytes = &data[footer_start..];
 
-                if let Ok(footer) = SStableFooter::from_bytes(footer_bytes) {
-                    // Verify this is the correct SSTable by checking first_page_id
-                    if footer.metadata.first_page_id == first_page_id {
-                        footer_opt = Some(footer);
-                        break;
+                if let Ok(candidate) = SStableFooter::from_bytes(footer_bytes) {
+                    // Verify this is the correct SSTable
+                    if candidate.metadata.first_page_id == first_page_id {
+                        // Validate num_pages consistency:
+                        // The footer should be on the last page, so page_count should equal num_pages
+                        if candidate.metadata.num_pages == page_count {
+                            // Additional validation to prevent false positives:
+                            // - num_entries must be > 0
+                            // - index_offset must be < footer_offset
+                            // - bloom_filter_offset must be 0 or < footer_offset
+                            if candidate.metadata.num_entries > 0
+                                && candidate.metadata.index_offset
+                                    < candidate.metadata.footer_offset
+                                && (candidate.metadata.bloom_filter_offset == 0
+                                    || candidate.metadata.bloom_filter_offset
+                                        < candidate.metadata.footer_offset)
+                            {
+                                footer = Some(candidate);
+                                break;
+                            }
+                        }
                     }
                 }
             }
 
             // Try next page
             current_page_id = PageId::from(current_page_id.as_u64() + 1);
-            attempts += 1;
 
-            // Check if next page exists
-            if pager.read_page(current_page_id).is_err() {
+            // Safety limit to prevent infinite loops
+            if page_count > 10_000 {
                 use crate::table::TableError;
                 return Err(TableError::corruption(
                     "SSTableReader::open",
                     "footer_not_found",
-                    "Could not find valid SSTable footer",
+                    "Could not find valid SSTable footer after 10000 pages",
                 ));
             }
         }
 
-        let footer = footer_opt.ok_or_else(|| {
+        let footer = footer.ok_or_else(|| {
             use crate::table::TableError;
             TableError::corruption(
                 "SSTableReader::open",
@@ -1061,7 +1064,7 @@ impl<FS: FileSystem> SStableReader<FS> {
             first_page_id,
             metadata.index_offset,
             index_size as usize,
-            page_size,
+            metadata.num_pages,
         )?;
         let index_block = IndexBlock::from_bytes(&index_data)?;
 
@@ -1075,7 +1078,7 @@ impl<FS: FileSystem> SStableReader<FS> {
                 first_page_id,
                 metadata.bloom_filter_offset,
                 bloom_size as usize,
-                page_size,
+                metadata.num_pages,
             )?;
 
             // Read bloom filter header (num_hash_functions as u32, num_bits as u32)
@@ -1118,45 +1121,79 @@ impl<FS: FileSystem> SStableReader<FS> {
     }
 
     /// Helper function to read data of a specific size at a specific offset across pages.
+    ///
+    /// This function handles pages with variable data lengths by iterating through
+    /// pages and accumulating their actual lengths to find the correct page for each offset.
     fn read_data_with_size(
         pager: &Arc<Pager<FS>>,
         first_page_id: PageId,
         offset: u64,
         size: usize,
-        page_size: usize,
+        num_pages: u32,
     ) -> TableResult<Vec<u8>> {
         let mut result = Vec::with_capacity(size);
         let mut remaining = size;
-        let mut current_offset = offset;
+        let mut target_offset = offset;
 
-        while remaining > 0 {
-            // Calculate which page contains the current offset
-            let page_index = current_offset / page_size as u64;
-            let page_offset = (current_offset % page_size as u64) as usize;
-            let page_id = PageId::from(first_page_id.as_u64() + page_index);
+        // First, find which page contains the starting offset
+        let mut cumulative_offset = 0u64;
+        let mut start_page_id = first_page_id;
+        let mut start_page_offset = 0usize;
 
-            // Read the page
+        for i in 0..num_pages {
+            let page_id = PageId::from(first_page_id.as_u64() + i as u64);
             let page = pager.read_page(page_id)?;
-            let data = page.data();
+            let data_len = page.data().len() as u64;
 
-            if page_offset >= data.len() {
+            if cumulative_offset + data_len > target_offset {
+                // This page contains the target offset
+                start_page_id = page_id;
+                start_page_offset = (target_offset - cumulative_offset) as usize;
+                break;
+            }
+
+            cumulative_offset += data_len;
+
+            if i == num_pages - 1 {
                 use crate::table::TableError;
                 return Err(TableError::corruption(
-                    "SSTableReader::open",
+                    "SSTableReader::read_data",
+                    "offset_out_of_range",
+                    format!("Offset {} is beyond SSTable data size", target_offset),
+                ));
+            }
+        }
+
+        // Now read data starting from the found page
+        let mut current_page_id = start_page_id;
+        let mut current_page_offset = start_page_offset;
+
+        while remaining > 0 {
+            let page = pager.read_page(current_page_id)?;
+            let data = page.data();
+
+            if current_page_offset >= data.len() {
+                use crate::table::TableError;
+                return Err(TableError::corruption(
+                    "SSTableReader::read_data",
                     "invalid_offset",
                     "Offset beyond page data",
                 ));
             }
 
-            // Calculate how much to read from this page
-            let available = data.len() - page_offset;
+            let available = data.len() - current_page_offset;
             let to_read = remaining.min(available);
 
-            // Copy data
-            result.extend_from_slice(&data[page_offset..page_offset + to_read]);
+            result.extend_from_slice(&data[current_page_offset..current_page_offset + to_read]);
 
             remaining -= to_read;
-            current_offset += to_read as u64;
+            current_page_offset += to_read;
+
+            // If we've read past the end of this page, move to the next page
+            if current_page_offset >= data.len() && remaining > 0 {
+                current_page_id = PageId::from(current_page_id.as_u64() + 1);
+                current_page_offset = 0;
+            }
         }
 
         Ok(result)
@@ -1230,19 +1267,24 @@ impl<FS: FileSystem> SStableReader<FS> {
             }
         } else {
             // Last data block - need to find where index block starts
-            // The index block starts at index_offset, which is absolute from first_page_id
-            // We need to check if it's on this page or a later page
-            let page_size = self.pager.page_size().data_size();
+            // Calculate the actual cumulative offset of this page by reading all previous pages
+            let mut cumulative_offset = 0u64;
             let page_index =
                 (index_entry.page_id.as_u64() - self.metadata.first_page_id.as_u64()) as usize;
-            let page_start_offset = page_index * page_size;
+
+            for i in 0..page_index {
+                let pid = PageId::from(self.metadata.first_page_id.as_u64() + i as u64);
+                let p = self.pager.read_page(pid)?;
+                cumulative_offset += p.data().len() as u64;
+            }
+
             let index_start_in_sstable = self.metadata.index_offset as usize;
 
-            if index_start_in_sstable >= page_start_offset
-                && index_start_in_sstable < page_start_offset + page_size
+            if index_start_in_sstable >= cumulative_offset as usize
+                && index_start_in_sstable < cumulative_offset as usize + page_data.len()
             {
                 // Index block starts on this page
-                index_start_in_sstable - page_start_offset
+                index_start_in_sstable - cumulative_offset as usize
             } else {
                 // Index block is on a later page, this block extends to end of page
                 page_data.len()
@@ -1479,8 +1521,8 @@ impl<FS: FileSystem> SStableWriter<FS> {
                 // Check if block fits in current page
                 if current_page_offset + block_bytes.len() > page_size {
                     // Write current page and allocate new one
+                    current_offset += current_page_offset as u64;
                     self.pager.write_page(&current_page)?;
-                    current_offset += page_size as u64;
 
                     let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
                     self.pages.push(new_page_id);
@@ -1517,8 +1559,8 @@ impl<FS: FileSystem> SStableWriter<FS> {
             // Check if block fits in current page
             if current_page_offset + block_bytes.len() > page_size {
                 // Write current page and allocate new one
+                current_offset += current_page_offset as u64;
                 self.pager.write_page(&current_page)?;
-                current_offset += page_size as u64;
 
                 let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
                 self.pages.push(new_page_id);
@@ -1546,8 +1588,8 @@ impl<FS: FileSystem> SStableWriter<FS> {
         // Check if index fits in current page
         if current_page_offset + index_bytes.len() > page_size {
             // Write current page and allocate new one
+            current_offset += current_page_offset as u64;
             self.pager.write_page(&current_page)?;
-            current_offset += page_size as u64;
 
             let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
             self.pages.push(new_page_id);
@@ -1574,8 +1616,8 @@ impl<FS: FileSystem> SStableWriter<FS> {
             // Check if bloom filter fits in current page
             if current_page_offset + bloom_header.len() + bloom_bytes.len() > page_size {
                 // Write current page and allocate new one
+                current_offset += current_page_offset as u64;
                 self.pager.write_page(&current_page)?;
-                current_offset += page_size as u64;
 
                 let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
                 self.pages.push(new_page_id);
@@ -1631,11 +1673,13 @@ impl<FS: FileSystem> SStableWriter<FS> {
         // Check if footer fits in current page
         if current_page_offset + footer_bytes.len() > page_size {
             // Write current page and allocate new one
+            current_offset += current_page_offset as u64;
             self.pager.write_page(&current_page)?;
 
             let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
             self.pages.push(new_page_id);
             current_page = Page::new(new_page_id, PageType::LsmData, page_size);
+            current_page_offset = 0;
         }
 
         // Write footer to current page
