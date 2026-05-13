@@ -17,6 +17,7 @@
 7. [File Format](#file-format)
 8. [Performance Characteristics](#performance-characteristics)
 9. [Design Decisions](#design-decisions)
+10. [Specialty Table Integration](#specialty-table-integration)
 
 ---
 
@@ -791,10 +792,86 @@ See [ADR Index](./adrs/README.md) for detailed Architecture Decision Records.
 
 ---
 
+## Specialty Table Integration
+
+NanoKV supports specialty table engines that provide domain-specific query capabilities beyond standard key-value operations. These are integrated into the transaction layer using a trait-based design.
+
+### Specialty Table Types
+
+| Type | Trait | Engine Kinds | Use Case |
+|------|-------|--------------|----------|
+| Approximate Membership | `ApproximateMembership` | Bloom | Probabilistic key existence checks |
+| Full-Text Search | `FullTextSearch` | FullText | Document indexing and search |
+| Vector Search | `VectorSearch` | Hnsw | Similarity search for embeddings |
+| GeoSpatial | `GeoSpatial` | RTree | Location-based queries |
+| Time Series | `TimeSeries` | TimeSeries | Temporal data management |
+| Graph | `GraphAdjacency` | Graph | Edge traversal and graph queries |
+
+### Transaction Integration Pattern
+
+The `Transaction<FS>` struct implements each specialty table trait directly, enabling uniform transaction semantics:
+
+```rust
+impl<FS: FileSystem> ApproximateMembership for Transaction<FS> { ... }
+impl<FS: FileSystem> FullTextSearch for Transaction<FS> { ... }
+impl<FS: FileSystem> VectorSearch for Transaction<FS> { ... }
+impl<FS: FileSystem> GeoSpatial for Transaction<FS> { ... }
+impl<FS: FileSystem> TimeSeries for Transaction<FS> { ... }
+impl<FS: FileSystem> GraphAdjacency for Transaction<FS> { ... }
+```
+
+Each implementation:
+1. Validates transaction state (must be `Active`)
+2. Checks table context is set via `current_table_id`
+3. Logs operation to WAL with type-specific `WriteOpType`
+4. Records operation in type-specific write set
+5. Delegates to underlying engine for read/query operations
+
+### Write Set Architecture
+
+Each specialty table type has a dedicated write set field in `Transaction`:
+
+```rust
+pub struct Transaction<FS: FileSystem> {
+    // ... core fields ...
+    bloom_write_set: HashSet<(TableId, Vec<u8>)>,
+    graph_write_set: Vec<(TableId, GraphEdgeOp)>,
+    timeseries_write_set: RefCell<Vec<(TableId, TimeSeriesOp)>>,
+    vector_write_set: RwLock<Vec<(TableId, VectorOp)>>,
+    geospatial_write_set: Vec<(TableId, GeoSpatialOp)>,
+    fulltext_write_set: Vec<(TableId, FullTextOp)>,
+}
+```
+
+The synchronization primitives (`RefCell`, `RwLock`) enable interior mutability for trait methods that take `&self` instead of `&mut self`.
+
+### Scoped Helper Methods
+
+For dyn-compatible traits, scoped helpers manage table context automatically:
+
+```rust
+pub fn with_bloom<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
+where
+    F: FnOnce(&mut dyn ApproximateMembership) -> TableResult<R>;
+```
+
+Traits using GATs (Generic Associated Types) like `GraphAdjacency` and `TimeSeries` require manual context management via `with_table()` and `clear_table_context()`.
+
+### Commit and Rollback
+
+On `commit()`, specialty write sets are applied after the main write set. On `rollback()`, write sets are discarded without application.
+
+**Note**: Some specialty tables (PagedFullTextIndex, PagedRTree) require interior mutability updates before full commit-time application is enabled. Operations are logged to WAL for durability, but actual application may be deferred.
+
+For complete documentation, see [Specialty Table Transactions](./SPECIALTY_TABLE_TRANSACTIONS.md).
+
+---
+
 ## Related Documents
 
 - [File Format Specification](./FILE_FORMAT.md)
 - [Concurrency Model](./PAGER_CONCURRENCY_COMPLETE.md)
+- [Specialty Table Transactions](./SPECIALTY_TABLE_TRANSACTIONS.md)
 - [LSM Implementation](./archive/WAL_IMPLEMENTATION.md)
 - [Architecture Decision Records](./adrs/)
 - [Phase 1 Completion](./PHASE1_COMPLETION_SUMMARY.md)

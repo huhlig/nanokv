@@ -15,9 +15,9 @@
 //
 
 use crate::table::{
-    ApproximateMembership, EdgeCursor, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency,
+    ApproximateMembership, EdgeCursor, FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency,
     SearchableTable, SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor,
-    TableEngineRegistry, TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch,
+    TableEngineRegistry, TextField, TextQuery, ScoredDocument, TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch,
     VectorSearchOptions, VectorHit, VectorMetric, VerificationReport,
 };
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
@@ -157,6 +157,22 @@ pub(crate) enum GeoSpatialOp {
     },
     DeleteGeometry {
         id: Vec<u8>,
+    },
+}
+
+/// Full-text operation for tracking in transaction write set
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum FullTextOp {
+    IndexDocument {
+        doc_id: Vec<u8>,
+        fields: Vec<(String, String, f32)>,
+    },
+    UpdateDocument {
+        doc_id: Vec<u8>,
+        fields: Vec<(String, String, f32)>,
+    },
+    DeleteDocument {
+        doc_id: Vec<u8>,
     },
 }
 
@@ -341,6 +357,10 @@ pub struct Transaction<FS: FileSystem> {
     // Each entry is (table_id, geospatial_operation)
     geospatial_write_set: Vec<(TableId, GeoSpatialOp)>,
 
+    // Track specialty-table full-text operations for commit/rollback
+    // Each entry is (table_id, full_text_operation)
+    fulltext_write_set: Vec<(TableId, FullTextOp)>,
+
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
 
@@ -382,6 +402,7 @@ impl<FS: FileSystem> Transaction<FS> {
             timeseries_write_set: std::cell::RefCell::new(Vec::new()),
             vector_write_set: RwLock::new(Vec::new()),
             geospatial_write_set: Vec::new(),
+            fulltext_write_set: Vec::new(),
             conflict_detector,
             wal,
             engine_registry,
@@ -488,6 +509,11 @@ impl<FS: FileSystem> Transaction<FS> {
         self.geospatial_write_set.push((object_id, op));
     }
 
+    /// Record a full-text operation for commit/rollback.
+    pub fn record_fulltext_operation(&mut self, object_id: TableId, op: FullTextOp) {
+        self.fulltext_write_set.push((object_id, op));
+    }
+
     /// Prepare the transaction for commit (two-phase commit).
     ///
     /// Transitions from Active to Preparing state.
@@ -578,6 +604,18 @@ impl<FS: FileSystem> Transaction<FS> {
     pub fn with_geospatial<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
     where
         F: FnOnce(&mut dyn GeoSpatial) -> crate::table::TableResult<R>,
+    {
+        self.with_table(table_id);
+        let result = f(self);
+        self.clear_table_context();
+        result.map_err(|e| TransactionError::Other(e.to_string()))
+    }
+
+    /// Execute a scoped set of full-text search operations using the transaction as
+    /// a `FullTextSearch` implementation.
+    pub fn with_fulltext<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
+    where
+        F: FnOnce(&mut dyn FullTextSearch) -> crate::table::TableResult<R>,
     {
         self.with_table(table_id);
         let result = f(self);
@@ -1520,35 +1558,52 @@ impl<FS: FileSystem> Transaction<FS> {
         // Operations are logged to WAL for durability.
         for (_object_id, _op) in &self.geospatial_write_set {
             // TODO: Apply geospatial operations when PagedRTree is updated to use interior mutability
+        }
+
+        // Apply full-text operations after geospatial operations.
+        // Note: PagedFullTextIndex methods require &mut self, but the engine is stored in Arc.
+        // The Full-Text Index implementation needs to be updated to use interior mutability (RwLock)
+        // for its mutable state before full-text operations can be applied in transactions.
+        // Operations are logged to WAL for durability.
+        for (_object_id, _op) in &self.fulltext_write_set {
+            // TODO: Apply full-text operations when PagedFullTextIndex is updated to use interior mutability
             // if let Some(engine) = self.engine_registry.get(*object_id) {
             //     match &engine {
-            //         crate::table::TableEngineInstance::PagedRTree(rtree) => {
+            //         crate::table::TableEngineInstance::PagedFullTextIndex(fulltext) => {
             //             match op {
-            //                 GeoSpatialOp::InsertGeometry { id, geometry } => {
-            //                     let geometry_ref = match geometry {
-            //                         SerializedGeometry::Point { x, y } => {
-            //                             GeometryRef::Point(GeoPoint { x: *x, y: *y })
-            //                         }
-            //                         SerializedGeometry::BoundingBox { min_x, min_y, max_x, max_y } => {
-            //                             GeometryRef::BoundingBox {
-            //                                 min: GeoPoint { x: *min_x, y: *min_y },
-            //                                 max: GeoPoint { x: *max_x, y: *max_y },
-            //                             }
-            //                         }
-            //                         SerializedGeometry::Wkb(wkb) => GeometryRef::Wkb(wkb),
-            //                     };
-            //                     rtree.insert_geometry(id, geometry_ref)
-            //                         .map_err(|e| TransactionError::Other(format!("Geospatial insert_geometry failed: {}", e)))?;
+            //                 FullTextOp::IndexDocument { doc_id, fields } => {
+            //                     let text_fields: Vec<TextField<'_>> = fields
+            //                         .iter()
+            //                         .map(|(name, text, boost)| TextField {
+            //                             name: name.as_str(),
+            //                             text: text.as_str(),
+            //                             boost: *boost,
+            //                         })
+            //                         .collect();
+            //                     fulltext.index_document(doc_id, &text_fields)
+            //                         .map_err(|e| TransactionError::Other(format!("Full-text index_document failed: {}", e)))?;
             //                 }
-            //                 GeoSpatialOp::DeleteGeometry { id } => {
-            //                     rtree.delete_geometry(id)
-            //                         .map_err(|e| TransactionError::Other(format!("Geospatial delete_geometry failed: {}", e)))?;
+            //                 FullTextOp::UpdateDocument { doc_id, fields } => {
+            //                     let text_fields: Vec<TextField<'_>> = fields
+            //                         .iter()
+            //                         .map(|(name, text, boost)| TextField {
+            //                             name: name.as_str(),
+            //                             text: text.as_str(),
+            //                             boost: *boost,
+            //                         })
+            //                         .collect();
+            //                     fulltext.update_document(doc_id, &text_fields)
+            //                         .map_err(|e| TransactionError::Other(format!("Full-text update_document failed: {}", e)))?;
+            //                 }
+            //                 FullTextOp::DeleteDocument { doc_id } => {
+            //                     fulltext.delete_document(doc_id)
+            //                         .map_err(|e| TransactionError::Other(format!("Full-text delete_document failed: {}", e)))?;
             //                 }
             //             }
             //         }
             //         _ => {
             //             return Err(TransactionError::Other(
-            //                 "table is not a geospatial table".to_string(),
+            //                 "table is not a full-text index".to_string(),
             //             ))
             //         }
             //     }
@@ -2560,6 +2615,214 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
             Some(crate::table::TableEngineInstance::PagedRTree(rtree)) => rtree.verify(),
             Some(_) => Err(crate::table::TableError::Other(
                 "table is not a geospatial table".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+}
+
+impl<FS: FileSystem> FullTextSearch for Transaction<FS> {
+    fn table_id(&self) -> TableId {
+        self.current_table_id.unwrap_or(TableId::from(0))
+    }
+
+    fn name(&self) -> &str {
+        self.current_table_name.as_deref().unwrap_or("unknown")
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        let Some(table_id) = self.current_table_id else {
+            return SpecialtyTableCapabilities::default();
+        };
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedFullTextIndex(fulltext)) => {
+                FullTextSearch::capabilities(fulltext.as_ref())
+            }
+            _ => SpecialtyTableCapabilities::default(),
+        }
+    }
+
+    fn index_document(
+        &mut self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+    ) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for index_document",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for full-text operation".to_string(),
+            )
+        })?;
+
+        let serialized_fields: Vec<(String, String, f32)> = fields
+            .iter()
+            .map(|f| (f.name.to_string(), f.text.to_string(), f.boost))
+            .collect();
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::FullTextIndex,
+                doc_id.to_vec(),
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_fulltext_operation(
+            table_id,
+            FullTextOp::IndexDocument {
+                doc_id: doc_id.to_vec(),
+                fields: serialized_fields,
+            },
+        );
+        Ok(())
+    }
+
+    fn update_document(
+        &mut self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+    ) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for update_document",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for full-text operation".to_string(),
+            )
+        })?;
+
+        let serialized_fields: Vec<(String, String, f32)> = fields
+            .iter()
+            .map(|f| (f.name.to_string(), f.text.to_string(), f.boost))
+            .collect();
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::FullTextUpdate,
+                doc_id.to_vec(),
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_fulltext_operation(
+            table_id,
+            FullTextOp::UpdateDocument {
+                doc_id: doc_id.to_vec(),
+                fields: serialized_fields,
+            },
+        );
+        Ok(())
+    }
+
+    fn delete_document(&mut self, doc_id: &[u8]) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for delete_document",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for full-text operation".to_string(),
+            )
+        })?;
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::FullTextDelete,
+                doc_id.to_vec(),
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_fulltext_operation(table_id, FullTextOp::DeleteDocument {
+            doc_id: doc_id.to_vec(),
+        });
+        Ok(())
+    }
+
+    fn search(
+        &self,
+        query: TextQuery<'_>,
+        limit: usize,
+    ) -> crate::table::TableResult<Vec<ScoredDocument>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for search",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for full-text operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedFullTextIndex(fulltext)) => {
+                fulltext.search(query, limit)
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a full-text index".to_string(),
+            )),
+            None => Ok(vec![]),
+        }
+    }
+
+    fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for full-text operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedFullTextIndex(fulltext)) => {
+                fulltext.stats()
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a full-text index".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+
+    fn verify(&self) -> crate::table::TableResult<VerificationReport> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for full-text operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedFullTextIndex(fulltext)) => {
+                fulltext.verify()
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a full-text index".to_string(),
             )),
             None => Err(crate::table::TableError::Other(
                 "table not found".to_string(),

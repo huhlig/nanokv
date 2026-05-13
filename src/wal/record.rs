@@ -120,6 +120,12 @@ pub enum WriteOpType {
     GeoInsert = 10,
     /// Delete a geometry from a geospatial index
     GeoDelete = 11,
+    /// Index a document in a full-text index
+    FullTextIndex = 12,
+    /// Update a document in a full-text index
+    FullTextUpdate = 13,
+    /// Delete a document from a full-text index
+    FullTextDelete = 14,
 }
 
 impl WriteOpType {
@@ -137,6 +143,9 @@ impl WriteOpType {
             9 => Ok(WriteOpType::VectorDelete),
             10 => Ok(WriteOpType::GeoInsert),
             11 => Ok(WriteOpType::GeoDelete),
+            12 => Ok(WriteOpType::FullTextIndex),
+            13 => Ok(WriteOpType::FullTextUpdate),
+            14 => Ok(WriteOpType::FullTextDelete),
             _ => Err(WalError::InvalidRecord {
                 lsn: LogSequenceNumber::from(0),
                 details: format!("Invalid write op type: {}", value),

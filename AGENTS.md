@@ -2,18 +2,30 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
-## Quick Reference
+## Command Quick Reference
+
+### Beads Issue Tracking
 
 ```bash
-bd ready                # Find available work
-bd show <id>            # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>           # Complete work
+bd ready                    # Find available work
+bd show <id>                # View issue details
+bd update <id> --claim      # Claim work atomically
+bd close <id>               # Complete work
+```
+
+### Rust Cargo Commands
+
+```bash
+cargo fmt                   # Correct Formatting
+cargo doc                   # Prepare documentation
+cargo clippy --profile test # Compile Code
+cargo nextest run           # Run tests
+cargo nextest bench         # Run benchmarks
 ```
 
 ## MCP Tools
 
-Use these tools to simplify your work:
+Use these tools to simplify your work whenever possible:
 
 * rust-analyzer-mcp - Code Analysis
 * rust-docs-mcp - Documentation Access
