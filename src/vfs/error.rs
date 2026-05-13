@@ -21,44 +21,23 @@ pub type FileSystemResult<T> = Result<T, FileSystemError>;
 #[derive(Debug)]
 pub enum FileSystemError {
     /// Path is not valid in this FileSystem
-    InvalidPath {
-        path: String,
-        reason: String,
-    },
+    InvalidPath { path: String, reason: String },
     /// Attempt to create an object that already exists.
-    PathExists {
-        path: String,
-    },
+    PathExists { path: String },
     /// Path doesn't exist
-    PathMissing {
-        path: String,
-    },
+    PathMissing { path: String },
     /// Parent directory missing
-    ParentMissing {
-        path: String,
-    },
+    ParentMissing { path: String },
     /// File Already Locked
-    FileAlreadyLocked {
-        path: String,
-    },
+    FileAlreadyLocked { path: String },
     /// Operation Disallowed
-    PermissionDenied {
-        path: String,
-        operation: String,
-    },
+    PermissionDenied { path: String, operation: String },
     /// Already Locked
-    AlreadyLocked {
-        path: String,
-    },
+    AlreadyLocked { path: String },
     /// Operation Not supported on Path
-    InvalidOperation {
-        path: String,
-        operation: String,
-    },
+    InvalidOperation { path: String, operation: String },
     /// Virtual File System doesn't support an operation.
-    UnsupportedOperation {
-        operation: String,
-    },
+    UnsupportedOperation { operation: String },
     /// FileSystemError Error
     InternalError(String),
     /// IO Error

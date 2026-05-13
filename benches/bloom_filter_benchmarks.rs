@@ -16,8 +16,8 @@
 
 //! Benchmarks for PagedBloomFilter operations
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use nanokv::pager::{Pager, PagerConfig, PageSize};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use nanokv::pager::{PageSize, Pager, PagerConfig};
 use nanokv::table::bloom::PagedBloomFilter;
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
@@ -36,7 +36,7 @@ fn create_test_pager() -> Arc<Pager<MemoryFileSystem>> {
 
 fn bench_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_insert");
-    
+
     for size in [100, 1000, 10000] {
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
@@ -62,13 +62,13 @@ fn bench_insert(c: &mut Criterion) {
             );
         });
     }
-    
+
     group.finish();
 }
 
 fn bench_contains(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_contains");
-    
+
     for size in [100, 1000, 10000] {
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
@@ -83,11 +83,11 @@ fn bench_contains(c: &mut Criterion) {
                 None,
             )
             .unwrap();
-            
+
             for i in 0..size {
                 filter.insert(&i.to_le_bytes()).unwrap();
             }
-            
+
             // Benchmark lookups
             b.iter(|| {
                 for i in 0..size {
@@ -96,13 +96,13 @@ fn bench_contains(c: &mut Criterion) {
             });
         });
     }
-    
+
     group.finish();
 }
 
 fn bench_false_positive_check(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_false_positive");
-    
+
     for size in [1000, 10000] {
         group.throughput(Throughput::Elements(1000));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
@@ -117,11 +117,11 @@ fn bench_false_positive_check(c: &mut Criterion) {
                 None,
             )
             .unwrap();
-            
+
             for i in 0..size {
                 filter.insert(&i.to_le_bytes()).unwrap();
             }
-            
+
             // Benchmark lookups for non-existent keys
             b.iter(|| {
                 for i in size..(size + 1000) {
@@ -130,13 +130,13 @@ fn bench_false_positive_check(c: &mut Criterion) {
             });
         });
     }
-    
+
     group.finish();
 }
 
 fn bench_different_bits_per_key(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_bits_per_key");
-    
+
     let size = 1000;
     for bits_per_key in [5, 10, 15, 20] {
         group.bench_with_input(
@@ -155,11 +155,11 @@ fn bench_different_bits_per_key(c: &mut Criterion) {
                             None,
                         )
                         .unwrap();
-                        
+
                         for i in 0..size {
                             filter.insert(&i.to_le_bytes()).unwrap();
                         }
-                        
+
                         filter
                     },
                     |filter| {
@@ -172,13 +172,13 @@ fn bench_different_bits_per_key(c: &mut Criterion) {
             },
         );
     }
-    
+
     group.finish();
 }
 
 fn bench_different_hash_functions(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_hash_functions");
-    
+
     let size = 1000;
     for num_hash in [3, 5, 7, 10] {
         group.bench_with_input(
@@ -197,11 +197,11 @@ fn bench_different_hash_functions(c: &mut Criterion) {
                             Some(num_hash),
                         )
                         .unwrap();
-                        
+
                         for i in 0..size {
                             filter.insert(&i.to_le_bytes()).unwrap();
                         }
-                        
+
                         filter
                     },
                     |filter| {
@@ -214,13 +214,13 @@ fn bench_different_hash_functions(c: &mut Criterion) {
             },
         );
     }
-    
+
     group.finish();
 }
 
 fn bench_clear(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_clear");
-    
+
     for size in [100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter_batched(
@@ -235,11 +235,11 @@ fn bench_clear(c: &mut Criterion) {
                         None,
                     )
                     .unwrap();
-                    
+
                     for i in 0..size {
                         filter.insert(&i.to_le_bytes()).unwrap();
                     }
-                    
+
                     filter
                 },
                 |mut filter| {
@@ -249,15 +249,15 @@ fn bench_clear(c: &mut Criterion) {
             );
         });
     }
-    
+
     group.finish();
 }
 
 fn bench_persistence(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_persistence");
-    
+
     let size = 1000;
-    
+
     // Benchmark write (create + populate)
     group.bench_function("write", |b| {
         b.iter_batched(
@@ -272,17 +272,17 @@ fn bench_persistence(c: &mut Criterion) {
                     None,
                 )
                 .unwrap();
-                
+
                 for i in 0..size {
                     filter.insert(black_box(&i.to_le_bytes())).unwrap();
                 }
-                
+
                 black_box(filter.root_page_id())
             },
             criterion::BatchSize::SmallInput,
         );
     });
-    
+
     // Benchmark read (open existing)
     group.bench_function("read", |b| {
         b.iter_batched(
@@ -297,11 +297,11 @@ fn bench_persistence(c: &mut Criterion) {
                     None,
                 )
                 .unwrap();
-                
+
                 for i in 0..size {
                     filter.insert(&i.to_le_bytes()).unwrap();
                 }
-                
+
                 (pager, filter.root_page_id())
             },
             |(pager, root_page_id)| {
@@ -318,7 +318,7 @@ fn bench_persistence(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         );
     });
-    
+
     group.finish();
 }
 

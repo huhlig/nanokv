@@ -23,8 +23,8 @@
 use nanokv::pager::{
     CompressionType, EncryptionType, Page, PageId, PageType, Pager, PagerConfig, PagerError,
 };
-use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 use std::io::{Read, Seek, SeekFrom, Write};

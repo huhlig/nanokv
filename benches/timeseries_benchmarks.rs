@@ -16,19 +16,16 @@
 
 //! Benchmarks for TimeSeries table engine aggregation operations.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nanokv::pager::{Pager, PagerConfig};
-use nanokv::table::timeseries::{TimeSeriesAggregation, TimeSeriesConfig, TimeSeriesTable};
 use nanokv::table::TimeSeries;
+use nanokv::table::timeseries::{TimeSeriesAggregation, TimeSeriesConfig, TimeSeriesTable};
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
 
 /// Helper to create a TimeSeries table with test data
-fn create_table_with_data(
-    name: &str,
-    num_points: usize,
-) -> TimeSeriesTable<MemoryFileSystem> {
+fn create_table_with_data(name: &str, num_points: usize) -> TimeSeriesTable<MemoryFileSystem> {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "bench.db", PagerConfig::default()).unwrap());
     let mut table = TimeSeriesTable::new(
@@ -238,16 +235,12 @@ fn bench_streaming_aggregation(c: &mut Criterion) {
         group.throughput(Throughput::Elements(*size as u64));
 
         // Measure time to compute aggregation
-        group.bench_with_input(
-            BenchmarkId::new("streaming_avg", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let cursor = table.scan_series(series_key, 0, end_ts).unwrap();
-                    black_box(cursor.avg())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("streaming_avg", size), size, |b, _| {
+            b.iter(|| {
+                let cursor = table.scan_series(series_key, 0, end_ts).unwrap();
+                black_box(cursor.avg())
+            });
+        });
     }
 
     group.finish();

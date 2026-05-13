@@ -39,14 +39,10 @@ impl TestContext {
     fn new() -> Self {
         let fs = MemoryFileSystem::new();
         let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-        let wal = Arc::new(
-            WalWriter::create(&fs, "test.wal", WalWriterConfig::default()).unwrap()
-        );
-        let pager = Arc::new(
-            Pager::create(&fs, "test.db", PagerConfig::default()).unwrap()
-        );
+        let wal = Arc::new(WalWriter::create(&fs, "test.wal", WalWriterConfig::default()).unwrap());
+        let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
         let engine_registry = Arc::new(TableEngineRegistry::new(pager));
-        
+
         Self {
             fs,
             conflict_detector,
@@ -54,7 +50,7 @@ impl TestContext {
             engine_registry,
         }
     }
-    
+
     fn create_transaction(
         &self,
         txn_id: TransactionId,
@@ -62,7 +58,7 @@ impl TestContext {
         isolation: IsolationLevel,
     ) -> Transaction<MemoryFileSystem> {
         let current_lsn = Arc::new(RwLock::new(snapshot_lsn));
-        
+
         Transaction::new(
             txn_id,
             snapshot_lsn,
@@ -178,7 +174,7 @@ fn test_index_and_table_operations_independent() {
 fn test_index_write_conflict_detection() {
     // Create shared context so transactions share conflict detector
     let ctx = TestContext::new();
-    
+
     // Create two transactions
     let mut txn1 = ctx.create_transaction(
         TransactionId::from(4),

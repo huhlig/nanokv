@@ -29,11 +29,11 @@ use crate::snap::Snapshot;
 use crate::table::{
     BatchOps, BatchReport, DenseOrdered, Flushable, MutableTable, OrderedScan, PointLookup,
     SearchableTable, SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableStats, Table,
-    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult,
-    TableStatistics, TableWriter, VerificationReport, WriteBatch,
+    TableCapabilities, TableCursor, TableEngineKind, TableReader, TableResult, TableStatistics,
+    TableWriter, VerificationReport, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{Bound, TableId, ScanBounds, ValueBuf};
+use crate::types::{Bound, ScanBounds, TableId, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -195,14 +195,14 @@ impl<'a> PointLookup for MemoryBTreeReader<'a> {
         }
         Ok(None)
     }
-    
+
     fn get_stream(
         &self,
         key: &[u8],
         snapshot_lsn: LogSequenceNumber,
     ) -> TableResult<Option<Box<dyn crate::table::ValueStream + '_>>> {
         use crate::table::SliceValueStream;
-        
+
         // For in-memory table, use default implementation that wraps the value in a stream
         self.get(key, snapshot_lsn).map(|opt| {
             opt.map(|value_buf| {
@@ -214,7 +214,10 @@ impl<'a> PointLookup for MemoryBTreeReader<'a> {
 }
 
 impl<'a> OrderedScan for MemoryBTreeReader<'a> {
-    type Cursor<'b> = MemoryBTreeCursor<'b> where Self: 'b;
+    type Cursor<'b>
+        = MemoryBTreeCursor<'b>
+    where
+        Self: 'b;
 
     fn scan(
         &self,
@@ -252,13 +255,17 @@ impl<'a> MutableTable for MemoryBTreeWriter<'a> {
         Ok((key.len() + value.len() + 16) as u64)
     }
 
-    fn put_stream(&mut self, key: &[u8], stream: &mut dyn crate::table::ValueStream) -> TableResult<u64> {
+    fn put_stream(
+        &mut self,
+        key: &[u8],
+        stream: &mut dyn crate::table::ValueStream,
+    ) -> TableResult<u64> {
         // For in-memory table, read the entire stream into memory
         let mut buffer = Vec::new();
         if let Some(size_hint) = stream.size_hint() {
             buffer.reserve(size_hint as usize);
         }
-        
+
         let mut temp_buf = vec![0u8; 8192]; // 8KB chunks
         loop {
             let n = stream.read(&mut temp_buf)?;
@@ -267,7 +274,7 @@ impl<'a> MutableTable for MemoryBTreeWriter<'a> {
             }
             buffer.extend_from_slice(&temp_buf[..n]);
         }
-        
+
         self.put(key, &buffer)
     }
 
@@ -305,7 +312,6 @@ impl<'a> MutableTable for MemoryBTreeWriter<'a> {
                     Bound::Unbounded => None,
                 };
 
-                
                 match (start_key, end_key) {
                     (Some(s), Some(e)) => data.range(s..=e).map(|(k, _)| k.clone()).collect(),
                     (Some(s), None) => data.range(s..).map(|(k, _)| k.clone()).collect(),
@@ -440,7 +446,7 @@ impl<'a> MemoryBTreeWriter<'a> {
     /// The commit_lsn is obtained from the WAL after writing the COMMIT record.
     pub fn commit_versions(&self, commit_lsn: LogSequenceNumber) -> TableResult<()> {
         let mut data = self.table.data.write().unwrap();
-        
+
         // Iterate through all keys and mark versions created by this transaction as committed
         for chain in data.values_mut() {
             // Only mark the head version if it was created by this transaction
@@ -448,7 +454,7 @@ impl<'a> MemoryBTreeWriter<'a> {
                 chain.commit(commit_lsn);
             }
         }
-        
+
         Ok(())
     }
 }
@@ -523,9 +529,7 @@ impl<'a> MemoryBTreeCursor<'a> {
             0,
             Vec::new(),
         );
-        chain
-            .find_visible_version(&snapshot)
-            .map(|v| v.to_vec())
+        chain.find_visible_version(&snapshot).map(|v| v.to_vec())
     }
 }
 
@@ -608,11 +612,12 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
             }
 
             if let Some(chain) = data.get(&key)
-                && let Some(value) = self.find_visible_value(chain) {
-                    self.current_key = Some(key);
-                    self.current_value = Some(value);
-                    return Ok(());
-                }
+                && let Some(value) = self.find_visible_value(chain)
+            {
+                self.current_key = Some(key);
+                self.current_value = Some(value);
+                return Ok(());
+            }
         }
 
         self.exhausted = true;
@@ -662,12 +667,13 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
             }
 
             if let Some(chain) = data.get(&k)
-                && let Some(value) = self.find_visible_value(chain) {
-                    self.current_key = Some(k);
-                    self.current_value = Some(value);
-                    self.exhausted = false;
-                    return Ok(());
-                }
+                && let Some(value) = self.find_visible_value(chain)
+            {
+                self.current_key = Some(k);
+                self.current_value = Some(value);
+                self.exhausted = false;
+                return Ok(());
+            }
         }
 
         self.exhausted = true;
@@ -689,11 +695,12 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
             },
         };
 
-        let iter: Box<dyn Iterator<Item = (&Vec<u8>, &VersionChain)>> = if let Some(start) = start_key {
-            Box::new(data.range(start..))
-        } else {
-            Box::new(data.iter())
-        };
+        let iter: Box<dyn Iterator<Item = (&Vec<u8>, &VersionChain)>> =
+            if let Some(start) = start_key {
+                Box::new(data.range(start..))
+            } else {
+                Box::new(data.iter())
+            };
 
         for (key, chain) in iter {
             if !self.is_in_bounds(key) {
@@ -773,13 +780,12 @@ impl<'a> TableCursor for MemoryBTreeCursor<'a> {
 
 // Made with Bob
 
-
 // =============================================================================
 // DenseOrdered Specialty Table Implementation
 // =============================================================================
 
 /// Specialty cursor for index operations.
-/// 
+///
 /// For secondary indexes, the "index_key" is the indexed field value,
 /// and the "primary_key" is the pointer back to the main table record.
 pub struct MemoryBTreeSpecialtyCursor<'a> {
@@ -842,7 +848,7 @@ impl DenseOrdered for MemoryBTree {
         // For a secondary index, we store: index_key -> primary_key
         // This allows lookups by the indexed field to find the primary key
         let mut data = self.data.write().unwrap();
-        
+
         let old_size = data
             .get(index_key)
             .map(|chain| Self::estimate_entry_size(index_key, chain))
@@ -874,7 +880,7 @@ impl DenseOrdered for MemoryBTree {
         // For secondary indexes, we need to delete the specific index_key -> primary_key mapping
         // In a simple implementation, we just remove the entry if it matches
         let mut data = self.data.write().unwrap();
-        
+
         if let Some(chain) = data.get(index_key) {
             // Check if the current version points to the expected primary key
             let snapshot = Snapshot::new(
@@ -885,14 +891,15 @@ impl DenseOrdered for MemoryBTree {
                 0,
                 Vec::new(),
             );
-            
+
             if let Some(stored_primary_key) = chain.find_visible_version(&snapshot)
-                && stored_primary_key == primary_key {
-                    // Remove the entry
-                    let removed_chain = data.remove(index_key).unwrap();
-                    let size = Self::estimate_entry_size(index_key, &removed_chain);
-                    self.update_memory_usage(-(size as isize));
-                }
+                && stored_primary_key == primary_key
+            {
+                // Remove the entry
+                let removed_chain = data.remove(index_key).unwrap();
+                let size = Self::estimate_entry_size(index_key, &removed_chain);
+                self.update_memory_usage(-(size as isize));
+            }
         }
 
         Ok(())

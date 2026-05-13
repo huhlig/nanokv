@@ -16,12 +16,12 @@
 
 //! Tests for GraphAdjacency trait implementation on Transaction
 
+use nanokv::table::TableEngineRegistry;
 use nanokv::table::{GraphAdjacency, SpecialtyTableCapabilities};
 use nanokv::txn::{ConflictDetector, Transaction, TransactionId};
 use nanokv::types::{Durability, IsolationLevel, TableId};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
-use nanokv::table::TableEngineRegistry;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Helper to create a test transaction
@@ -30,7 +30,7 @@ fn create_test_transaction() -> Transaction<MemoryFileSystem> {
     let wal_config = nanokv::wal::WalWriterConfig::default();
     let wal = Arc::new(nanokv::wal::WalWriter::create(&fs, "test.wal", wal_config).unwrap());
     let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    
+
     // Create a minimal pager for the engine registry
     let pager_config = nanokv::pager::PagerConfig::default();
     let pager = Arc::new(nanokv::pager::Pager::create(&fs, "test.db", pager_config).unwrap());
@@ -71,13 +71,7 @@ fn test_graph_transaction_add_edge_without_context() {
     let mut txn = create_test_transaction();
 
     // Attempt to add edge without setting table context should fail
-    let result = GraphAdjacency::add_edge(
-        &mut txn,
-        b"node1",
-        b"follows",
-        b"node2",
-        b"edge1",
-    );
+    let result = GraphAdjacency::add_edge(&mut txn, b"node1", b"follows", b"node2", b"edge1");
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no table context"));
@@ -88,13 +82,7 @@ fn test_graph_transaction_remove_edge_without_context() {
     let mut txn = create_test_transaction();
 
     // Attempt to remove edge without setting table context should fail
-    let result = GraphAdjacency::remove_edge(
-        &mut txn,
-        b"node1",
-        b"follows",
-        b"node2",
-        b"edge1",
-    );
+    let result = GraphAdjacency::remove_edge(&mut txn, b"node1", b"follows", b"node2", b"edge1");
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no table context"));
@@ -107,13 +95,13 @@ fn test_graph_transaction_with_table_scoped() {
 
     // Use with_table for scoped operations
     txn.with_table(table_id);
-    
+
     // Table context should be set
     assert_eq!(GraphAdjacency::table_id(&txn), table_id);
-    
+
     // Clear table context
     txn.clear_table_context();
-    
+
     // Table context should be cleared
     assert_eq!(txn.current_table(), None);
 }
@@ -192,13 +180,13 @@ fn test_graph_transaction_multiple_operations() {
 
     // Perform multiple graph operations with table context
     txn.with_table(table_id);
-    
+
     // These will write to WAL but won't actually execute since table doesn't exist
     // The test verifies the API works correctly
     let _ = GraphAdjacency::add_edge(&mut txn, b"node1", b"follows", b"node2", b"edge1");
     let _ = GraphAdjacency::add_edge(&mut txn, b"node2", b"follows", b"node3", b"edge2");
     let _ = GraphAdjacency::remove_edge(&mut txn, b"node1", b"follows", b"node2", b"edge1");
-    
+
     txn.clear_table_context();
 }
 
@@ -211,9 +199,24 @@ fn test_graph_transaction_edge_data_encoding() {
 
     // Test with various edge data
     let test_cases = vec![
-        (b"node1".as_slice(), b"follows".as_slice(), b"node2".as_slice(), b"edge1".as_slice()),
-        (b"a".as_slice(), b"b".as_slice(), b"c".as_slice(), b"d".as_slice()),
-        (b"long_source_node".as_slice(), b"complex_label".as_slice(), b"long_target_node".as_slice(), b"edge_id_123".as_slice()),
+        (
+            b"node1".as_slice(),
+            b"follows".as_slice(),
+            b"node2".as_slice(),
+            b"edge1".as_slice(),
+        ),
+        (
+            b"a".as_slice(),
+            b"b".as_slice(),
+            b"c".as_slice(),
+            b"d".as_slice(),
+        ),
+        (
+            b"long_source_node".as_slice(),
+            b"complex_label".as_slice(),
+            b"long_target_node".as_slice(),
+            b"edge_id_123".as_slice(),
+        ),
     ];
 
     for (source, label, target, edge_id) in test_cases {

@@ -243,15 +243,15 @@ impl FreeList {
     pub fn set_free_pages(&self, mut free_pages: Vec<PageId>) {
         free_pages.sort_unstable();
         let count = free_pages.len() as u64;
-        
+
         // Clear existing queue
         while self.free_pages.pop().is_some() {}
-        
+
         // Push all pages
         for page_id in free_pages {
             self.free_pages.push(page_id);
         }
-        
+
         self.total_free.store(count, Ordering::Release);
         if count == 0 {
             self.first_page.store(0, Ordering::Release);

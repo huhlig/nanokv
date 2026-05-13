@@ -25,11 +25,9 @@
 //! The implementation uses a directory structure to organize blob files,
 //! with metadata stored separately for fast lookups.
 
-use crate::table::{
-    Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
-};
+use crate::table::{Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics};
 use crate::types::{TableId, ValueBuf};
-use crate::vfs::{FileSystem, File};
+use crate::vfs::{File, FileSystem};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -72,7 +70,7 @@ impl<FS: FileSystem> FileBlob<FS> {
     /// Reads the blob data from the file system.
     pub fn get(&self, key: &[u8]) -> TableResult<Option<ValueBuf>> {
         let path = self.key_to_path(key);
-        
+
         // Check if file exists by trying to open it
         match self.fs.open_file(path.to_str().unwrap_or("")) {
             Ok(mut file) => {
@@ -80,13 +78,13 @@ impl<FS: FileSystem> FileBlob<FS> {
                 let size = file.get_size().map_err(|e| {
                     crate::table::TableError::Other(format!("Failed to get file size: {}", e))
                 })?;
-                
+
                 // Read file contents
                 let mut buffer = vec![0u8; size as usize];
                 file.read_at_offset(0, &mut buffer).map_err(|e| {
                     crate::table::TableError::Other(format!("Failed to read file: {}", e))
                 })?;
-                
+
                 Ok(Some(ValueBuf(buffer)))
             }
             Err(_) => Ok(None),
@@ -99,19 +97,18 @@ impl<FS: FileSystem> FileBlob<FS> {
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
         let path = self.key_to_path(key);
         let path_str = path.to_str().unwrap_or("");
-        
+
         // Create or overwrite the file
         let mut file = self.fs.create_file(path_str).map_err(|e| {
             crate::table::TableError::Other(format!("Failed to create file: {}", e))
         })?;
-        
-        file.write_all(value).map_err(|e| {
-            crate::table::TableError::Other(format!("Failed to write file: {}", e))
-        })?;
-        
+
+        file.write_all(value)
+            .map_err(|e| crate::table::TableError::Other(format!("Failed to write file: {}", e)))?;
+
         // Update index
         self.index.write().unwrap().insert(key.to_vec(), path);
-        
+
         Ok(value.len() as u64)
     }
 
@@ -121,18 +118,18 @@ impl<FS: FileSystem> FileBlob<FS> {
     pub fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
         let path = self.key_to_path(key);
         let path_str = path.to_str().unwrap_or("");
-        
+
         // Try to delete the file
         let deleted = match self.fs.remove_file(path_str) {
             Ok(_) => true,
             Err(_) => false,
         };
-        
+
         // Remove from index
         if deleted {
             self.index.write().unwrap().remove(key);
         }
-        
+
         Ok(deleted)
     }
 }

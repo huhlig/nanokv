@@ -96,7 +96,10 @@ impl FileSystem for MemoryFileSystem {
                     let data = file.0.read().expect("Poisoned Lock");
                     Ok(data.buffer.len() as u64)
                 }
-                _ => Err(FileSystemError::invalid_operation(path, "filesize on non-file")),
+                _ => Err(FileSystemError::invalid_operation(
+                    path,
+                    "filesize on non-file",
+                )),
             }
         } else {
             Err(FileSystemError::path_missing(path))
@@ -150,7 +153,10 @@ impl FileSystem for MemoryFileSystem {
                     let dir = dir.0.read().expect("Poisoned Lock");
                     Ok(dir.0.keys().cloned().collect())
                 }
-                _ => Err(FileSystemError::invalid_operation(path, "list_directory on non-directory")),
+                _ => Err(FileSystemError::invalid_operation(
+                    path,
+                    "list_directory on non-directory",
+                )),
             }
         } else {
             Err(FileSystemError::path_missing(path))
@@ -202,7 +208,10 @@ impl FileSystem for MemoryFileSystem {
                     name: path.to_string(),
                     data: file.0.clone(),
                 }),
-                _ => Err(FileSystemError::invalid_operation(path, "open_file on non-file")),
+                _ => Err(FileSystemError::invalid_operation(
+                    path,
+                    "open_file on non-file",
+                )),
             }
         } else {
             Err(FileSystemError::path_missing(path))

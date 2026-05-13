@@ -48,9 +48,8 @@
 use crate::pager::Pager;
 use crate::table::error::{TableError, TableResult};
 use crate::table::lsm::{
-    CompactionConfig, Direction, FileMetadata, LsmIterator, Manifest,
-    MergeIterator, SStableId, SStableIterator, SStableReader, SStableWriter, Version,
-    VersionEdit,
+    CompactionConfig, Direction, FileMetadata, LsmIterator, Manifest, MergeIterator, SStableId,
+    SStableIterator, SStableReader, SStableWriter, Version, VersionEdit,
 };
 use crate::txn::VersionChain;
 use crate::vfs::FileSystem;
@@ -355,16 +354,13 @@ impl CompactionPicker {
         // Find files in range
         let source_files: Vec<FileMetadata> = files
             .iter()
-            .filter(|f| {
-                
-                match (start_key, end_key) {
-                    (Some(start), Some(end)) => {
-                        f.max_key.as_slice() >= start && f.min_key.as_slice() <= end
-                    }
-                    (Some(start), None) => f.max_key.as_slice() >= start,
-                    (None, Some(end)) => f.min_key.as_slice() <= end,
-                    (None, None) => true,
+            .filter(|f| match (start_key, end_key) {
+                (Some(start), Some(end)) => {
+                    f.max_key.as_slice() >= start && f.min_key.as_slice() <= end
                 }
+                (Some(start), None) => f.max_key.as_slice() >= start,
+                (None, Some(end)) => f.min_key.as_slice() <= end,
+                (None, None) => true,
             })
             .cloned()
             .collect();
@@ -385,8 +381,7 @@ impl CompactionPicker {
             .max()
             .unwrap();
 
-        let target_files =
-            version.get_overlapping_files_in_level(target_level, min_key, max_key);
+        let target_files = version.get_overlapping_files_in_level(target_level, min_key, max_key);
 
         Some(CompactionJob::new(
             level,
@@ -556,7 +551,7 @@ impl<FS: FileSystem> CompactionExecutor<FS> {
                         let writer = current_writer.take().unwrap();
                         let sstable_metadata = writer.finish(LogSequenceNumber::from(0))?;
                         bytes_written += sstable_metadata.total_size;
-                        
+
                         // Convert SStableMetadata to FileMetadata
                         let file_metadata = FileMetadata {
                             id: sstable_metadata.id,
@@ -581,7 +576,7 @@ impl<FS: FileSystem> CompactionExecutor<FS> {
         if let Some(writer) = current_writer {
             let sstable_metadata = writer.finish(LogSequenceNumber::from(0))?;
             bytes_written += sstable_metadata.total_size;
-            
+
             // Convert SStableMetadata to FileMetadata
             let file_metadata = FileMetadata {
                 id: sstable_metadata.id,
@@ -679,7 +674,9 @@ impl<FS: FileSystem + 'static> CompactionManager<FS> {
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
         if let Some(handle) = self.thread_handle.lock().unwrap().take() {
-            handle.join().map_err(|_| TableError::CompactionThreadPanic)?;
+            handle
+                .join()
+                .map_err(|_| TableError::CompactionThreadPanic)?;
         }
 
         Ok(())
@@ -799,7 +796,11 @@ mod tests {
         let job3 = CompactionJob::new(2, 3, vec![], vec![], 1.0);
 
         let mut jobs = [job1, job2, job3];
-        jobs.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap_or(Ordering::Equal));
+        jobs.sort_by(|a, b| {
+            b.priority
+                .partial_cmp(&a.priority)
+                .unwrap_or(Ordering::Equal)
+        });
 
         // Should be sorted by priority (descending)
         assert_eq!(jobs[0].priority, 2.0);

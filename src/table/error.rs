@@ -26,23 +26,15 @@ pub type TableResult<T> = Result<T, TableError>;
 pub enum TableError {
     /// Key not found
     #[error("Key not found: {key}")]
-    KeyNotFound {
-        key: String,
-    },
+    KeyNotFound { key: String },
 
     /// Invalid key format
     #[error("Invalid key '{key}': {reason}")]
-    InvalidKey {
-        key: String,
-        reason: String,
-    },
+    InvalidKey { key: String, reason: String },
 
     /// Invalid value format
     #[error("Invalid value for key '{key}': {reason}")]
-    InvalidValue {
-        key: String,
-        reason: String,
-    },
+    InvalidValue { key: String, reason: String },
 
     /// Table is full or out of space
     #[error("Table full: current_size={current_size}, max_size={max_size}, details={details}")]
@@ -97,13 +89,12 @@ pub enum TableError {
 
     /// Checkpoint error
     #[error("Checkpoint failed at sequence {sequence}: error={error}")]
-    CheckpointFailed {
-        sequence: u64,
-        error: String,
-    },
+    CheckpointFailed { sequence: u64, error: String },
 
     /// Flush error
-    #[error("Flush failed: memtable_size={memtable_size}, target_level={target_level}, error={error}")]
+    #[error(
+        "Flush failed: memtable_size={memtable_size}, target_level={target_level}, error={error}"
+    )]
     FlushFailed {
         memtable_size: usize,
         target_level: u32,
@@ -131,7 +122,9 @@ pub enum TableError {
     RepairFailed(String),
 
     /// Batch operation error
-    #[error("Batch operation failed: operation_count={operation_count}, failed_at={failed_at}, error={error}")]
+    #[error(
+        "Batch operation failed: operation_count={operation_count}, failed_at={failed_at}, error={error}"
+    )]
     BatchFailed {
         operation_count: usize,
         failed_at: usize,
@@ -155,7 +148,9 @@ pub enum TableError {
     },
 
     /// Transaction conflict
-    #[error("Transaction conflict: transaction_id={transaction_id}, conflict_type={conflict_type}, details={details}")]
+    #[error(
+        "Transaction conflict: transaction_id={transaction_id}, conflict_type={conflict_type}, details={details}"
+    )]
     TransactionConflict {
         transaction_id: u64,
         conflict_type: String,
@@ -164,10 +159,7 @@ pub enum TableError {
 
     /// Snapshot not found
     #[error("Snapshot not found: snapshot_id={snapshot_id}, context={context}")]
-    SnapshotNotFound {
-        snapshot_id: u64,
-        context: String,
-    },
+    SnapshotNotFound { snapshot_id: u64, context: String },
 
     /// Memory limit exceeded
     #[error("Memory limit exceeded: current={current}, limit={limit}")]
@@ -195,43 +187,27 @@ pub enum TableError {
 
     /// Invalid level in LSM tree
     #[error("Invalid level {level}: max level is {max_level}")]
-    InvalidLevel {
-        level: u32,
-        max_level: u32,
-    },
+    InvalidLevel { level: u32, max_level: u32 },
 
     /// SSTable ID already exists
     #[error("SSTable ID {id} already exists in manifest")]
-    SStableIdExists {
-        id: String,
-    },
+    SStableIdExists { id: String },
 
     /// SSTable ID not found
     #[error("SSTable ID {id} not found in manifest")]
-    SStableIdNotFound {
-        id: String,
-    },
+    SStableIdNotFound { id: String },
 
     /// Manifest operation error
     #[error("Manifest operation failed: {operation} - {details}")]
-    ManifestError {
-        operation: String,
-        details: String,
-    },
+    ManifestError { operation: String, details: String },
 
     /// Invalid operation state
     #[error("Invalid operation state: {operation} - {reason}")]
-    InvalidOperationState {
-        operation: String,
-        reason: String,
-    },
+    InvalidOperationState { operation: String, reason: String },
 
     /// Serialization error
     #[error("Serialization failed for {data_type}: {details}")]
-    SerializationError {
-        data_type: String,
-        details: String,
-    },
+    SerializationError { data_type: String, details: String },
 
     /// I/O error from pager
     #[error("Pager error: {0}")]
@@ -254,7 +230,9 @@ pub enum TableError {
     InvalidValueRef { details: String },
 
     /// Stale value reference (checksum mismatch)
-    #[error("Stale value reference {value_ref:?}: checksum mismatch (expected: {expected:#x}, found: {found:#x})")]
+    #[error(
+        "Stale value reference {value_ref:?}: checksum mismatch (expected: {expected:#x}, found: {found:#x})"
+    )]
     StaleValueRef {
         value_ref: ValueRef,
         expected: u32,
@@ -277,9 +255,7 @@ pub enum TableError {
 impl TableError {
     /// Create a KeyNotFound error with context
     pub fn key_not_found(key: impl Into<String>) -> Self {
-        Self::KeyNotFound {
-            key: key.into(),
-        }
+        Self::KeyNotFound { key: key.into() }
     }
 
     /// Create an InvalidKey error with context
@@ -355,11 +331,7 @@ impl TableError {
     }
 
     /// Create a FlushFailed error with context
-    pub fn flush_failed(
-        memtable_size: usize,
-        target_level: u32,
-        error: impl Into<String>,
-    ) -> Self {
+    pub fn flush_failed(memtable_size: usize, target_level: u32, error: impl Into<String>) -> Self {
         Self::FlushFailed {
             memtable_size,
             target_level,
@@ -464,7 +436,10 @@ impl TableError {
     }
 
     /// Create an InvalidOperationState error with context
-    pub fn invalid_operation_state(operation: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn invalid_operation_state(
+        operation: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
         Self::InvalidOperationState {
             operation: operation.into(),
             reason: reason.into(),

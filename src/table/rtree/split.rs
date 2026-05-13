@@ -86,10 +86,7 @@ fn linear_split_internal(
 }
 
 /// Linear split for leaf entries.
-fn linear_split_leaf(
-    mut entries: Vec<LeafEntry>,
-    dimensions: usize,
-) -> SplitResult<LeafEntry> {
+fn linear_split_leaf(mut entries: Vec<LeafEntry>, dimensions: usize) -> SplitResult<LeafEntry> {
     if entries.len() < 2 {
         return SplitResult {
             left: entries,
@@ -193,10 +190,7 @@ fn quadratic_split_internal(
 }
 
 /// Quadratic split for leaf entries.
-fn quadratic_split_leaf(
-    mut entries: Vec<LeafEntry>,
-    dimensions: usize,
-) -> SplitResult<LeafEntry> {
+fn quadratic_split_leaf(mut entries: Vec<LeafEntry>, dimensions: usize) -> SplitResult<LeafEntry> {
     if entries.len() < 2 {
         return SplitResult {
             left: entries,

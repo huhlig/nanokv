@@ -50,7 +50,6 @@ mod manifest;
 mod memtable;
 mod sstable;
 
-pub use crate::table::bloom::{BloomFilter, BloomFilterBuilder};
 pub use self::compaction::{
     CompactionExecutor, CompactionJob, CompactionManager, CompactionPicker, CompactionStats,
 };
@@ -67,6 +66,7 @@ pub use self::sstable::{
     DataBlock, SStableFooter, SStableId, SStableMetadata, SStableReader, SStableWriter,
 };
 use crate::table::SearchableTable;
+pub use crate::table::bloom::{BloomFilter, BloomFilterBuilder};
 
 // Made with Bob
 
@@ -82,7 +82,7 @@ use crate::table::{
     ValueStream, WriteBatch,
 };
 use crate::txn::TransactionId;
-use crate::types::{Bound, TableId, ScanBounds, ValueBuf};
+use crate::types::{Bound, ScanBounds, TableId, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use metrics::{counter, histogram};

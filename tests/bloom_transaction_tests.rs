@@ -292,7 +292,12 @@ fn test_bloom_range_delete_returns_error() {
         },
     );
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("not supported for bloom filter"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("not supported for bloom filter")
+    );
 }
 
 // ─── Get Semantics on Bloom Filter ────────────────────────────────────────────
@@ -657,7 +662,9 @@ fn test_bloom_insert_large_key() {
 fn test_bloom_name_through_transaction() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let bloom_id = db.create_table("my_bloom_filter", bloom_table_options()).unwrap();
+    let bloom_id = db
+        .create_table("my_bloom_filter", bloom_table_options())
+        .unwrap();
 
     let mut read_txn = db.begin_read().unwrap();
     read_txn.with_table(bloom_id);

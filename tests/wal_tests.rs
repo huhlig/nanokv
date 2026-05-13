@@ -17,8 +17,8 @@
 //! Integration tests for WAL (Write-Ahead Log)
 
 use nanokv::pager::{CompressionType, EncryptionType};
-use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::{File, FileSystem, LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
     LogSequenceNumber, WalError, WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType,

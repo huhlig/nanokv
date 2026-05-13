@@ -98,7 +98,7 @@ impl AdjacencyList {
         // Find and remove from all_edges
         if let Some(pos) = self.all_edges.iter().position(|e| e.edge_id.0 == edge_id) {
             let edge = self.all_edges.remove(pos);
-            
+
             // Remove from edges_by_label
             if let Some(edges) = self.edges_by_label.get_mut(&edge.label) {
                 edges.retain(|e| e.edge_id.0 != edge_id);
@@ -244,19 +244,19 @@ impl EdgeData {
     /// Encode edge data into bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        
+
         // Encode source length and data
         data.extend_from_slice(&(self.source.len() as u32).to_le_bytes());
         data.extend_from_slice(&self.source);
-        
+
         // Encode label length and data
         data.extend_from_slice(&(self.label.len() as u32).to_le_bytes());
         data.extend_from_slice(&self.label);
-        
+
         // Encode target length and data
         data.extend_from_slice(&(self.target.len() as u32).to_le_bytes());
         data.extend_from_slice(&self.target);
-        
+
         // Encode weight (1 byte flag + 8 bytes if present)
         if let Some(weight) = self.weight {
             data.push(1);
@@ -264,7 +264,7 @@ impl EdgeData {
         } else {
             data.push(0);
         }
-        
+
         data
     }
 
@@ -276,7 +276,12 @@ impl EdgeData {
         if data.len() < offset + 4 {
             return Err("Invalid edge data: too short for source length".to_string());
         }
-        let source_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+        let source_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
         if data.len() < offset + source_len {
             return Err("Invalid edge data: too short for source".to_string());
@@ -288,7 +293,12 @@ impl EdgeData {
         if data.len() < offset + 4 {
             return Err("Invalid edge data: too short for label length".to_string());
         }
-        let label_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+        let label_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
         if data.len() < offset + label_len {
             return Err("Invalid edge data: too short for label".to_string());
@@ -300,7 +310,12 @@ impl EdgeData {
         if data.len() < offset + 4 {
             return Err("Invalid edge data: too short for target length".to_string());
         }
-        let target_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+        let target_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
         if data.len() < offset + target_len {
             return Err("Invalid edge data: too short for target".to_string());
@@ -373,7 +388,7 @@ mod tests {
     #[test]
     fn test_adjacency_list() {
         let mut adj = AdjacencyList::new();
-        
+
         let edge1 = Edge::unweighted(
             KeyBuf(b"e1".to_vec()),
             KeyBuf(b"v1".to_vec()),

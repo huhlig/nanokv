@@ -15,13 +15,14 @@
 //
 
 use crate::table::{
-    ApproximateMembership, EdgeCursor, FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency,
-    SearchableTable, SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor,
-    TableEngineRegistry, TextField, TextQuery, ScoredDocument, TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch,
-    VectorSearchOptions, VectorHit, VectorMetric, VerificationReport,
+    ApproximateMembership, EdgeCursor, FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef,
+    GraphAdjacency, ScoredDocument, SearchableTable, SpecialtyTableCapabilities,
+    SpecialtyTableStats, TableCursor, TableEngineRegistry, TextField, TextQuery, TimePointRef,
+    TimeSeries, TimeSeriesCursor, VectorHit, VectorMetric, VectorSearch, VectorSearchOptions,
+    VerificationReport,
 };
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
-use crate::types::{Durability, IsolationLevel, TableId, ScanBounds, ValueBuf};
+use crate::types::{Durability, IsolationLevel, ScanBounds, TableId, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WriteOpType};
 use std::collections::{HashMap, HashSet};
@@ -139,13 +140,8 @@ pub(crate) enum TimeSeriesOp {
 /// Vector operation for tracking in transaction write set
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum VectorOp {
-    InsertVector {
-        id: Vec<u8>,
-        vector: Vec<f32>,
-    },
-    DeleteVector {
-        id: Vec<u8>,
-    },
+    InsertVector { id: Vec<u8>, vector: Vec<f32> },
+    DeleteVector { id: Vec<u8> },
 }
 
 /// Geospatial operation for tracking in transaction write set
@@ -179,8 +175,16 @@ pub(crate) enum FullTextOp {
 /// Serialized geometry for storage in write set
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SerializedGeometry {
-    Point { x: f64, y: f64 },
-    BoundingBox { min_x: f64, min_y: f64, max_x: f64, max_y: f64 },
+    Point {
+        x: f64,
+        y: f64,
+    },
+    BoundingBox {
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    },
     Wkb(Vec<u8>),
 }
 
@@ -564,7 +568,7 @@ impl<FS: FileSystem> Transaction<FS> {
             self.engine_registry
                 .get(table_id)
                 .map(|engine| engine.name().to_string())
-                .unwrap_or_else(|| format!("table_{}", table_id.as_u64()))
+                .unwrap_or_else(|| format!("table_{}", table_id.as_u64())),
         );
         self
     }
@@ -682,8 +686,9 @@ impl<FS: FileSystem> Transaction<FS> {
             let result = match &engine {
                 TableEngineInstance::AppendLog(appendlog) => {
                     // AppendLog supports direct PointLookup
-                    PointLookup::get(appendlog.as_ref(), key, self.snapshot_lsn)
-                        .map_err(|e| TransactionError::Other(format!("AppendLog get failed: {}", e)))?
+                    PointLookup::get(appendlog.as_ref(), key, self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("AppendLog get failed: {}", e))
+                    })?
                 }
                 TableEngineInstance::PagedBTree(btree) => {
                     let reader = SearchableTable::reader(btree.as_ref(), self.snapshot_lsn)
@@ -764,19 +769,22 @@ impl<FS: FileSystem> Transaction<FS> {
                 TableEngineInstance::MemoryGraphTable(_) => {
                     // Graph tables don't support traditional key-value get operations
                     return Err(TransactionError::Other(
-                        "Graph tables don't support get operations - use outgoing/incoming instead".to_string(),
+                        "Graph tables don't support get operations - use outgoing/incoming instead"
+                            .to_string(),
                     ));
                 }
                 TableEngineInstance::TimeSeriesTable(_) => {
                     // TimeSeries tables don't support traditional key-value get operations
                     return Err(TransactionError::Other(
-                        "TimeSeries tables don't support get operations - use scan_series instead".to_string(),
+                        "TimeSeries tables don't support get operations - use scan_series instead"
+                            .to_string(),
                     ));
                 }
                 TableEngineInstance::PagedFullTextIndex(_) => {
                     // Full-text indexes don't support traditional key-value get operations
                     return Err(TransactionError::Other(
-                        "Full-text indexes don't support get operations - use search instead".to_string(),
+                        "Full-text indexes don't support get operations - use search instead"
+                            .to_string(),
                     ));
                 }
             };
@@ -866,8 +874,11 @@ impl<FS: FileSystem> Transaction<FS> {
                 match &engine {
                     TableEngineInstance::AppendLog(appendlog) => {
                         // AppendLog supports PointLookup::contains
-                        PointLookup::contains(appendlog.as_ref(), key, self.snapshot_lsn)
-                            .map_err(|e| TransactionError::Other(format!("AppendLog contains failed: {}", e)))?
+                        PointLookup::contains(appendlog.as_ref(), key, self.snapshot_lsn).map_err(
+                            |e| {
+                                TransactionError::Other(format!("AppendLog contains failed: {}", e))
+                            },
+                        )?
                     }
                     TableEngineInstance::PagedBTree(btree) => {
                         let reader = SearchableTable::reader(btree.as_ref(), self.snapshot_lsn)
@@ -904,7 +915,10 @@ impl<FS: FileSystem> Transaction<FS> {
                     }
                     TableEngineInstance::MemoryHashTable(hash) => {
                         let reader = hash.reader(self.snapshot_lsn).map_err(|e| {
-                            TransactionError::Other(format!("Failed to get Hash table reader: {}", e))
+                            TransactionError::Other(format!(
+                                "Failed to get Hash table reader: {}",
+                                e
+                            ))
                         })?;
                         PointLookup::contains(&reader, key, self.snapshot_lsn).map_err(|e| {
                             TransactionError::Other(format!("Hash table contains failed: {}", e))
@@ -932,10 +946,9 @@ impl<FS: FileSystem> Transaction<FS> {
                     }
                     TableEngineInstance::PagedBloomFilter(bloom) => {
                         // Bloom filters support approximate membership check
-                        bloom.contains(key)
-                            .map_err(|e| {
-                                TransactionError::Other(format!("Bloom filter contains failed: {}", e))
-                            })?
+                        bloom.contains(key).map_err(|e| {
+                            TransactionError::Other(format!("Bloom filter contains failed: {}", e))
+                        })?
                     }
                     TableEngineInstance::PagedHnswVector(_) => {
                         // HNSW vector tables don't support key-value contains operations
@@ -1022,7 +1035,9 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("Failed to get BTree reader: {}", e))
                         })?;
                     let mut cursor = OrderedScan::scan(&reader, bounds.clone(), self.snapshot_lsn)
-                        .map_err(|e| TransactionError::Other(format!("BTree scan failed: {}", e)))?;
+                        .map_err(|e| {
+                            TransactionError::Other(format!("BTree scan failed: {}", e))
+                        })?;
 
                     while cursor.valid() {
                         if let Some(key) = cursor.key() {
@@ -1034,9 +1049,10 @@ impl<FS: FileSystem> Transaction<FS> {
                     }
                 }
                 TableEngineInstance::LsmTree(lsm) => {
-                    let reader = SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get LSM reader: {}", e))
-                    })?;
+                    let reader =
+                        SearchableTable::reader(lsm.as_ref(), self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Failed to get LSM reader: {}", e))
+                        })?;
                     let mut cursor = OrderedScan::scan(&reader, bounds.clone(), self.snapshot_lsn)
                         .map_err(|e| TransactionError::Other(format!("LSM scan failed: {}", e)))?;
 
@@ -1050,12 +1066,17 @@ impl<FS: FileSystem> Transaction<FS> {
                     }
                 }
                 TableEngineInstance::MemoryBTree(mem) => {
-                    let reader = SearchableTable::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get Memory BTree reader: {}", e))
-                    })?;
-                    let mut cursor = OrderedScan::scan(&reader, bounds, self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Memory BTree scan failed: {}", e))
-                    })?;
+                    let reader =
+                        SearchableTable::reader(mem.as_ref(), self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Failed to get Memory BTree reader: {}",
+                                e
+                            ))
+                        })?;
+                    let mut cursor = OrderedScan::scan(&reader, bounds, self.snapshot_lsn)
+                        .map_err(|e| {
+                            TransactionError::Other(format!("Memory BTree scan failed: {}", e))
+                        })?;
 
                     while cursor.valid() {
                         if let Some(key) = cursor.key() {
@@ -1070,22 +1091,24 @@ impl<FS: FileSystem> Transaction<FS> {
                     }
                 }
                 TableEngineInstance::MemoryART(art) => {
-                    let reader = SearchableTable::reader(art.as_ref(), self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Failed to get Memory ART reader: {}", e))
-                    })?;
-                    let mut cursor = OrderedScan::scan(&reader, bounds, self.snapshot_lsn).map_err(|e| {
-                        TransactionError::Other(format!("Memory ART scan failed: {}", e))
-                    })?;
+                    let reader =
+                        SearchableTable::reader(art.as_ref(), self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Failed to get Memory ART reader: {}",
+                                e
+                            ))
+                        })?;
+                    let mut cursor = OrderedScan::scan(&reader, bounds, self.snapshot_lsn)
+                        .map_err(|e| {
+                            TransactionError::Other(format!("Memory ART scan failed: {}", e))
+                        })?;
 
                     while cursor.valid() {
                         if let Some(key) = cursor.key() {
                             keys_to_delete.push(key.to_vec());
                         }
                         cursor.next().map_err(|e| {
-                            TransactionError::Other(format!(
-                                "Memory ART cursor next failed: {}",
-                                e
-                            ))
+                            TransactionError::Other(format!("Memory ART cursor next failed: {}", e))
                         })?;
                     }
                 }
@@ -1336,10 +1359,7 @@ impl<FS: FileSystem> Transaction<FS> {
                         match value_opt {
                             Some(value) => {
                                 MutableTable::put(&mut writer, key, value).map_err(|e| {
-                                    TransactionError::Other(format!(
-                                        "Memory ART put failed: {}",
-                                        e
-                                    ))
+                                    TransactionError::Other(format!("Memory ART put failed: {}", e))
                                 })?;
                             }
                             None => {
@@ -1357,9 +1377,13 @@ impl<FS: FileSystem> Transaction<FS> {
                         })?;
                     }
                     TableEngineInstance::MemoryHashTable(hash) => {
-                        let mut writer = hash.writer(self.txn_id, self.snapshot_lsn).map_err(|e| {
-                            TransactionError::Other(format!("Failed to get Hash table writer: {}", e))
-                        })?;
+                        let mut writer =
+                            hash.writer(self.txn_id, self.snapshot_lsn).map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get Hash table writer: {}",
+                                    e
+                                ))
+                            })?;
 
                         match value_opt {
                             Some(value) => {
@@ -1369,7 +1393,10 @@ impl<FS: FileSystem> Transaction<FS> {
                             }
                             None => {
                                 MutableTable::delete(&mut writer, key).map_err(|e| {
-                                    TransactionError::Other(format!("Hash table delete failed: {}", e))
+                                    TransactionError::Other(format!(
+                                        "Hash table delete failed: {}",
+                                        e
+                                    ))
                                 })?;
                             }
                         }
@@ -1456,14 +1483,14 @@ impl<FS: FileSystem> Transaction<FS> {
             if let Some(engine) = self.engine_registry.get(*object_id) {
                 match &engine {
                     crate::table::TableEngineInstance::PagedBloomFilter(bloom) => {
-                        bloom
-                            .insert(key)
-                            .map_err(|e| TransactionError::Other(format!("Bloom insert failed: {}", e)))?;
+                        bloom.insert(key).map_err(|e| {
+                            TransactionError::Other(format!("Bloom insert failed: {}", e))
+                        })?;
                     }
                     _ => {
                         return Err(TransactionError::Other(
                             "table is not a bloom filter".to_string(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1502,23 +1529,34 @@ impl<FS: FileSystem> Transaction<FS> {
         for (object_id, op) in self.timeseries_write_set.borrow().iter() {
             if let Some(engine) = self.engine_registry.get(*object_id) {
                 match &engine {
-                    crate::table::TableEngineInstance::TimeSeriesTable(ts) => {
-                        match op {
-                            TimeSeriesOp::AppendPoint { series_key, timestamp, value_key } => {
-                                ts.append_point(series_key, *timestamp, value_key)
-                                    .map_err(|e| TransactionError::Other(format!("TimeSeries append_point failed: {}", e)))?;
-                            }
-                            TimeSeriesOp::DeletePoint { series_key: _, timestamp: _, value_key: _ } => {
-                                return Err(TransactionError::Other(
+                    crate::table::TableEngineInstance::TimeSeriesTable(ts) => match op {
+                        TimeSeriesOp::AppendPoint {
+                            series_key,
+                            timestamp,
+                            value_key,
+                        } => {
+                            ts.append_point(series_key, *timestamp, value_key)
+                                .map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "TimeSeries append_point failed: {}",
+                                        e
+                                    ))
+                                })?;
+                        }
+                        TimeSeriesOp::DeletePoint {
+                            series_key: _,
+                            timestamp: _,
+                            value_key: _,
+                        } => {
+                            return Err(TransactionError::Other(
                                     "TimeSeries tables are append-only; delete operations are not supported".to_string(),
                                 ));
-                            }
                         }
-                    }
+                    },
                     _ => {
                         return Err(TransactionError::Other(
                             "table is not a time series table".to_string(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1529,22 +1567,28 @@ impl<FS: FileSystem> Transaction<FS> {
         for (object_id, op) in vector_ops.iter() {
             if let Some(engine) = self.engine_registry.get(*object_id) {
                 match &engine {
-                    crate::table::TableEngineInstance::PagedHnswVector(hnsw) => {
-                        match op {
-                            VectorOp::InsertVector { id, vector } => {
-                                hnsw.insert_vector(id, vector)
-                                    .map_err(|e| TransactionError::Other(format!("Vector insert_vector failed: {}", e)))?;
-                            }
-                            VectorOp::DeleteVector { id } => {
-                                hnsw.delete_vector(id)
-                                    .map_err(|e| TransactionError::Other(format!("Vector delete_vector failed: {}", e)))?;
-                            }
+                    crate::table::TableEngineInstance::PagedHnswVector(hnsw) => match op {
+                        VectorOp::InsertVector { id, vector } => {
+                            hnsw.insert_vector(id, vector).map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Vector insert_vector failed: {}",
+                                    e
+                                ))
+                            })?;
                         }
-                    }
+                        VectorOp::DeleteVector { id } => {
+                            hnsw.delete_vector(id).map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Vector delete_vector failed: {}",
+                                    e
+                                ))
+                            })?;
+                        }
+                    },
                     _ => {
                         return Err(TransactionError::Other(
                             "table is not a vector search table".to_string(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1693,9 +1737,7 @@ impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for bloom operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for bloom operation".to_string())
         })?;
 
         self.wal
@@ -1721,9 +1763,7 @@ impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for bloom operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for bloom operation".to_string())
         })?;
 
         if self.bloom_write_set.contains(&(table_id, key.to_vec())) {
@@ -1753,9 +1793,7 @@ impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for bloom operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for bloom operation".to_string())
         })?;
 
         match self.engine_registry.get(table_id) {
@@ -1771,9 +1809,7 @@ impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for bloom operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for bloom operation".to_string())
         })?;
 
         match self.engine_registry.get(table_id) {
@@ -1789,7 +1825,10 @@ impl<FS: FileSystem> ApproximateMembership for Transaction<FS> {
 }
 
 impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
-    type EdgeCursor<'a> = TransactionEdgeCursor where Self: 'a;
+    type EdgeCursor<'a>
+        = TransactionEdgeCursor
+    where
+        Self: 'a;
 
     fn table_id(&self) -> TableId {
         self.current_table_id.unwrap_or(TableId::from(0))
@@ -1824,9 +1863,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for graph operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
         // Write to WAL - encode edge data in key/value fields
@@ -1877,9 +1914,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for graph operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
         // Write to WAL - encode edge data in key field
@@ -1927,9 +1962,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
         }
 
         let _table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for graph operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
         // Note: GraphAdjacency table engine not yet implemented
@@ -1951,9 +1984,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
         }
 
         let _table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for graph operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
         // Note: GraphAdjacency table engine not yet implemented
@@ -1964,9 +1995,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
         let _table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for graph operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
         // Note: GraphAdjacency table engine not yet implemented
@@ -1977,9 +2006,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
         let _table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for graph operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
         // Note: GraphAdjacency table engine not yet implemented
@@ -2028,9 +2055,11 @@ impl<FS: FileSystem> TransactionOps for Transaction<FS> {
     }
 }
 
-
 impl<FS: FileSystem> TimeSeries for Transaction<FS> {
-    type TimeSeriesCursor<'a> = TransactionTimeSeriesCursor where Self: 'a;
+    type TimeSeriesCursor<'a>
+        = TransactionTimeSeriesCursor
+    where
+        Self: 'a;
 
     fn table_id(&self) -> TableId {
         self.current_table_id.unwrap_or(TableId::from(0))
@@ -2243,9 +2272,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         };
 
         match self.engine_registry.get(table_id) {
-            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => {
-                hnsw.dimensions()
-            }
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => hnsw.dimensions(),
             _ => 0,
         }
     }
@@ -2256,9 +2283,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         };
 
         match self.engine_registry.get(table_id) {
-            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => {
-                hnsw.metric()
-            }
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => hnsw.metric(),
             _ => VectorMetric::Cosine,
         }
     }
@@ -2272,16 +2297,11 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for vector operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for vector operation".to_string())
         })?;
 
         // Serialize vector to bytes for WAL
-        let vector_bytes: Vec<u8> = vector
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let vector_bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         self.wal
             .write_operation(
@@ -2312,9 +2332,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for vector operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for vector operation".to_string())
         })?;
 
         self.wal
@@ -2327,12 +2345,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
             )
             .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
 
-        self.record_vector_operation(
-            table_id,
-            VectorOp::DeleteVector {
-                id: id.to_vec(),
-            },
-        );
+        self.record_vector_operation(table_id, VectorOp::DeleteVector { id: id.to_vec() });
         Ok(())
     }
 
@@ -2349,9 +2362,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         }
 
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for vector operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for vector operation".to_string())
         })?;
 
         // Vector search reads from the underlying table
@@ -2371,9 +2382,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for vector operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for vector operation".to_string())
         })?;
 
         match self.engine_registry.get(table_id) {
@@ -2389,9 +2398,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
         let table_id = self.current_table_id.ok_or_else(|| {
-            crate::table::TableError::Other(
-                "no table context set for vector operation".to_string(),
-            )
+            crate::table::TableError::Other("no table context set for vector operation".to_string())
         })?;
 
         match self.engine_registry.get(table_id) {
@@ -2428,7 +2435,11 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
         }
     }
 
-    fn insert_geometry(&mut self, id: &[u8], geometry: GeometryRef<'_>) -> crate::table::TableResult<()> {
+    fn insert_geometry(
+        &mut self,
+        id: &[u8],
+        geometry: GeometryRef<'_>,
+    ) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
                 "transaction {} is not active for insert_geometry",
@@ -2466,7 +2477,12 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
                 bytes.extend_from_slice(&y.to_le_bytes());
                 bytes
             }
-            SerializedGeometry::BoundingBox { min_x, min_y, max_x, max_y } => {
+            SerializedGeometry::BoundingBox {
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            } => {
                 let mut bytes = Vec::with_capacity(33);
                 bytes.push(2); // BoundingBox type
                 bytes.extend_from_slice(&min_x.to_le_bytes());
@@ -2529,14 +2545,16 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
 
         self.record_geospatial_operation(
             table_id,
-            GeoSpatialOp::DeleteGeometry {
-                id: id.to_vec(),
-            },
+            GeoSpatialOp::DeleteGeometry { id: id.to_vec() },
         );
         Ok(())
     }
 
-    fn intersects(&self, query: GeometryRef<'_>, limit: usize) -> crate::table::TableResult<Vec<GeoHit>> {
+    fn intersects(
+        &self,
+        query: GeometryRef<'_>,
+        limit: usize,
+    ) -> crate::table::TableResult<Vec<GeoHit>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
                 "transaction {} is not active for intersects",
@@ -2755,9 +2773,12 @@ impl<FS: FileSystem> FullTextSearch for Transaction<FS> {
             )
             .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
 
-        self.record_fulltext_operation(table_id, FullTextOp::DeleteDocument {
-            doc_id: doc_id.to_vec(),
-        });
+        self.record_fulltext_operation(
+            table_id,
+            FullTextOp::DeleteDocument {
+                doc_id: doc_id.to_vec(),
+            },
+        );
         Ok(())
     }
 

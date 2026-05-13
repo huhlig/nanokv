@@ -195,7 +195,10 @@ impl PartialOrd for Candidate {
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Reverse ordering for min-heap behavior
-        other.distance.partial_cmp(&self.distance).unwrap_or(std::cmp::Ordering::Equal)
+        other
+            .distance
+            .partial_cmp(&self.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -272,7 +275,10 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
             return Err(TableError::corruption(
                 "HNSW metadata",
                 "magic number mismatch",
-                format!("expected 0x{:08X}, got 0x{:08X}", HNSW_MAGIC, metadata.magic)
+                format!(
+                    "expected 0x{:08X}, got 0x{:08X}",
+                    HNSW_MAGIC, metadata.magic
+                ),
             ));
         }
 
@@ -292,8 +298,8 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
                     return Err(TableError::corruption(
                         "HNSW metadata",
                         "invalid metric",
-                        format!("metric value: {}", metadata.metric)
-                    ))
+                        format!("metric value: {}", metadata.metric),
+                    ));
                 }
             },
             max_connections: metadata.max_connections as usize,
@@ -342,7 +348,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         // Create a new page with metadata
         let page_size = pager.page_size().to_u32() as usize;
         let mut page = Page::new(root_page_id, PageType::VectorIndex, page_size);
-        
+
         // Initialize page data with metadata
         page.data_mut().extend_from_slice(metadata_bytes);
 
@@ -354,10 +360,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
     }
 
     /// Read metadata from root page
-    fn read_metadata(
-        pager: &Arc<Pager<FS>>,
-        root_page_id: PageId,
-    ) -> TableResult<HnswMetadata> {
+    fn read_metadata(pager: &Arc<Pager<FS>>, root_page_id: PageId) -> TableResult<HnswMetadata> {
         let page = pager
             .read_page(root_page_id)
             .map_err(|e| TableError::Other(format!("Failed to read root page: {}", e)))?;
@@ -402,13 +405,13 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
     /// Select a random layer for a new node
     fn select_layer(&self) -> usize {
         let mut rng_state = self.rng_state.write().unwrap();
-        
+
         // Simple LCG random number generator
         *rng_state = rng_state.wrapping_mul(1664525).wrapping_add(1013904223);
         let uniform = (*rng_state as f64) / (u64::MAX as f64);
-        
+
         // Use exponential distribution for layer selection
-        
+
         (-uniform.ln() * self.config.read().unwrap().ml).floor() as usize
     }
 
@@ -442,9 +445,10 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         while let Some(current) = candidates.pop() {
             // Check if we should continue
             if let Some(furthest) = results.peek()
-                && current.distance > furthest.distance {
-                    break;
-                }
+                && current.distance > furthest.distance
+            {
+                break;
+            }
 
             // Get neighbors at this layer
             let node = self.load_node(current.node_id)?;
@@ -509,11 +513,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         _extend_candidates: bool,
     ) -> Vec<NodeId> {
         // Simple heuristic: select M closest neighbors
-        candidates
-            .into_iter()
-            .take(m)
-            .map(|c| c.node_id)
-            .collect()
+        candidates.into_iter().take(m).map(|c| c.node_id).collect()
     }
 
     /// Add bidirectional connections between nodes
@@ -588,13 +588,13 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
     fn capabilities(&self) -> SpecialtyTableCapabilities {
         SpecialtyTableCapabilities {
             exact: false,
-            approximate: true,  // HNSW is approximate nearest neighbor
+            approximate: true, // HNSW is approximate nearest neighbor
             ordered: false,
             sparse: false,
             supports_delete: true,
             supports_range_query: false,
             supports_prefix_query: false,
-            supports_scoring: true,  // Returns distance scores
+            supports_scoring: true, // Returns distance scores
             supports_incremental_rebuild: false,
             may_be_stale: false,
         }
@@ -613,7 +613,11 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         if vector.len() != self.config.read().unwrap().dimensions {
             return Err(TableError::invalid_value(
                 "vector",
-                format!("dimension mismatch: expected {}, got {}", self.config.read().unwrap().dimensions, vector.len())
+                format!(
+                    "dimension mismatch: expected {}, got {}",
+                    self.config.read().unwrap().dimensions,
+                    vector.len()
+                ),
             ));
         }
 
@@ -739,7 +743,11 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         if query.len() != self.config.read().unwrap().dimensions {
             return Err(TableError::invalid_value(
                 "query",
-                format!("dimension mismatch: expected {}, got {}", self.config.read().unwrap().dimensions, query.len())
+                format!(
+                    "dimension mismatch: expected {}, got {}",
+                    self.config.read().unwrap().dimensions,
+                    query.len()
+                ),
             ));
         }
 
@@ -750,7 +758,9 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
 
         let ep = entry_point.unwrap();
         let max_layer = *self.max_layer.read().unwrap();
-        let ef = options.ef_search.unwrap_or(self.config.read().unwrap().ef_construction);
+        let ef = options
+            .ef_search
+            .unwrap_or(self.config.read().unwrap().ef_construction);
 
         // Search from top layer down to layer 0
         let mut current_nearest = vec![ep];

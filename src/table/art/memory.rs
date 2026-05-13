@@ -164,15 +164,25 @@ impl ARTNode {
 
     fn find_child(&self, byte: u8) -> Option<&ARTNode> {
         match self {
-            Self::Node4 { keys, children, count, .. } => {
-                (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].as_deref())
-            }
-            Self::Node16 { keys, children, count, .. } => {
-                (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].as_deref())
-            }
-            Self::Node48 { index, children, .. } => {
-                index[byte as usize].and_then(|idx| children[idx as usize].as_deref())
-            }
+            Self::Node4 {
+                keys,
+                children,
+                count,
+                ..
+            } => (0..*count)
+                .find(|i| keys[*i] == byte)
+                .and_then(|i| children[i].as_deref()),
+            Self::Node16 {
+                keys,
+                children,
+                count,
+                ..
+            } => (0..*count)
+                .find(|i| keys[*i] == byte)
+                .and_then(|i| children[i].as_deref()),
+            Self::Node48 {
+                index, children, ..
+            } => index[byte as usize].and_then(|idx| children[idx as usize].as_deref()),
             Self::Node256 { children, .. } => children[byte as usize].as_deref(),
             Self::Leaf(_) => None,
         }
@@ -180,15 +190,25 @@ impl ARTNode {
 
     fn find_child_mut(&mut self, byte: u8) -> Option<&mut Box<ARTNode>> {
         match self {
-            Self::Node4 { keys, children, count, .. } => {
-                (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].as_mut())
-            }
-            Self::Node16 { keys, children, count, .. } => {
-                (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].as_mut())
-            }
-            Self::Node48 { index, children, .. } => {
-                index[byte as usize].and_then(|idx| children[idx as usize].as_mut())
-            }
+            Self::Node4 {
+                keys,
+                children,
+                count,
+                ..
+            } => (0..*count)
+                .find(|i| keys[*i] == byte)
+                .and_then(|i| children[i].as_mut()),
+            Self::Node16 {
+                keys,
+                children,
+                count,
+                ..
+            } => (0..*count)
+                .find(|i| keys[*i] == byte)
+                .and_then(|i| children[i].as_mut()),
+            Self::Node48 {
+                index, children, ..
+            } => index[byte as usize].and_then(|idx| children[idx as usize].as_mut()),
             Self::Node256 { children, .. } => children[byte as usize].as_mut(),
             Self::Leaf(_) => None,
         }
@@ -196,32 +216,57 @@ impl ARTNode {
 
     fn add_child(&mut self, byte: u8, child: Box<ARTNode>) -> bool {
         match self {
-            Self::Node4 { keys, children, count, .. } => {
-                if *count >= NODE4_MAX { return false; }
+            Self::Node4 {
+                keys,
+                children,
+                count,
+                ..
+            } => {
+                if *count >= NODE4_MAX {
+                    return false;
+                }
                 let idx = *count;
                 keys[idx] = byte;
                 children[idx] = Some(child);
                 *count += 1;
                 true
             }
-            Self::Node16 { keys, children, count, .. } => {
-                if *count >= NODE16_MAX { return false; }
+            Self::Node16 {
+                keys,
+                children,
+                count,
+                ..
+            } => {
+                if *count >= NODE16_MAX {
+                    return false;
+                }
                 let idx = *count;
                 keys[idx] = byte;
                 children[idx] = Some(child);
                 *count += 1;
                 true
             }
-            Self::Node48 { index, children, count, .. } => {
-                if *count >= NODE48_MAX { return false; }
+            Self::Node48 {
+                index,
+                children,
+                count,
+                ..
+            } => {
+                if *count >= NODE48_MAX {
+                    return false;
+                }
                 let idx = (0..NODE48_MAX).find(|i| children[*i].is_none()).unwrap();
                 index[byte as usize] = Some(idx as u8);
                 children[idx] = Some(child);
                 *count += 1;
                 true
             }
-            Self::Node256 { children, count, .. } => {
-                if children[byte as usize].is_some() { return false; }
+            Self::Node256 {
+                children, count, ..
+            } => {
+                if children[byte as usize].is_some() {
+                    return false;
+                }
                 children[byte as usize] = Some(child);
                 *count += 1;
                 true
@@ -232,37 +277,48 @@ impl ARTNode {
 
     fn remove_child(&mut self, byte: u8) -> Option<Box<ARTNode>> {
         match self {
-            Self::Node4 { keys, children, count, .. } => {
-                (0..*count).find(|i| keys[*i] == byte).and_then(|i| {
-                    let result = children[i].take();
-                    for j in i..*count - 1 {
-                        keys[j] = keys[j + 1];
-                        children[j] = children[j + 1].take();
-                    }
-                    keys[*count - 1] = 0;
-                    *count -= 1;
-                    result
-                })
-            }
-            Self::Node16 { keys, children, count, .. } => {
-                (0..*count).find(|i| keys[*i] == byte).and_then(|i| {
-                    let result = children[i].take();
-                    for j in i..*count - 1 {
-                        keys[j] = keys[j + 1];
-                        children[j] = children[j + 1].take();
-                    }
-                    keys[*count - 1] = 0;
-                    *count -= 1;
-                    result
-                })
-            }
-            Self::Node48 { index, children, count, .. } => {
-                index[byte as usize].take().and_then(|idx| {
-                    *count -= 1;
-                    children[idx as usize].take()
-                })
-            }
-            Self::Node256 { children, count, .. } => {
+            Self::Node4 {
+                keys,
+                children,
+                count,
+                ..
+            } => (0..*count).find(|i| keys[*i] == byte).and_then(|i| {
+                let result = children[i].take();
+                for j in i..*count - 1 {
+                    keys[j] = keys[j + 1];
+                    children[j] = children[j + 1].take();
+                }
+                keys[*count - 1] = 0;
+                *count -= 1;
+                result
+            }),
+            Self::Node16 {
+                keys,
+                children,
+                count,
+                ..
+            } => (0..*count).find(|i| keys[*i] == byte).and_then(|i| {
+                let result = children[i].take();
+                for j in i..*count - 1 {
+                    keys[j] = keys[j + 1];
+                    children[j] = children[j + 1].take();
+                }
+                keys[*count - 1] = 0;
+                *count -= 1;
+                result
+            }),
+            Self::Node48 {
+                index,
+                children,
+                count,
+                ..
+            } => index[byte as usize].take().and_then(|idx| {
+                *count -= 1;
+                children[idx as usize].take()
+            }),
+            Self::Node256 {
+                children, count, ..
+            } => {
                 if children[byte as usize].is_some() {
                     *count -= 1;
                     children[byte as usize].take()
@@ -276,9 +332,24 @@ impl ARTNode {
 
     fn grow(&mut self) {
         let (prefix, prefix_len, count) = match self {
-            Self::Node4 { prefix, prefix_len, count, .. } => (prefix.clone(), *prefix_len, *count),
-            Self::Node16 { prefix, prefix_len, count, .. } => (prefix.clone(), *prefix_len, *count),
-            Self::Node48 { prefix, prefix_len, count, .. } => (prefix.clone(), *prefix_len, *count),
+            Self::Node4 {
+                prefix,
+                prefix_len,
+                count,
+                ..
+            } => (prefix.clone(), *prefix_len, *count),
+            Self::Node16 {
+                prefix,
+                prefix_len,
+                count,
+                ..
+            } => (prefix.clone(), *prefix_len, *count),
+            Self::Node48 {
+                prefix,
+                prefix_len,
+                count,
+                ..
+            } => (prefix.clone(), *prefix_len, *count),
             _ => return,
         };
 
@@ -292,21 +363,33 @@ impl ARTNode {
         let bytes: Vec<u8> = match self {
             Self::Node4 { keys, count, .. } => (0..*count).map(|i| keys[i]).collect(),
             Self::Node16 { keys, count, .. } => (0..*count).map(|i| keys[i]).collect(),
-            Self::Node48 { index, .. } => (0..=255u8).filter(|b| index[*b as usize].is_some()).collect(),
+            Self::Node48 { index, .. } => (0..=255u8)
+                .filter(|b| index[*b as usize].is_some())
+                .collect(),
             _ => return,
         };
 
         for byte in bytes {
             let child = match self {
-                Self::Node4 { keys, children, count, .. } => {
-                    (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].take())
-                }
-                Self::Node16 { keys, children, count, .. } => {
-                    (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].take())
-                }
-                Self::Node48 { index, children, .. } => {
-                    index[byte as usize].and_then(|idx| children[idx as usize].take())
-                }
+                Self::Node4 {
+                    keys,
+                    children,
+                    count,
+                    ..
+                } => (0..*count)
+                    .find(|i| keys[*i] == byte)
+                    .and_then(|i| children[i].take()),
+                Self::Node16 {
+                    keys,
+                    children,
+                    count,
+                    ..
+                } => (0..*count)
+                    .find(|i| keys[*i] == byte)
+                    .and_then(|i| children[i].take()),
+                Self::Node48 {
+                    index, children, ..
+                } => index[byte as usize].and_then(|idx| children[idx as usize].take()),
                 _ => None,
             };
             if let Some(child) = child {
@@ -316,7 +399,8 @@ impl ARTNode {
 
         if let Self::Node16 { count: c, .. }
         | Self::Node48 { count: c, .. }
-        | Self::Node256 { count: c, .. } = &mut new_node {
+        | Self::Node256 { count: c, .. } = &mut new_node
+        {
             *c = count;
         }
         *self = new_node;
@@ -324,9 +408,24 @@ impl ARTNode {
 
     fn shrink(&mut self) {
         let (prefix, prefix_len, count) = match self {
-            Self::Node256 { prefix, prefix_len, count, .. } => (prefix.clone(), *prefix_len, *count),
-            Self::Node48 { prefix, prefix_len, count, .. } => (prefix.clone(), *prefix_len, *count),
-            Self::Node16 { prefix, prefix_len, count, .. } => (prefix.clone(), *prefix_len, *count),
+            Self::Node256 {
+                prefix,
+                prefix_len,
+                count,
+                ..
+            } => (prefix.clone(), *prefix_len, *count),
+            Self::Node48 {
+                prefix,
+                prefix_len,
+                count,
+                ..
+            } => (prefix.clone(), *prefix_len, *count),
+            Self::Node16 {
+                prefix,
+                prefix_len,
+                count,
+                ..
+            } => (prefix.clone(), *prefix_len, *count),
             _ => return,
         };
 
@@ -338,8 +437,12 @@ impl ARTNode {
         };
 
         let bytes: Vec<u8> = match self {
-            Self::Node256 { children, .. } => (0..=255u8).filter(|b| children[*b as usize].is_some()).collect(),
-            Self::Node48 { index, .. } => (0..=255u8).filter(|b| index[*b as usize].is_some()).collect(),
+            Self::Node256 { children, .. } => (0..=255u8)
+                .filter(|b| children[*b as usize].is_some())
+                .collect(),
+            Self::Node48 { index, .. } => (0..=255u8)
+                .filter(|b| index[*b as usize].is_some())
+                .collect(),
             Self::Node16 { keys, count, .. } => (0..*count).map(|i| keys[i]).collect(),
             _ => return,
         };
@@ -347,12 +450,17 @@ impl ARTNode {
         for byte in bytes {
             let child = match self {
                 Self::Node256 { children, .. } => children[byte as usize].take(),
-                Self::Node48 { index, children, .. } => {
-                    index[byte as usize].and_then(|idx| children[idx as usize].take())
-                }
-                Self::Node16 { keys, children, count, .. } => {
-                    (0..*count).find(|i| keys[*i] == byte).and_then(|i| children[i].take())
-                }
+                Self::Node48 {
+                    index, children, ..
+                } => index[byte as usize].and_then(|idx| children[idx as usize].take()),
+                Self::Node16 {
+                    keys,
+                    children,
+                    count,
+                    ..
+                } => (0..*count)
+                    .find(|i| keys[*i] == byte)
+                    .and_then(|i| children[i].take()),
                 _ => None,
             };
             if let Some(child) = child {
@@ -362,7 +470,8 @@ impl ARTNode {
 
         if let Self::Node48 { count: c, .. }
         | Self::Node16 { count: c, .. }
-        | Self::Node4 { count: c, .. } = &mut new_node {
+        | Self::Node4 { count: c, .. } = &mut new_node
+        {
             *c = count;
         }
         *self = new_node;
@@ -370,22 +479,32 @@ impl ARTNode {
 
     fn children_iter(&self) -> Box<dyn Iterator<Item = (u8, &ARTNode)> + '_> {
         match self {
-            Self::Node4 { keys, children, count, .. } => {
-                Box::new((0..*count).filter_map(move |i| children[i].as_deref().map(|c| (keys[i], c))))
-            }
-            Self::Node16 { keys, children, count, .. } => {
-                Box::new((0..*count).filter_map(move |i| children[i].as_deref().map(|c| (keys[i], c))))
-            }
-            Self::Node48 { index, children, .. } => {
-                Box::new((0..=255u8).filter_map(move |byte| {
-                    index[byte as usize].and_then(|idx| children[idx as usize].as_deref().map(|c| (byte, c)))
-                }))
-            }
-            Self::Node256 { children, .. } => {
-                Box::new((0..=255u8).filter_map(move |byte| {
-                    children[byte as usize].as_deref().map(|c| (byte, c))
-                }))
-            }
+            Self::Node4 {
+                keys,
+                children,
+                count,
+                ..
+            } => Box::new(
+                (0..*count).filter_map(move |i| children[i].as_deref().map(|c| (keys[i], c))),
+            ),
+            Self::Node16 {
+                keys,
+                children,
+                count,
+                ..
+            } => Box::new(
+                (0..*count).filter_map(move |i| children[i].as_deref().map(|c| (keys[i], c))),
+            ),
+            Self::Node48 {
+                index, children, ..
+            } => Box::new((0..=255u8).filter_map(move |byte| {
+                index[byte as usize]
+                    .and_then(|idx| children[idx as usize].as_deref().map(|c| (byte, c)))
+            })),
+            Self::Node256 { children, .. } => Box::new(
+                (0..=255u8)
+                    .filter_map(move |byte| children[byte as usize].as_deref().map(|c| (byte, c))),
+            ),
             Self::Leaf(_) => Box::new(std::iter::empty()),
         }
     }
@@ -443,7 +562,11 @@ impl MemoryART {
         depth: usize,
     ) {
         if node.is_none() {
-            *node = Some(Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))));
+            *node = Some(Box::new(ARTNode::Leaf(Leaf::new(
+                key.to_vec(),
+                value,
+                tx_id,
+            ))));
             return;
         }
 
@@ -451,7 +574,8 @@ impl MemoryART {
         match current.as_mut() {
             ARTNode::Leaf(leaf) => {
                 if leaf.key == key {
-                    let old_chain = std::mem::replace(&mut leaf.chain, VersionChain::new(vec![], tx_id));
+                    let old_chain =
+                        std::mem::replace(&mut leaf.chain, VersionChain::new(vec![], tx_id));
                     leaf.chain = old_chain.prepend(value, tx_id);
                 } else {
                     let existing_key_suffix = &leaf.key[depth..];
@@ -491,12 +615,11 @@ impl MemoryART {
                 let prefix = current.prefix().to_vec();
                 let key_suffix = &key[depth..];
 
-                if key_suffix.len() < prefix_len || key_suffix[..prefix_len] != prefix[..prefix_len] {
+                if key_suffix.len() < prefix_len || key_suffix[..prefix_len] != prefix[..prefix_len]
+                {
                     let common_prefix = Self::common_prefix(&prefix, key_suffix);
-                    let mut new_node = ARTNode::new_node4(
-                        key_suffix[..common_prefix].to_vec(),
-                        common_prefix,
-                    );
+                    let mut new_node =
+                        ARTNode::new_node4(key_suffix[..common_prefix].to_vec(), common_prefix);
 
                     let old_byte = if common_prefix < prefix_len {
                         prefix[common_prefix]
@@ -511,21 +634,32 @@ impl MemoryART {
                     } else {
                         0
                     };
-                    new_node.add_child(new_byte, Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))));
+                    new_node.add_child(
+                        new_byte,
+                        Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))),
+                    );
                     *node = Some(Box::new(new_node));
                     return;
                 }
 
                 let new_depth = depth + prefix_len;
-                let byte = if new_depth == key.len() { 0 } else { key[new_depth] };
+                let byte = if new_depth == key.len() {
+                    0
+                } else {
+                    key[new_depth]
+                };
 
                 if let Some(child) = current.find_child_mut(byte) {
                     Self::insert_into_boxed(child, key, value.clone(), tx_id, new_depth);
                 } else {
-                    let new_leaf = Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value.clone(), tx_id)));
+                    let new_leaf =
+                        Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value.clone(), tx_id)));
                     if !current.add_child(byte, new_leaf) {
                         current.grow();
-                        current.add_child(byte, Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))));
+                        current.add_child(
+                            byte,
+                            Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))),
+                        );
                     }
                 }
             }
@@ -542,7 +676,8 @@ impl MemoryART {
         match boxed.as_mut() {
             ARTNode::Leaf(leaf) => {
                 if leaf.key == key {
-                    let old_chain = std::mem::replace(&mut leaf.chain, VersionChain::new(vec![], tx_id));
+                    let old_chain =
+                        std::mem::replace(&mut leaf.chain, VersionChain::new(vec![], tx_id));
                     leaf.chain = old_chain.prepend(value, tx_id);
                 } else {
                     let existing_key_suffix = &leaf.key[depth..];
@@ -582,12 +717,11 @@ impl MemoryART {
                 let prefix = internal.prefix().to_vec();
                 let key_suffix = &key[depth..];
 
-                if key_suffix.len() < prefix_len || key_suffix[..prefix_len] != prefix[..prefix_len] {
+                if key_suffix.len() < prefix_len || key_suffix[..prefix_len] != prefix[..prefix_len]
+                {
                     let common_prefix = Self::common_prefix(&prefix, key_suffix);
-                    let mut new_node = ARTNode::new_node4(
-                        key_suffix[..common_prefix].to_vec(),
-                        common_prefix,
-                    );
+                    let mut new_node =
+                        ARTNode::new_node4(key_suffix[..common_prefix].to_vec(), common_prefix);
 
                     let old_byte = if common_prefix < prefix_len {
                         prefix[common_prefix]
@@ -602,21 +736,32 @@ impl MemoryART {
                     } else {
                         0
                     };
-                    new_node.add_child(new_byte, Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))));
+                    new_node.add_child(
+                        new_byte,
+                        Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))),
+                    );
                     *boxed = Box::new(new_node);
                     return;
                 }
 
                 let new_depth = depth + prefix_len;
-                let byte = if new_depth == key.len() { 0 } else { key[new_depth] };
+                let byte = if new_depth == key.len() {
+                    0
+                } else {
+                    key[new_depth]
+                };
 
                 if let Some(child) = internal.find_child_mut(byte) {
                     Self::insert_into_boxed(child, key, value.clone(), tx_id, new_depth);
                 } else {
-                    let new_leaf = Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value.clone(), tx_id)));
+                    let new_leaf =
+                        Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value.clone(), tx_id)));
                     if !internal.add_child(byte, new_leaf) {
                         internal.grow();
-                        internal.add_child(byte, Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))));
+                        internal.add_child(
+                            byte,
+                            Box::new(ARTNode::Leaf(Leaf::new(key.to_vec(), value, tx_id))),
+                        );
                     }
                 }
             }
@@ -646,7 +791,9 @@ impl MemoryART {
                         0,
                         Vec::new(),
                     );
-                    leaf.chain.find_visible_version(&snapshot).map(|v| v.to_vec())
+                    leaf.chain
+                        .find_visible_version(&snapshot)
+                        .map(|v| v.to_vec())
                 } else {
                     None
                 }
@@ -665,7 +812,11 @@ impl MemoryART {
                 if end > key.len() || key[start..end] != prefix[..prefix_len.min(end - start)] {
                     return None;
                 }
-                let new_depth = if prefix_len <= depth { depth + prefix_len } else { prefix_len };
+                let new_depth = if prefix_len <= depth {
+                    depth + prefix_len
+                } else {
+                    prefix_len
+                };
                 if new_depth >= key.len() {
                     if let Some(child) = node.find_child(0) {
                         return Self::lookup_recursive(Some(child), key, snapshot_lsn, new_depth);
@@ -714,11 +865,16 @@ impl MemoryART {
                 let prefix_len = boxed.prefix_len();
                 let prefix = boxed.prefix().to_vec();
                 let key_suffix = &key[depth..];
-                if key_suffix.len() < prefix_len || key_suffix[..prefix_len] != prefix[..prefix_len] {
+                if key_suffix.len() < prefix_len || key_suffix[..prefix_len] != prefix[..prefix_len]
+                {
                     return false;
                 }
                 let new_depth = depth + prefix_len;
-                let byte = if new_depth >= key.len() { 0 } else { key[new_depth] };
+                let byte = if new_depth >= key.len() {
+                    0
+                } else {
+                    key[new_depth]
+                };
 
                 if let Some(mut child) = boxed.remove_child(byte) {
                     if Self::delete_from_boxed(&mut child, key, new_depth) {
@@ -749,27 +905,49 @@ impl MemoryART {
                 key: leaf.key.clone(),
                 chain: leaf.chain.clone(),
             })),
-            ARTNode::Node4 { prefix, prefix_len, keys, children, count } => {
+            ARTNode::Node4 {
+                prefix,
+                prefix_len,
+                keys,
+                children,
+                count,
+            } => {
                 let mut new_node = ARTNode::new_node4(prefix.clone(), *prefix_len);
                 for i in 0..*count {
                     if let Some(child) = &children[i] {
                         new_node.add_child(keys[i], Self::clone_node(child));
                     }
                 }
-                if let ARTNode::Node4 { count: c, .. } = &mut new_node { *c = *count; }
+                if let ARTNode::Node4 { count: c, .. } = &mut new_node {
+                    *c = *count;
+                }
                 Box::new(new_node)
             }
-            ARTNode::Node16 { prefix, prefix_len, keys, children, count } => {
+            ARTNode::Node16 {
+                prefix,
+                prefix_len,
+                keys,
+                children,
+                count,
+            } => {
                 let mut new_node = ARTNode::new_node16(prefix.clone(), *prefix_len);
                 for i in 0..*count {
                     if let Some(child) = &children[i] {
                         new_node.add_child(keys[i], Self::clone_node(child));
                     }
                 }
-                if let ARTNode::Node16 { count: c, .. } = &mut new_node { *c = *count; }
+                if let ARTNode::Node16 { count: c, .. } = &mut new_node {
+                    *c = *count;
+                }
                 Box::new(new_node)
             }
-            ARTNode::Node48 { prefix, prefix_len, index, children, count } => {
+            ARTNode::Node48 {
+                prefix,
+                prefix_len,
+                index,
+                children,
+                count,
+            } => {
                 let mut new_node = ARTNode::new_node48(prefix.clone(), *prefix_len);
                 for byte in 0..=255u8 {
                     if let Some(idx) = index[byte as usize] {
@@ -778,17 +956,26 @@ impl MemoryART {
                         }
                     }
                 }
-                if let ARTNode::Node48 { count: c, .. } = &mut new_node { *c = *count; }
+                if let ARTNode::Node48 { count: c, .. } = &mut new_node {
+                    *c = *count;
+                }
                 Box::new(new_node)
             }
-            ARTNode::Node256 { prefix, prefix_len, children, count } => {
+            ARTNode::Node256 {
+                prefix,
+                prefix_len,
+                children,
+                count,
+            } => {
                 let mut new_node = ARTNode::new_node256(prefix.clone(), *prefix_len);
                 for byte in 0..=255u8 {
                     if let Some(child) = &children[byte as usize] {
                         new_node.add_child(byte, Self::clone_node(child));
                     }
                 }
-                if let ARTNode::Node256 { count: c, .. } = &mut new_node { *c = *count; }
+                if let ARTNode::Node256 { count: c, .. } = &mut new_node {
+                    *c = *count;
+                }
                 Box::new(new_node)
             }
         }
@@ -797,25 +984,56 @@ impl MemoryART {
     fn estimate_tree_size(node: Option<&ARTNode>) -> usize {
         match node {
             None => 0,
-            Some(ARTNode::Leaf(leaf)) => leaf.key.len() + leaf.chain.value.len() + std::mem::size_of::<Leaf>(),
-            Some(ARTNode::Node4 { prefix, children, count, .. }) => {
-                prefix.len() + std::mem::size_of::<ARTNode>()
-                    + (0..*count).map(|i| Self::estimate_tree_size(children[i].as_deref())).sum::<usize>()
+            Some(ARTNode::Leaf(leaf)) => {
+                leaf.key.len() + leaf.chain.value.len() + std::mem::size_of::<Leaf>()
             }
-            Some(ARTNode::Node16 { prefix, children, count, .. }) => {
-                prefix.len() + std::mem::size_of::<ARTNode>()
-                    + (0..*count).map(|i| Self::estimate_tree_size(children[i].as_deref())).sum::<usize>()
+            Some(ARTNode::Node4 {
+                prefix,
+                children,
+                count,
+                ..
+            }) => {
+                prefix.len()
+                    + std::mem::size_of::<ARTNode>()
+                    + (0..*count)
+                        .map(|i| Self::estimate_tree_size(children[i].as_deref()))
+                        .sum::<usize>()
             }
-            Some(ARTNode::Node48 { prefix, index, children, .. }) => {
-                prefix.len() + std::mem::size_of::<ARTNode>()
-                    + (0..=255u8).filter_map(|b| index[b as usize])
+            Some(ARTNode::Node16 {
+                prefix,
+                children,
+                count,
+                ..
+            }) => {
+                prefix.len()
+                    + std::mem::size_of::<ARTNode>()
+                    + (0..*count)
+                        .map(|i| Self::estimate_tree_size(children[i].as_deref()))
+                        .sum::<usize>()
+            }
+            Some(ARTNode::Node48 {
+                prefix,
+                index,
+                children,
+                ..
+            }) => {
+                prefix.len()
+                    + std::mem::size_of::<ARTNode>()
+                    + (0..=255u8)
+                        .filter_map(|b| index[b as usize])
                         .map(|idx| Self::estimate_tree_size(children[idx as usize].as_deref()))
                         .sum::<usize>()
             }
-            Some(ARTNode::Node256 { prefix, children, .. }) => {
-                prefix.len() + std::mem::size_of::<ARTNode>()
-                    + children.iter().filter_map(|c| c.as_deref())
-                        .map(|n| Self::estimate_tree_size(Some(n))).sum::<usize>()
+            Some(ARTNode::Node256 {
+                prefix, children, ..
+            }) => {
+                prefix.len()
+                    + std::mem::size_of::<ARTNode>()
+                    + children
+                        .iter()
+                        .filter_map(|c| c.as_deref())
+                        .map(|n| Self::estimate_tree_size(Some(n)))
+                        .sum::<usize>()
             }
         }
     }
@@ -851,7 +1069,11 @@ impl MemoryART {
                 }
             }
             _ => {
-                eprintln!("Internal node: prefix={:?}, count={}", String::from_utf8_lossy(node.prefix()), node.count());
+                eprintln!(
+                    "Internal node: prefix={:?}, count={}",
+                    String::from_utf8_lossy(node.prefix()),
+                    node.count()
+                );
                 for (byte, child) in node.children_iter() {
                     eprintln!("  Child byte={}", byte);
                     Self::collect_keys_in_bounds(Some(child), bounds, snapshot_lsn, result);
@@ -884,21 +1106,27 @@ impl MemoryART {
         match node {
             None => 0,
             Some(ARTNode::Leaf(_)) => 1,
-            Some(ARTNode::Node4 { children, count, .. }) => {
-                (0..*count).map(|i| Self::count_leaves(children[i].as_deref())).sum()
-            }
-            Some(ARTNode::Node16 { children, count, .. }) => {
-                (0..*count).map(|i| Self::count_leaves(children[i].as_deref())).sum()
-            }
-            Some(ARTNode::Node48 { index, children, .. }) => {
-                (0..=255u8).filter_map(|b| index[b as usize])
-                    .map(|idx| Self::count_leaves(children[idx as usize].as_deref()))
-                    .sum()
-            }
-            Some(ARTNode::Node256 { children, .. }) => {
-                children.iter().filter_map(|c| c.as_deref())
-                    .map(|n| Self::count_leaves(Some(n))).sum()
-            }
+            Some(ARTNode::Node4 {
+                children, count, ..
+            }) => (0..*count)
+                .map(|i| Self::count_leaves(children[i].as_deref()))
+                .sum(),
+            Some(ARTNode::Node16 {
+                children, count, ..
+            }) => (0..*count)
+                .map(|i| Self::count_leaves(children[i].as_deref()))
+                .sum(),
+            Some(ARTNode::Node48 {
+                index, children, ..
+            }) => (0..=255u8)
+                .filter_map(|b| index[b as usize])
+                .map(|idx| Self::count_leaves(children[idx as usize].as_deref()))
+                .sum(),
+            Some(ARTNode::Node256 { children, .. }) => children
+                .iter()
+                .filter_map(|c| c.as_deref())
+                .map(|n| Self::count_leaves(Some(n)))
+                .sum(),
         }
     }
 
@@ -915,21 +1143,27 @@ impl MemoryART {
                     leaf.chain.commit(lsn);
                 }
             }
-            ARTNode::Node4 { children, count, .. } => {
+            ARTNode::Node4 {
+                children, count, ..
+            } => {
                 for i in 0..*count {
                     if let Some(child) = &mut children[i] {
                         Self::commit_from_boxed(child, lsn, tx_id);
                     }
                 }
             }
-            ARTNode::Node16 { children, count, .. } => {
+            ARTNode::Node16 {
+                children, count, ..
+            } => {
                 for i in 0..*count {
                     if let Some(child) = &mut children[i] {
                         Self::commit_from_boxed(child, lsn, tx_id);
                     }
                 }
             }
-            ARTNode::Node48 { index, children, .. } => {
+            ARTNode::Node48 {
+                index, children, ..
+            } => {
                 for byte in 0..=255u8 {
                     if let Some(idx) = index[byte as usize] {
                         if let Some(child) = &mut children[idx as usize] {
@@ -948,9 +1182,15 @@ impl MemoryART {
 }
 
 impl Table for MemoryART {
-    fn table_id(&self) -> TableId { self.id }
-    fn name(&self) -> &str { &self.name }
-    fn kind(&self) -> TableEngineKind { TableEngineKind::Art }
+    fn table_id(&self) -> TableId {
+        self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn kind(&self) -> TableEngineKind {
+        TableEngineKind::Art
+    }
 
     fn capabilities(&self) -> TableCapabilities {
         TableCapabilities {
@@ -988,10 +1228,17 @@ impl SearchableTable for MemoryART {
     type Writer<'a> = MemoryARTWriter<'a>;
 
     fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Reader<'_>> {
-        Ok(MemoryARTReader { table: self, snapshot_lsn })
+        Ok(MemoryARTReader {
+            table: self,
+            snapshot_lsn,
+        })
     }
 
-    fn writer(&self, tx_id: TransactionId, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Writer<'_>> {
+    fn writer(
+        &self,
+        tx_id: TransactionId,
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Writer<'_>> {
         Ok(MemoryARTWriter {
             table: self,
             tx_id,
@@ -1013,19 +1260,32 @@ impl<'a> PointLookup for MemoryARTReader<'a> {
 }
 
 impl<'a> OrderedScan for MemoryARTReader<'a> {
-    type Cursor<'b> = MemoryARTCursor where Self: 'b;
+    type Cursor<'b>
+        = MemoryARTCursor
+    where
+        Self: 'b;
 
-    fn scan(&self, bounds: ScanBounds, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
+    fn scan(
+        &self,
+        bounds: ScanBounds,
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Cursor<'_>> {
         let root = self.table.root.read().unwrap();
         let mut entries = Vec::new();
         MemoryART::collect_keys_in_bounds(root.as_deref(), &bounds, snapshot_lsn, &mut entries);
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(MemoryARTCursor { entries, position: 0, snapshot_lsn })
+        Ok(MemoryARTCursor {
+            entries,
+            position: 0,
+            snapshot_lsn,
+        })
     }
 }
 
 impl<'a> TableReader for MemoryARTReader<'a> {
-    fn snapshot_lsn(&self) -> LogSequenceNumber { self.snapshot_lsn }
+    fn snapshot_lsn(&self) -> LogSequenceNumber {
+        self.snapshot_lsn
+    }
     fn approximate_len(&self) -> TableResult<Option<u64>> {
         let root = self.table.root.read().unwrap();
         Ok(Some(MemoryART::count_leaves(root.as_deref()) as u64))
@@ -1033,7 +1293,11 @@ impl<'a> TableReader for MemoryARTReader<'a> {
 }
 
 impl<'a> PrefixScan for MemoryARTReader<'a> {
-    fn scan_prefix(&self, prefix: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Cursor<'_>> {
         self.scan(ScanBounds::Prefix(KeyBuf(prefix.to_vec())), snapshot_lsn)
     }
 }
@@ -1047,13 +1311,16 @@ pub struct MemoryARTWriter<'a> {
 
 impl<'a> MutableTable for MemoryARTWriter<'a> {
     fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
-        self.pending_changes.push((key.to_vec(), Some(value.to_vec())));
+        self.pending_changes
+            .push((key.to_vec(), Some(value.to_vec())));
         Ok((key.len() + value.len() + 16) as u64)
     }
 
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
         let root = self.table.root.read().unwrap();
-        let exists = MemoryART::lookup_recursive(root.as_deref(), key, LogSequenceNumber::from(u64::MAX), 0).is_some();
+        let exists =
+            MemoryART::lookup_recursive(root.as_deref(), key, LogSequenceNumber::from(u64::MAX), 0)
+                .is_some();
         drop(root);
         if exists {
             self.pending_changes.push((key.to_vec(), None));
@@ -1066,7 +1333,12 @@ impl<'a> MutableTable for MemoryARTWriter<'a> {
     fn range_delete(&mut self, bounds: ScanBounds) -> TableResult<u64> {
         let root = self.table.root.read().unwrap();
         let mut entries = Vec::new();
-        MemoryART::collect_keys_in_bounds(root.as_deref(), &bounds, LogSequenceNumber::from(u64::MAX), &mut entries);
+        MemoryART::collect_keys_in_bounds(
+            root.as_deref(),
+            &bounds,
+            LogSequenceNumber::from(u64::MAX),
+            &mut entries,
+        );
         drop(root);
         let count = entries.len() as u64;
         for (key, _) in entries {
@@ -1078,11 +1350,17 @@ impl<'a> MutableTable for MemoryARTWriter<'a> {
 
 impl<'a> BatchOps for MemoryARTWriter<'a> {
     fn batch_get(&self, keys: &[&[u8]]) -> TableResult<Vec<Option<ValueBuf>>> {
-        Ok(keys.iter().map(|k| self.table.lookup(k, self.snapshot_lsn).map(ValueBuf)).collect())
+        Ok(keys
+            .iter()
+            .map(|k| self.table.lookup(k, self.snapshot_lsn).map(ValueBuf))
+            .collect())
     }
 
     fn apply_batch(&mut self, batch: crate::table::WriteBatch) -> TableResult<BatchReport> {
-        let mut report = BatchReport { attempted: batch.mutations.len() as u64, ..Default::default() };
+        let mut report = BatchReport {
+            attempted: batch.mutations.len() as u64,
+            ..Default::default()
+        };
         for mutation in batch.mutations {
             match mutation {
                 crate::table::Mutation::Put { key, value } => {
@@ -1091,7 +1369,9 @@ impl<'a> BatchOps for MemoryARTWriter<'a> {
                     report.bytes_written += key.len() as u64 + value.len() as u64;
                 }
                 crate::table::Mutation::Delete { key } => {
-                    if self.delete(&key)? { report.deleted += 1; }
+                    if self.delete(&key)? {
+                        report.deleted += 1;
+                    }
                     report.applied += 1;
                 }
                 crate::table::Mutation::RangeDelete { bounds } => {
@@ -1110,7 +1390,9 @@ impl<'a> Flushable for MemoryARTWriter<'a> {
         for (key, value_opt) in self.pending_changes.drain(..) {
             match value_opt {
                 Some(value) => self.table.insert(&key, value, self.tx_id),
-                None => { self.table.delete(&key); }
+                None => {
+                    self.table.delete(&key);
+                }
             }
         }
         Ok(())
@@ -1118,8 +1400,12 @@ impl<'a> Flushable for MemoryARTWriter<'a> {
 }
 
 impl<'a> TableWriter for MemoryARTWriter<'a> {
-    fn tx_id(&self) -> TransactionId { self.tx_id }
-    fn snapshot_lsn(&self) -> LogSequenceNumber { self.snapshot_lsn }
+    fn tx_id(&self) -> TransactionId {
+        self.tx_id
+    }
+    fn snapshot_lsn(&self) -> LogSequenceNumber {
+        self.snapshot_lsn
+    }
 }
 
 pub struct MemoryARTCursor {
@@ -1129,11 +1415,35 @@ pub struct MemoryARTCursor {
 }
 
 impl TableCursor for MemoryARTCursor {
-    fn valid(&self) -> bool { self.position < self.entries.len() }
-    fn key(&self) -> Option<&[u8]> { if self.valid() { Some(&self.entries[self.position].0) } else { None } }
-    fn value(&self) -> Option<&[u8]> { if self.valid() { Some(&self.entries[self.position].1) } else { None } }
-    fn next(&mut self) -> TableResult<()> { if self.valid() { self.position += 1; } Ok(()) }
-    fn prev(&mut self) -> TableResult<()> { if self.position > 0 { self.position -= 1; } Ok(()) }
+    fn valid(&self) -> bool {
+        self.position < self.entries.len()
+    }
+    fn key(&self) -> Option<&[u8]> {
+        if self.valid() {
+            Some(&self.entries[self.position].0)
+        } else {
+            None
+        }
+    }
+    fn value(&self) -> Option<&[u8]> {
+        if self.valid() {
+            Some(&self.entries[self.position].1)
+        } else {
+            None
+        }
+    }
+    fn next(&mut self) -> TableResult<()> {
+        if self.valid() {
+            self.position += 1;
+        }
+        Ok(())
+    }
+    fn prev(&mut self) -> TableResult<()> {
+        if self.position > 0 {
+            self.position -= 1;
+        }
+        Ok(())
+    }
 
     fn seek(&mut self, key: &[u8]) -> TableResult<()> {
         match self.entries.binary_search_by(|e| e.0.as_slice().cmp(key)) {
@@ -1151,12 +1461,19 @@ impl TableCursor for MemoryARTCursor {
         Ok(())
     }
 
-    fn first(&mut self) -> TableResult<()> { self.position = 0; Ok(()) }
-    fn last(&mut self) -> TableResult<()> {
-        if !self.entries.is_empty() { self.position = self.entries.len() - 1; }
+    fn first(&mut self) -> TableResult<()> {
+        self.position = 0;
         Ok(())
     }
-    fn snapshot_lsn(&self) -> LogSequenceNumber { self.snapshot_lsn }
+    fn last(&mut self) -> TableResult<()> {
+        if !self.entries.is_empty() {
+            self.position = self.entries.len() - 1;
+        }
+        Ok(())
+    }
+    fn snapshot_lsn(&self) -> LogSequenceNumber {
+        self.snapshot_lsn
+    }
 }
 
 #[cfg(test)]
@@ -1228,7 +1545,16 @@ mod tests {
         let mut entries = Vec::new();
         MemoryART::collect_keys_in_bounds(root.as_deref(), &bounds, read_lsn, &mut entries);
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(entries.len(), 3, "Expected 3 entries with prefix 'user:', got {}: {:?}", entries.len(), entries.iter().map(|e| String::from_utf8_lossy(&e.0)).collect::<Vec<_>>());
+        assert_eq!(
+            entries.len(),
+            3,
+            "Expected 3 entries with prefix 'user:', got {}: {:?}",
+            entries.len(),
+            entries
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.0))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1246,9 +1572,21 @@ mod tests {
             MemoryART::commit_all(&mut root, LogSequenceNumber::from(10), tx_id);
         }
         let lsn1 = LogSequenceNumber::from(15);
-        assert_eq!(table.lookup(b"aa", lsn1), Some(b"val1".to_vec()), "aa after 3 inserts");
-        assert_eq!(table.lookup(b"ab", lsn1), Some(b"val2".to_vec()), "ab after 3 inserts");
-        assert_eq!(table.lookup(b"ac", lsn1), Some(b"val3".to_vec()), "ac after 3 inserts");
+        assert_eq!(
+            table.lookup(b"aa", lsn1),
+            Some(b"val1".to_vec()),
+            "aa after 3 inserts"
+        );
+        assert_eq!(
+            table.lookup(b"ab", lsn1),
+            Some(b"val2".to_vec()),
+            "ab after 3 inserts"
+        );
+        assert_eq!(
+            table.lookup(b"ac", lsn1),
+            Some(b"val3".to_vec()),
+            "ac after 3 inserts"
+        );
 
         table.insert(b"zz", b"val4".to_vec(), tx_id);
 
@@ -1260,13 +1598,40 @@ mod tests {
         let read_lsn = LogSequenceNumber::from(25);
         let root = table.root.read().unwrap();
         let mut entries = Vec::new();
-        MemoryART::collect_keys_in_bounds(root.as_deref(), &ScanBounds::All, read_lsn, &mut entries);
-        eprintln!("Entries after 4 inserts: {:?}", entries.iter().map(|e| String::from_utf8_lossy(&e.0)).collect::<Vec<_>>());
-        
-        assert_eq!(table.lookup(b"aa", read_lsn), Some(b"val1".to_vec()), "aa after 4 inserts");
-        assert_eq!(table.lookup(b"ab", read_lsn), Some(b"val2".to_vec()), "ab after 4 inserts");
-        assert_eq!(table.lookup(b"ac", read_lsn), Some(b"val3".to_vec()), "ac after 4 inserts");
-        assert_eq!(table.lookup(b"zz", read_lsn), Some(b"val4".to_vec()), "zz after 4 inserts");
+        MemoryART::collect_keys_in_bounds(
+            root.as_deref(),
+            &ScanBounds::All,
+            read_lsn,
+            &mut entries,
+        );
+        eprintln!(
+            "Entries after 4 inserts: {:?}",
+            entries
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.0))
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            table.lookup(b"aa", read_lsn),
+            Some(b"val1".to_vec()),
+            "aa after 4 inserts"
+        );
+        assert_eq!(
+            table.lookup(b"ab", read_lsn),
+            Some(b"val2".to_vec()),
+            "ab after 4 inserts"
+        );
+        assert_eq!(
+            table.lookup(b"ac", read_lsn),
+            Some(b"val3".to_vec()),
+            "ac after 4 inserts"
+        );
+        assert_eq!(
+            table.lookup(b"zz", read_lsn),
+            Some(b"val4".to_vec()),
+            "zz after 4 inserts"
+        );
     }
 
     #[test]
@@ -1285,9 +1650,20 @@ mod tests {
         let read_lsn = LogSequenceNumber::from(20);
         let root = table.root.read().unwrap();
         let mut entries = Vec::new();
-        MemoryART::collect_keys_in_bounds(root.as_deref(), &ScanBounds::All, read_lsn, &mut entries);
+        MemoryART::collect_keys_in_bounds(
+            root.as_deref(),
+            &ScanBounds::All,
+            read_lsn,
+            &mut entries,
+        );
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(entries.len(), 2, "Expected 2 entries, got {}: {:?}", entries.len(), entries);
+        assert_eq!(
+            entries.len(),
+            2,
+            "Expected 2 entries, got {}: {:?}",
+            entries.len(),
+            entries
+        );
         assert_eq!(table.lookup(b"abc", read_lsn), Some(b"val1".to_vec()));
         assert_eq!(table.lookup(b"xyz", read_lsn), Some(b"val2".to_vec()));
     }
@@ -1310,9 +1686,23 @@ mod tests {
         let read_lsn = LogSequenceNumber::from(20);
         let root = table.root.read().unwrap();
         let mut entries = Vec::new();
-        MemoryART::collect_keys_in_bounds(root.as_deref(), &ScanBounds::All, read_lsn, &mut entries);
+        MemoryART::collect_keys_in_bounds(
+            root.as_deref(),
+            &ScanBounds::All,
+            read_lsn,
+            &mut entries,
+        );
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(entries.len(), 4, "Expected 4 entries total, got {}: {:?}", entries.len(), entries.iter().map(|e| String::from_utf8_lossy(&e.0)).collect::<Vec<_>>());
+        assert_eq!(
+            entries.len(),
+            4,
+            "Expected 4 entries total, got {}: {:?}",
+            entries.len(),
+            entries
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.0))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1332,7 +1722,12 @@ mod tests {
         let read_lsn = LogSequenceNumber::from(20);
         let root = table.root.read().unwrap();
         let mut entries = Vec::new();
-        MemoryART::collect_keys_in_bounds(root.as_deref(), &ScanBounds::All, read_lsn, &mut entries);
+        MemoryART::collect_keys_in_bounds(
+            root.as_deref(),
+            &ScanBounds::All,
+            read_lsn,
+            &mut entries,
+        );
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(entries.len(), 3);
     }
@@ -1383,8 +1778,14 @@ mod tests {
 
         let read_lsn = LogSequenceNumber::from(20);
         let reader = table.reader(read_lsn).unwrap();
-        assert_eq!(reader.get(b"key1", read_lsn).unwrap(), Some(ValueBuf(b"value1".to_vec())));
-        assert_eq!(reader.get(b"key2", read_lsn).unwrap(), Some(ValueBuf(b"value2".to_vec())));
+        assert_eq!(
+            reader.get(b"key1", read_lsn).unwrap(),
+            Some(ValueBuf(b"value1".to_vec()))
+        );
+        assert_eq!(
+            reader.get(b"key2", read_lsn).unwrap(),
+            Some(ValueBuf(b"value2".to_vec()))
+        );
     }
 
     #[test]
@@ -1401,8 +1802,14 @@ mod tests {
 
         let read_lsn = LogSequenceNumber::from(20);
         let reader = table.reader(read_lsn).unwrap();
-        assert_eq!(reader.get(b"key1", read_lsn).unwrap(), Some(ValueBuf(b"value1".to_vec())));
-        assert_eq!(reader.get(b"key2", read_lsn).unwrap(), Some(ValueBuf(b"value2".to_vec())));
+        assert_eq!(
+            reader.get(b"key1", read_lsn).unwrap(),
+            Some(ValueBuf(b"value1".to_vec()))
+        );
+        assert_eq!(
+            reader.get(b"key2", read_lsn).unwrap(),
+            Some(ValueBuf(b"value2".to_vec()))
+        );
         assert_eq!(reader.get(b"key3", read_lsn).unwrap(), None);
     }
 
@@ -1452,7 +1859,10 @@ mod tests {
         let read_lsn = LogSequenceNumber::from(30);
         let reader = table.reader(read_lsn).unwrap();
         assert_eq!(reader.get(b"key1", read_lsn).unwrap(), None);
-        assert_eq!(reader.get(b"key2", read_lsn).unwrap(), Some(ValueBuf(b"value2".to_vec())));
+        assert_eq!(
+            reader.get(b"key2", read_lsn).unwrap(),
+            Some(ValueBuf(b"value2".to_vec()))
+        );
     }
 
     #[test]
@@ -1474,12 +1884,23 @@ mod tests {
         let count = MemoryART::count_leaves(root.as_deref());
         eprintln!("Leaf count after 20 inserts: {}", count);
         assert_eq!(count, 20);
-        
+
         // Collect all keys
         let mut entries = Vec::new();
-        MemoryART::collect_keys_in_bounds(root.as_deref(), &ScanBounds::All, LogSequenceNumber::from(u64::MAX), &mut entries);
+        MemoryART::collect_keys_in_bounds(
+            root.as_deref(),
+            &ScanBounds::All,
+            LogSequenceNumber::from(u64::MAX),
+            &mut entries,
+        );
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        eprintln!("Keys in tree: {:?}", entries.iter().map(|e| String::from_utf8_lossy(&e.0)).collect::<Vec<_>>());
+        eprintln!(
+            "Keys in tree: {:?}",
+            entries
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.0))
+                .collect::<Vec<_>>()
+        );
         drop(root);
 
         // Check with direct lookup
@@ -1487,18 +1908,40 @@ mod tests {
         for i in 0..20 {
             let key = format!("key{:02}", i);
             let result = table.lookup(key.as_bytes(), read_lsn);
-            eprintln!("Direct lookup {}: {} (visible={})", key, result.is_some(), result.is_some());
+            eprintln!(
+                "Direct lookup {}: {} (visible={})",
+                key,
+                result.is_some(),
+                result.is_some()
+            );
         }
-        assert_eq!(table.lookup(b"key00", read_lsn), Some(b"value".to_vec()), "Direct lookup key00");
-        assert_eq!(table.lookup(b"key10", read_lsn), Some(b"value".to_vec()), "Direct lookup key10");
-        assert_eq!(table.lookup(b"key19", read_lsn), Some(b"value".to_vec()), "Direct lookup key19");
+        assert_eq!(
+            table.lookup(b"key00", read_lsn),
+            Some(b"value".to_vec()),
+            "Direct lookup key00"
+        );
+        assert_eq!(
+            table.lookup(b"key10", read_lsn),
+            Some(b"value".to_vec()),
+            "Direct lookup key10"
+        );
+        assert_eq!(
+            table.lookup(b"key19", read_lsn),
+            Some(b"value".to_vec()),
+            "Direct lookup key19"
+        );
 
         // Check with reader
         let reader = table.reader(read_lsn).unwrap();
         for i in 0..20 {
             let key = format!("key{:02}", i);
             let result = reader.get(key.as_bytes(), read_lsn).unwrap();
-            assert_eq!(result, Some(ValueBuf(b"value".to_vec())), "Reader lookup {}", key);
+            assert_eq!(
+                result,
+                Some(ValueBuf(b"value".to_vec())),
+                "Reader lookup {}",
+                key
+            );
         }
     }
 

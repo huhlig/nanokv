@@ -117,7 +117,10 @@ impl FileSystem for LocalFileSystem {
                     .chars()
                     .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
                 {
-                    return Err(FileSystemError::invalid_path(path, "invalid characters in path component"));
+                    return Err(FileSystemError::invalid_path(
+                        path,
+                        "invalid characters in path component",
+                    ));
                 }
             }
         }
@@ -154,7 +157,10 @@ impl FileSystem for LocalFileSystem {
                     .chars()
                     .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
                 {
-                    return Err(FileSystemError::invalid_path(path, "invalid characters in path component"));
+                    return Err(FileSystemError::invalid_path(
+                        path,
+                        "invalid characters in path component",
+                    ));
                 }
             }
         }

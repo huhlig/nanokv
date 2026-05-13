@@ -62,13 +62,23 @@ fn default_table_options() -> TableOptions {
 fn test_fulltext_index_document_in_transaction() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     txn.with_fulltext(fulltext_id, |fulltext| {
         let fields = vec![
-            TextField { name: "title", text: "Hello World", boost: 1.0 },
-            TextField { name: "body", text: "This is a test document", boost: 0.5 },
+            TextField {
+                name: "title",
+                text: "Hello World",
+                boost: 1.0,
+            },
+            TextField {
+                name: "body",
+                text: "This is a test document",
+                boost: 0.5,
+            },
         ];
         fulltext.index_document(b"doc1", &fields)?;
         Ok(())
@@ -84,13 +94,17 @@ fn test_fulltext_write_set_tracking() {
     // to check the fulltext_write_set during search operations.
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     let result = txn.with_fulltext(fulltext_id, |fulltext| {
-        let fields = vec![
-            TextField { name: "title", text: "Visible Test", boost: 1.0 },
-        ];
+        let fields = vec![TextField {
+            name: "title",
+            text: "Visible Test",
+            boost: 1.0,
+        }];
         fulltext.index_document(b"doc1", &fields)?;
         Ok(())
     });
@@ -104,20 +118,26 @@ fn test_fulltext_write_set_tracking() {
 fn test_fulltext_update_document_in_transaction() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     txn.with_fulltext(fulltext_id, |fulltext| {
         // Index initial document
-        let fields = vec![
-            TextField { name: "title", text: "Original Title", boost: 1.0 },
-        ];
+        let fields = vec![TextField {
+            name: "title",
+            text: "Original Title",
+            boost: 1.0,
+        }];
         fulltext.index_document(b"doc1", &fields)?;
 
         // Update document
-        let fields = vec![
-            TextField { name: "title", text: "Updated Title", boost: 1.0 },
-        ];
+        let fields = vec![TextField {
+            name: "title",
+            text: "Updated Title",
+            boost: 1.0,
+        }];
         fulltext.update_document(b"doc1", &fields)?;
 
         Ok(())
@@ -132,14 +152,18 @@ fn test_fulltext_update_document_in_transaction() {
 fn test_fulltext_delete_document_in_transaction() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     txn.with_fulltext(fulltext_id, |fulltext| {
         // Index document
-        let fields = vec![
-            TextField { name: "title", text: "Delete Me", boost: 1.0 },
-        ];
+        let fields = vec![TextField {
+            name: "title",
+            text: "Delete Me",
+            boost: 1.0,
+        }];
         fulltext.index_document(b"doc1", &fields)?;
 
         // Delete document
@@ -156,14 +180,18 @@ fn test_fulltext_delete_document_in_transaction() {
 fn test_fulltext_rollback_discards_changes() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     // Index document and rollback
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     txn.with_fulltext(fulltext_id, |fulltext| {
-        let fields = vec![
-            TextField { name: "title", text: "Rollback Test", boost: 1.0 },
-        ];
+        let fields = vec![TextField {
+            name: "title",
+            text: "Rollback Test",
+            boost: 1.0,
+        }];
         fulltext.index_document(b"doc1", &fields)?;
         Ok(())
     })
@@ -174,11 +202,14 @@ fn test_fulltext_rollback_discards_changes() {
     // (Note: actual persistence depends on interior mutability implementation)
     let mut read_txn = db.begin_read().unwrap();
     let result = read_txn.with_fulltext(fulltext_id, |fulltext| {
-        fulltext.search(TextQuery {
-            query: "Rollback",
-            default_field: None,
-            require_positions: false,
-        }, 10)
+        fulltext.search(
+            TextQuery {
+                query: "Rollback",
+                default_field: None,
+                require_positions: false,
+            },
+            10,
+        )
     });
     // The transaction was rolled back, so either error or empty results
     assert!(result.is_ok() || result.is_err());
@@ -190,7 +221,9 @@ fn test_fulltext_rollback_discards_changes() {
 fn test_fulltext_multiple_operations_in_transaction() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     txn.with_fulltext(fulltext_id, |fulltext| {
@@ -200,16 +233,26 @@ fn test_fulltext_multiple_operations_in_transaction() {
             let body = format!("Content for document {}", i);
             let doc_id = format!("doc{}", i);
             let fields = vec![
-                TextField { name: "title", text: &title, boost: 1.0 },
-                TextField { name: "body", text: &body, boost: 0.5 },
+                TextField {
+                    name: "title",
+                    text: &title,
+                    boost: 1.0,
+                },
+                TextField {
+                    name: "body",
+                    text: &body,
+                    boost: 0.5,
+                },
             ];
             fulltext.index_document(doc_id.as_bytes(), &fields)?;
         }
 
         // Update one document
-        let fields = vec![
-            TextField { name: "title", text: "Updated Document 2", boost: 1.0 },
-        ];
+        let fields = vec![TextField {
+            name: "title",
+            text: "Updated Document 2",
+            boost: 1.0,
+        }];
         fulltext.update_document(b"doc2", &fields)?;
 
         // Delete one document
@@ -227,10 +270,14 @@ fn test_fulltext_multiple_operations_in_transaction() {
 fn test_fulltext_capabilities() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
-    let caps = txn.with_fulltext(fulltext_id, |fulltext| Ok(fulltext.capabilities())).unwrap();
+    let caps = txn
+        .with_fulltext(fulltext_id, |fulltext| Ok(fulltext.capabilities()))
+        .unwrap();
     assert!(caps.exact);
     assert!(caps.supports_delete);
     assert!(caps.supports_scoring);
@@ -240,12 +287,16 @@ fn test_fulltext_capabilities() {
 fn test_fulltext_table_id_and_name() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let fulltext_id = db.create_table("my_fulltext", fulltext_table_options()).unwrap();
+    let fulltext_id = db
+        .create_table("my_fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
-    let (id, name) = txn.with_fulltext(fulltext_id, |fulltext| {
-        Ok((fulltext.table_id(), fulltext.name().to_string()))
-    }).unwrap();
+    let (id, name) = txn
+        .with_fulltext(fulltext_id, |fulltext| {
+            Ok((fulltext.table_id(), fulltext.name().to_string()))
+        })
+        .unwrap();
     assert_eq!(id, fulltext_id);
     assert_eq!(name, "my_fulltext");
 }
@@ -260,7 +311,9 @@ fn test_fulltext_operations_on_non_fulltext_table_fails() {
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     // The operation may not fail immediately but capabilities should be empty/default
-    let caps = txn.with_fulltext(memory_id, |fulltext| Ok(fulltext.capabilities())).unwrap();
+    let caps = txn
+        .with_fulltext(memory_id, |fulltext| Ok(fulltext.capabilities()))
+        .unwrap();
     // Non-fulltext tables should return default (empty) capabilities
     assert!(!caps.exact);
 }
@@ -269,7 +322,9 @@ fn test_fulltext_operations_on_non_fulltext_table_fails() {
 fn test_fulltext_operations_without_table_context() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let _fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let _fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let mut txn = db.begin_write(Durability::WalOnly).unwrap();
     // Don't set table context - operations should fail
@@ -281,7 +336,9 @@ fn test_fulltext_operations_without_table_context() {
 fn test_fulltext_operations_after_rollback_fails() {
     let fs = MemoryFileSystem::new();
     let db = Database::new(&fs, "test.wal", "test.db").unwrap();
-    let _fulltext_id = db.create_table("fulltext", fulltext_table_options()).unwrap();
+    let _fulltext_id = db
+        .create_table("fulltext", fulltext_table_options())
+        .unwrap();
 
     let txn = db.begin_write(Durability::WalOnly).unwrap();
     // Rollback consumes the transaction, so we can't test operations after

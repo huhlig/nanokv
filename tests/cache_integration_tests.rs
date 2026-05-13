@@ -134,7 +134,10 @@ fn test_cache_lru_eviction() {
 
     // Verify eviction occurred (we read 100 pages but cache holds 64)
     let stats = pager.cache_stats().unwrap();
-    assert!(stats.evictions > 0, "Expected evictions with 100 pages and 64 capacity");
+    assert!(
+        stats.evictions > 0,
+        "Expected evictions with 100 pages and 64 capacity"
+    );
     assert!(stats.current_size <= 64);
 }
 

@@ -20,8 +20,8 @@
 //! with various compression and encryption configurations.
 
 use nanokv::pager::{CompressionType, EncryptionType, PageSize, Pager, PagerConfig};
-use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::{File, FileSystem, MemoryFileSystem};
 use nanokv::wal::{WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 

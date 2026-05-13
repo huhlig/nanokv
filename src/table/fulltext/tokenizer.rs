@@ -58,10 +58,9 @@ impl Default for TokenizerConfig {
 
 /// Default English stop words.
 const DEFAULT_STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
-    "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the",
-    "their", "then", "there", "these", "they", "this", "to", "was", "will",
-    "with",
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it",
+    "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these",
+    "they", "this", "to", "was", "will", "with",
 ];
 
 /// Tokenizer for full-text search.
@@ -162,14 +161,20 @@ impl Tokenizer {
             }
         } else if word.ends_with("ed") && word.len() > 4 {
             let base = &word[..word.len() - 2];
-            if base.chars().any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')) {
+            if base
+                .chars()
+                .any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+            {
                 base.to_string()
             } else {
                 word
             }
         } else if word.ends_with("ing") && word.len() > 5 {
             let base = &word[..word.len() - 3];
-            if base.chars().any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')) {
+            if base
+                .chars()
+                .any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+            {
                 base.to_string()
             } else {
                 word
@@ -181,7 +186,10 @@ impl Tokenizer {
         // Step 1c: -y -> -i
         let word = if word.ends_with('y') && word.len() > 2 {
             let base = &word[..word.len() - 1];
-            if base.chars().any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')) {
+            if base
+                .chars()
+                .any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+            {
                 format!("{}i", base)
             } else {
                 word

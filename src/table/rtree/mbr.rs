@@ -52,7 +52,14 @@ impl Mbr {
     }
 
     /// Create a new 3D MBR from coordinates.
-    pub fn from_coords_3d(min_x: f64, min_y: f64, min_z: f64, max_x: f64, max_y: f64, max_z: f64) -> Self {
+    pub fn from_coords_3d(
+        min_x: f64,
+        min_y: f64,
+        min_z: f64,
+        max_x: f64,
+        max_y: f64,
+        max_z: f64,
+    ) -> Self {
         Self {
             min: [min_x, min_y, min_z],
             max: [max_x, max_y, max_z],
@@ -151,12 +158,12 @@ impl Mbr {
     /// Calculate the intersection of this MBR with another.
     pub fn intersection(&self, other: &Mbr) -> Mbr {
         let mut result = Mbr::empty(self.dimensions);
-        
+
         for i in 0..self.dimensions.min(other.dimensions) {
             result.min[i] = self.min[i].max(other.min[i]);
             result.max[i] = self.max[i].min(other.max[i]);
         }
-        
+
         result.dimensions = self.dimensions;
         result
     }
@@ -183,8 +190,10 @@ impl Mbr {
 
     /// Check if this MBR contains a point.
     pub fn contains_point(&self, point: GeoPoint) -> bool {
-        point.x >= self.min[0] && point.x <= self.max[0] &&
-        point.y >= self.min[1] && point.y <= self.max[1]
+        point.x >= self.min[0]
+            && point.x <= self.max[0]
+            && point.y >= self.min[1]
+            && point.y <= self.max[1]
     }
 
     /// Calculate the area increase needed to include another MBR.
@@ -270,12 +279,12 @@ impl Mbr {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(1 + 6 * 8);
         bytes.push(self.dimensions as u8);
-        
+
         for i in 0..self.dimensions {
             bytes.extend_from_slice(&self.min[i].to_le_bytes());
             bytes.extend_from_slice(&self.max[i].to_le_bytes());
         }
-        
+
         bytes
     }
 
@@ -329,7 +338,7 @@ mod tests {
     fn test_from_point() {
         let point = GeoPoint { x: 1.0, y: 2.0 };
         let mbr = Mbr::from_point_2d(point);
-        
+
         assert_eq!(mbr.min[0], 1.0);
         assert_eq!(mbr.min[1], 2.0);
         assert_eq!(mbr.max[0], 1.0);
@@ -343,7 +352,7 @@ mod tests {
         let p1 = GeoPoint { x: 1.0, y: 2.0 };
         let p2 = GeoPoint { x: 3.0, y: 4.0 };
         let mbr = Mbr::from_points_2d(p1, p2);
-        
+
         assert_eq!(mbr.min[0], 1.0);
         assert_eq!(mbr.min[1], 2.0);
         assert_eq!(mbr.max[0], 3.0);
@@ -366,18 +375,9 @@ mod tests {
 
     #[test]
     fn test_intersects() {
-        let mbr1 = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 2.0, y: 2.0 },
-        );
-        let mbr2 = Mbr::from_points_2d(
-            GeoPoint { x: 1.0, y: 1.0 },
-            GeoPoint { x: 3.0, y: 3.0 },
-        );
-        let mbr3 = Mbr::from_points_2d(
-            GeoPoint { x: 3.0, y: 3.0 },
-            GeoPoint { x: 4.0, y: 4.0 },
-        );
+        let mbr1 = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 2.0, y: 2.0 });
+        let mbr2 = Mbr::from_points_2d(GeoPoint { x: 1.0, y: 1.0 }, GeoPoint { x: 3.0, y: 3.0 });
+        let mbr3 = Mbr::from_points_2d(GeoPoint { x: 3.0, y: 3.0 }, GeoPoint { x: 4.0, y: 4.0 });
 
         assert!(mbr1.intersects(&mbr2));
         assert!(!mbr1.intersects(&mbr3));
@@ -385,14 +385,8 @@ mod tests {
 
     #[test]
     fn test_contains() {
-        let outer = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 4.0, y: 4.0 },
-        );
-        let inner = Mbr::from_points_2d(
-            GeoPoint { x: 1.0, y: 1.0 },
-            GeoPoint { x: 3.0, y: 3.0 },
-        );
+        let outer = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 4.0, y: 4.0 });
+        let inner = Mbr::from_points_2d(GeoPoint { x: 1.0, y: 1.0 }, GeoPoint { x: 3.0, y: 3.0 });
 
         assert!(outer.contains(&inner));
         assert!(!inner.contains(&outer));
@@ -400,10 +394,7 @@ mod tests {
 
     #[test]
     fn test_contains_point() {
-        let mbr = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 2.0, y: 2.0 },
-        );
+        let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 2.0, y: 2.0 });
 
         assert!(mbr.contains_point(GeoPoint { x: 1.0, y: 1.0 }));
         assert!(mbr.contains_point(GeoPoint { x: 0.0, y: 0.0 }));
@@ -413,10 +404,7 @@ mod tests {
 
     #[test]
     fn test_min_distance() {
-        let mbr = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 2.0, y: 2.0 },
-        );
+        let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 2.0, y: 2.0 });
 
         // Point inside
         assert_eq!(mbr.min_distance(GeoPoint { x: 1.0, y: 1.0 }), 0.0);
@@ -428,10 +416,7 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        let mbr = Mbr::from_points_2d(
-            GeoPoint { x: 1.0, y: 2.0 },
-            GeoPoint { x: 3.0, y: 4.0 },
-        );
+        let mbr = Mbr::from_points_2d(GeoPoint { x: 1.0, y: 2.0 }, GeoPoint { x: 3.0, y: 4.0 });
 
         let bytes = mbr.to_bytes();
         let deserialized = Mbr::from_bytes(&bytes).unwrap();

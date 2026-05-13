@@ -40,16 +40,11 @@ fn test_hnsw_creation() {
         ml: 1.0 / (16.0_f64).ln(),
     };
 
-    let hnsw = PagedHnswVector::new(
-        1.into(),
-        "test_hnsw".to_string(),
-        pager,
-        config,
-    );
+    let hnsw = PagedHnswVector::new(1.into(), "test_hnsw".to_string(), pager, config);
 
     assert!(hnsw.is_ok(), "HNSW creation should succeed");
     let hnsw = hnsw.unwrap();
-    
+
     // Verify basic properties through VectorSearch trait
     assert_eq!(hnsw.dimensions(), 128);
     assert_eq!(hnsw.metric(), VectorMetric::Cosine);
@@ -70,13 +65,7 @@ fn test_hnsw_euclidean_metric() {
         ml: 1.0 / (16.0_f64).ln(),
     };
 
-    let hnsw = PagedHnswVector::new(
-        1.into(),
-        "test_euclidean".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let hnsw = PagedHnswVector::new(1.into(), "test_euclidean".to_string(), pager, config).unwrap();
 
     assert_eq!(hnsw.metric(), VectorMetric::Euclidean);
     assert_eq!(hnsw.dimensions(), 3);
@@ -97,13 +86,7 @@ fn test_hnsw_cosine_metric() {
         ml: 1.0 / (32.0_f64).ln(),
     };
 
-    let hnsw = PagedHnswVector::new(
-        2.into(),
-        "test_cosine".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let hnsw = PagedHnswVector::new(2.into(), "test_cosine".to_string(), pager, config).unwrap();
 
     assert_eq!(hnsw.metric(), VectorMetric::Cosine);
     assert_eq!(hnsw.dimensions(), 64);
@@ -124,13 +107,7 @@ fn test_hnsw_manhattan_metric() {
         ml: 1.0 / (16.0_f64).ln(),
     };
 
-    let hnsw = PagedHnswVector::new(
-        3.into(),
-        "test_manhattan".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let hnsw = PagedHnswVector::new(3.into(), "test_manhattan".to_string(), pager, config).unwrap();
 
     assert_eq!(hnsw.metric(), VectorMetric::Manhattan);
     assert_eq!(hnsw.dimensions(), 32);
@@ -152,16 +129,11 @@ fn test_hnsw_configuration_parameters() {
         ml: 1.0 / (48.0_f64).ln(),
     };
 
-    let hnsw = PagedHnswVector::new(
-        4.into(),
-        "test_config".to_string(),
-        pager,
-        config,
-    );
+    let hnsw = PagedHnswVector::new(4.into(), "test_config".to_string(), pager, config);
 
     assert!(hnsw.is_ok(), "HNSW with custom config should succeed");
     let hnsw = hnsw.unwrap();
-    
+
     assert_eq!(hnsw.dimensions(), 256);
     assert_eq!(hnsw.metric(), VectorMetric::Euclidean);
 }

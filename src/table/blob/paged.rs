@@ -26,9 +26,7 @@
 //! with pages linked together to form complete blobs.
 
 use crate::pager::{Page, PageId, PageType, Pager};
-use crate::table::{
-    Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
-};
+use crate::table::{Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics};
 use crate::types::{TableId, ValueBuf};
 use crate::vfs::FileSystem;
 use std::collections::HashMap;
@@ -87,13 +85,14 @@ impl<FS: FileSystem> PagedBlob<FS> {
                 ));
             }
 
-            let next_page_id = PageId::from(u64::from_le_bytes(data[..8].try_into().map_err(|_| {
-                crate::table::TableError::corruption(
-                    "PagedBlob::get",
-                    "invalid_page_id",
-                    "Failed to parse next page ID",
-                )
-            })?));
+            let next_page_id =
+                PageId::from(u64::from_le_bytes(data[..8].try_into().map_err(|_| {
+                    crate::table::TableError::corruption(
+                        "PagedBlob::get",
+                        "invalid_page_id",
+                        "Failed to parse next page ID",
+                    )
+                })?));
 
             // Append blob data (skip the 8-byte header)
             result.extend_from_slice(&data[8..]);
@@ -193,15 +192,14 @@ impl<FS: FileSystem> PagedBlob<FS> {
                     ));
                 }
 
-                let next_page_id = PageId::from(u64::from_le_bytes(
-                    data[..8].try_into().map_err(|_| {
+                let next_page_id =
+                    PageId::from(u64::from_le_bytes(data[..8].try_into().map_err(|_| {
                         crate::table::TableError::corruption(
                             "PagedBlob::delete",
                             "invalid_page_id",
                             "Failed to parse next page ID",
                         )
-                    })?,
-                ));
+                    })?));
 
                 self.pager.free_page(current_page_id)?;
 

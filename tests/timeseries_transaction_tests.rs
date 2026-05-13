@@ -36,7 +36,7 @@ fn create_test_transaction() -> Transaction<MemoryFileSystem> {
     let wal_config = nanokv::wal::WalWriterConfig::default();
     let wal = Arc::new(nanokv::wal::WalWriter::create(&fs, "test.wal", wal_config).unwrap());
     let conflict_detector = Arc::new(Mutex::new(ConflictDetector::new()));
-    
+
     // Create a minimal pager for the engine registry
     let pager_config = nanokv::pager::PagerConfig::default();
     let pager = Arc::new(nanokv::pager::Pager::create(&fs, "test.db", pager_config).unwrap());
@@ -106,14 +106,14 @@ fn test_timeseries_append_multiple_series() {
         let series_key = format!("sensor-{}", sensor_id);
         let timestamp = 1000i64;
         let value = format!("temperature:{}.5", 20 + sensor_id);
-        
-        let result = TimeSeries::append_point(
-            &mut txn,
-            series_key.as_bytes(),
-            timestamp,
-            value.as_bytes(),
+
+        let result =
+            TimeSeries::append_point(&mut txn, series_key.as_bytes(), timestamp, value.as_bytes());
+        assert!(
+            result.is_ok(),
+            "append_point for sensor {} should succeed",
+            sensor_id
         );
-        assert!(result.is_ok(), "append_point for sensor {} should succeed", sensor_id);
     }
 
     txn.clear_table_context();
@@ -129,7 +129,10 @@ fn test_timeseries_without_table_context() {
     let value_key = b"temperature:25.5";
 
     let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value_key);
-    assert!(result.is_err(), "append_point should fail without table context");
+    assert!(
+        result.is_err(),
+        "append_point should fail without table context"
+    );
     assert!(
         result.unwrap_err().to_string().contains("no table context"),
         "Error should mention missing table context"
@@ -182,7 +185,10 @@ fn test_timeseries_scan_series_without_table() {
     let end_ts = 2000i64;
 
     let result = TimeSeries::scan_series(&txn, series_key, start_ts, end_ts);
-    assert!(result.is_err(), "scan_series should fail without table context");
+    assert!(
+        result.is_err(),
+        "scan_series should fail without table context"
+    );
     assert!(
         result.unwrap_err().to_string().contains("no table context"),
         "Error should mention no table context"
@@ -197,7 +203,10 @@ fn test_timeseries_latest_before_without_table() {
     let timestamp = 1500i64;
 
     let result = TimeSeries::latest_before(&txn, series_key, timestamp);
-    assert!(result.is_err(), "latest_before should fail without table context");
+    assert!(
+        result.is_err(),
+        "latest_before should fail without table context"
+    );
     assert!(
         result.unwrap_err().to_string().contains("no table context"),
         "Error should mention no table context"
@@ -247,7 +256,10 @@ fn test_timeseries_commit_with_operations() {
 
     // Commit should succeed (operations are logged to WAL)
     let result = txn.commit();
-    assert!(result.is_ok(), "commit should succeed with time series operations");
+    assert!(
+        result.is_ok(),
+        "commit should succeed with time series operations"
+    );
 }
 
 #[test]
@@ -269,7 +281,10 @@ fn test_timeseries_rollback_with_operations() {
 
     // Rollback should succeed (operations are discarded)
     let result = txn.rollback();
-    assert!(result.is_ok(), "rollback should succeed with time series operations");
+    assert!(
+        result.is_ok(),
+        "rollback should succeed with time series operations"
+    );
 }
 
 #[test]
@@ -315,7 +330,10 @@ fn test_timeseries_mixed_with_regular_operations() {
 
     // Commit should handle both types of operations
     let result = txn.commit();
-    assert!(result.is_ok(), "commit should succeed with mixed operations");
+    assert!(
+        result.is_ok(),
+        "commit should succeed with mixed operations"
+    );
 }
 
 #[test]
@@ -326,13 +344,17 @@ fn test_timeseries_timestamp_ordering() {
     txn.with_table(table_id);
 
     let series_key = b"sensor-1";
-    
+
     // Append points in non-chronological order (should still work)
     let timestamps = [1500i64, 1000i64, 2000i64, 1200i64];
     for (i, &timestamp) in timestamps.iter().enumerate() {
         let value = format!("temperature:{}.5", 20 + i);
         let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value.as_bytes());
-        assert!(result.is_ok(), "append_point with timestamp {} should succeed", timestamp);
+        assert!(
+            result.is_ok(),
+            "append_point with timestamp {} should succeed",
+            timestamp
+        );
     }
 
     txn.clear_table_context();
@@ -346,13 +368,17 @@ fn test_timeseries_negative_timestamps() {
     txn.with_table(table_id);
 
     let series_key = b"sensor-1";
-    
+
     // Append points with negative timestamps (historical data)
     let timestamps = [-1000i64, -500i64, 0i64, 500i64, 1000i64];
     for (i, &timestamp) in timestamps.iter().enumerate() {
         let value = format!("temperature:{}.5", 20 + i);
         let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value.as_bytes());
-        assert!(result.is_ok(), "append_point with timestamp {} should succeed", timestamp);
+        assert!(
+            result.is_ok(),
+            "append_point with timestamp {} should succeed",
+            timestamp
+        );
     }
 
     txn.clear_table_context();
@@ -371,7 +397,10 @@ fn test_timeseries_empty_series_key() {
     let value_key = b"temperature:25.5";
 
     let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value_key);
-    assert!(result.is_ok(), "append_point with empty series key should succeed");
+    assert!(
+        result.is_ok(),
+        "append_point with empty series key should succeed"
+    );
 
     txn.clear_table_context();
 }
@@ -389,7 +418,10 @@ fn test_timeseries_empty_value_key() {
     let value_key = b"";
 
     let result = TimeSeries::append_point(&mut txn, series_key, timestamp, value_key);
-    assert!(result.is_ok(), "append_point with empty value key should succeed");
+    assert!(
+        result.is_ok(),
+        "append_point with empty value key should succeed"
+    );
 
     txn.clear_table_context();
 }
@@ -407,7 +439,10 @@ fn test_timeseries_large_value_key() {
     let value_key = vec![b'x'; 1024];
 
     let result = TimeSeries::append_point(&mut txn, series_key, timestamp, &value_key);
-    assert!(result.is_ok(), "append_point with large value key should succeed");
+    assert!(
+        result.is_ok(),
+        "append_point with large value key should succeed"
+    );
 
     txn.clear_table_context();
 }

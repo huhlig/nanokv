@@ -44,8 +44,8 @@
 //! ```
 
 use crate::pager::{Page, PageId, PageType, Pager};
-use crate::table::lsm::{BloomFilter, BloomFilterBuilder, SStableConfig};
 use crate::table::TableResult;
+use crate::table::lsm::{BloomFilter, BloomFilterBuilder, SStableConfig};
 use crate::txn::VersionChain;
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
@@ -53,7 +53,9 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// SSTable identifier (unique within a table).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SStableId(u64);
 
 impl SStableId {
@@ -77,37 +79,37 @@ impl std::fmt::Display for SStableId {
 pub struct SStableMetadata {
     /// SSTable ID
     pub id: SStableId,
-    
+
     /// Level in the LSM tree (0 = L0, 1 = L1, etc.)
     pub level: u32,
-    
+
     /// Smallest key in the SSTable
     pub min_key: Vec<u8>,
-    
+
     /// Largest key in the SSTable
     pub max_key: Vec<u8>,
-    
+
     /// Number of key-value pairs
     pub num_entries: u64,
-    
+
     /// Total size in bytes
     pub total_size: u64,
-    
+
     /// LSN when this SSTable was created
     pub created_lsn: LogSequenceNumber,
-    
+
     /// First page ID of this SSTable
     pub first_page_id: PageId,
-    
+
     /// Number of pages used by this SSTable
     pub num_pages: u32,
-    
+
     /// Offset to index block (from start of SSTable)
     pub index_offset: u64,
-    
+
     /// Offset to bloom filter (from start of SSTable)
     pub bloom_filter_offset: u64,
-    
+
     /// Offset to footer (from start of SSTable)
     pub footer_offset: u64,
 }
@@ -119,13 +121,13 @@ pub struct SStableMetadata {
 pub struct SStableFooter {
     /// Magic number for validation (0x5353544142 = "SSTAB")
     pub magic: u64,
-    
+
     /// Format version
     pub version: u32,
-    
+
     /// Metadata
     pub metadata: SStableMetadata,
-    
+
     /// Checksum of the entire SSTable (excluding footer)
     pub checksum: [u8; 32],
 }
@@ -148,29 +150,29 @@ impl SStableFooter {
     /// Serialize footer to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(Self::SIZE);
-        
+
         // Magic (8 bytes)
         bytes.extend_from_slice(&self.magic.to_le_bytes());
-        
+
         // Version (4 bytes)
         bytes.extend_from_slice(&self.version.to_le_bytes());
-        
+
         // Metadata
         bytes.extend_from_slice(&self.metadata.id.as_u64().to_le_bytes());
         bytes.extend_from_slice(&self.metadata.level.to_le_bytes());
-        
+
         // Min key (length + data, max 64 bytes)
         let min_key_len = self.metadata.min_key.len().min(64);
         bytes.extend_from_slice(&(min_key_len as u32).to_le_bytes());
         bytes.extend_from_slice(&self.metadata.min_key[..min_key_len]);
         bytes.resize(bytes.len() + (64 - min_key_len), 0);
-        
+
         // Max key (length + data, max 64 bytes)
         let max_key_len = self.metadata.max_key.len().min(64);
         bytes.extend_from_slice(&(max_key_len as u32).to_le_bytes());
         bytes.extend_from_slice(&self.metadata.max_key[..max_key_len]);
         bytes.resize(bytes.len() + (64 - max_key_len), 0);
-        
+
         // Counts and offsets
         bytes.extend_from_slice(&self.metadata.num_entries.to_le_bytes());
         bytes.extend_from_slice(&self.metadata.total_size.to_le_bytes());
@@ -180,13 +182,13 @@ impl SStableFooter {
         bytes.extend_from_slice(&self.metadata.index_offset.to_le_bytes());
         bytes.extend_from_slice(&self.metadata.bloom_filter_offset.to_le_bytes());
         bytes.extend_from_slice(&self.metadata.footer_offset.to_le_bytes());
-        
+
         // Checksum (32 bytes)
         bytes.extend_from_slice(&self.checksum);
-        
+
         // Pad to fixed size
         bytes.resize(Self::SIZE, 0);
-        
+
         bytes
     }
 
@@ -229,13 +231,15 @@ impl SStableFooter {
         offset += 4;
 
         // Min key
-        let min_key_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let min_key_len =
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
         let min_key = bytes[offset..offset + min_key_len].to_vec();
         offset += 64;
 
         // Max key
-        let max_key_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let max_key_len =
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
         let max_key = bytes[offset..offset + max_key_len].to_vec();
         offset += 64;
@@ -339,12 +343,13 @@ impl DataBlock {
     /// Returns error if key is not greater than the last key (entries must be sorted).
     pub fn add(&mut self, key: Vec<u8>, chain: VersionChain) -> TableResult<()> {
         if let Some((last_key, _)) = self.entries.last()
-            && &key <= last_key {
-                return Err(crate::table::TableError::invalid_operation_state(
-                    "DataBlock::add",
-                    "Keys must be added in sorted order",
-                ));
-            }
+            && &key <= last_key
+        {
+            return Err(crate::table::TableError::invalid_operation_state(
+                "DataBlock::add",
+                "Keys must be added in sorted order",
+            ));
+        }
         self.entries.push((key, chain));
         Ok(())
     }
@@ -435,12 +440,12 @@ impl DataBlock {
 
         // Build final block with header
         let mut block = Vec::with_capacity(Self::HEADER_SIZE + final_data.len());
-        
+
         // Header
         block.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
         block.push(compressed_flag);
         block.extend_from_slice(&checksum);
-        
+
         // Data
         block.extend_from_slice(&final_data);
 
@@ -463,7 +468,8 @@ impl DataBlock {
         let mut offset = 0;
 
         // Parse header
-        let num_entries = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let num_entries =
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
 
         let compressed_flag = bytes[offset];
@@ -480,7 +486,7 @@ impl DataBlock {
         let mut hasher = Sha256::new();
         hasher.update(data_bytes);
         let computed_checksum: [u8; 32] = hasher.finalize().into();
-        
+
         if checksum != computed_checksum {
             use crate::table::TableError;
             return Err(TableError::corruption(
@@ -544,7 +550,8 @@ impl DataBlock {
                 ));
             }
 
-            let chain_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            let chain_len =
+                u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4;
 
             if offset + chain_len > data.len() {
@@ -675,12 +682,13 @@ impl IndexBlock {
     /// Returns error if key is not greater than the last key (entries must be sorted).
     pub fn add(&mut self, first_key: Vec<u8>, page_id: PageId, offset: u64) -> TableResult<()> {
         if let Some(last_entry) = self.entries.last()
-            && first_key <= last_entry.first_key {
-                return Err(crate::table::TableError::invalid_operation_state(
-                    "IndexBlock::add",
-                    "Index entries must be added in sorted order",
-                ));
-            }
+            && first_key <= last_entry.first_key
+        {
+            return Err(crate::table::TableError::invalid_operation_state(
+                "IndexBlock::add",
+                "Index entries must be added in sorted order",
+            ));
+        }
         self.entries.push(IndexEntry {
             first_key,
             page_id,
@@ -945,16 +953,16 @@ impl Default for IndexBlock {
 pub struct SStableReader<FS: FileSystem> {
     /// Pager for reading pages
     pager: Arc<Pager<FS>>,
-    
+
     /// SSTable metadata
     metadata: SStableMetadata,
-    
+
     /// Index block for finding data blocks
     index_block: IndexBlock,
-    
+
     /// Bloom filter for membership testing
     bloom_filter: Option<BloomFilter>,
-    
+
     /// Configuration
     config: SStableConfig,
 }
@@ -967,24 +975,24 @@ impl<FS: FileSystem> SStableReader<FS> {
         config: SStableConfig,
     ) -> TableResult<Self> {
         let page_size = pager.page_size().data_size();
-        
+
         // Step 1: Read the first page to get metadata and calculate last page
         let _first_page = pager.read_page(first_page_id)?;
-        
+
         // We need to read enough data to find the footer
         // The footer is at the end of the SSTable, so we need to find it
         // For now, we'll read pages sequentially until we find the footer
         // A more efficient approach would be to store num_pages in a known location
-        
+
         // Try to find the footer by reading pages starting from first_page_id
         // The footer should be in the last page, but we don't know how many pages yet
         // We'll use a heuristic: read pages until we find a valid footer
-        
+
         let mut current_page_id = first_page_id;
         let footer_opt: Option<SStableFooter>;
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 1000; // Prevent infinite loops
-        
+
         // Try to find footer by checking each page
         loop {
             if attempts >= MAX_ATTEMPTS {
@@ -995,16 +1003,16 @@ impl<FS: FileSystem> SStableReader<FS> {
                     "Could not find SSTable footer after max attempts",
                 ));
             }
-            
+
             let page = pager.read_page(current_page_id)?;
             let data = page.data();
-            
+
             // Check if this page contains a footer at the end
             if data.len() >= SStableFooter::SIZE {
                 // Try to read footer from the end of the page
                 let footer_start = data.len() - SStableFooter::SIZE;
                 let footer_bytes = &data[footer_start..];
-                
+
                 if let Ok(footer) = SStableFooter::from_bytes(footer_bytes) {
                     // Verify this is the correct SSTable by checking first_page_id
                     if footer.metadata.first_page_id == first_page_id {
@@ -1013,11 +1021,11 @@ impl<FS: FileSystem> SStableReader<FS> {
                     }
                 }
             }
-            
+
             // Try next page
             current_page_id = PageId::from(current_page_id.as_u64() + 1);
             attempts += 1;
-            
+
             // Check if next page exists
             if pager.read_page(current_page_id).is_err() {
                 use crate::table::TableError;
@@ -1028,7 +1036,7 @@ impl<FS: FileSystem> SStableReader<FS> {
                 ));
             }
         }
-        
+
         let footer = footer_opt.ok_or_else(|| {
             use crate::table::TableError;
             TableError::corruption(
@@ -1037,9 +1045,9 @@ impl<FS: FileSystem> SStableReader<FS> {
                 "No valid footer found",
             )
         })?;
-        
+
         let metadata = footer.metadata.clone();
-        
+
         // Step 2: Read and deserialize the index block
         // Calculate index block size: from index_offset to bloom_filter_offset (or footer_offset if no bloom)
         let index_size = if metadata.bloom_filter_offset > 0 {
@@ -1047,7 +1055,7 @@ impl<FS: FileSystem> SStableReader<FS> {
         } else {
             metadata.footer_offset - metadata.index_offset
         };
-        
+
         let index_data = Self::read_data_with_size(
             &pager,
             first_page_id,
@@ -1056,12 +1064,12 @@ impl<FS: FileSystem> SStableReader<FS> {
             page_size,
         )?;
         let index_block = IndexBlock::from_bytes(&index_data)?;
-        
+
         // Step 3: Read and deserialize the bloom filter (if present)
         let bloom_filter = if metadata.bloom_filter_offset > 0 {
             // Calculate bloom filter size: from bloom_filter_offset to footer_offset
             let bloom_size = metadata.footer_offset - metadata.bloom_filter_offset;
-            
+
             let bloom_data = Self::read_data_with_size(
                 &pager,
                 first_page_id,
@@ -1069,7 +1077,7 @@ impl<FS: FileSystem> SStableReader<FS> {
                 bloom_size as usize,
                 page_size,
             )?;
-            
+
             // Read bloom filter header (num_hash_functions as u32, num_bits as u32)
             if bloom_data.len() < 8 {
                 use crate::table::TableError;
@@ -1079,29 +1087,27 @@ impl<FS: FileSystem> SStableReader<FS> {
                     "Bloom filter data too short",
                 ));
             }
-            
-            let num_hash = u32::from_le_bytes([
-                bloom_data[0],
-                bloom_data[1],
-                bloom_data[2],
-                bloom_data[3],
-            ]) as usize;
-            
-            let num_bits_val = u32::from_le_bytes([
-                bloom_data[4],
-                bloom_data[5],
-                bloom_data[6],
-                bloom_data[7],
-            ]) as usize;
-            
+
+            let num_hash =
+                u32::from_le_bytes([bloom_data[0], bloom_data[1], bloom_data[2], bloom_data[3]])
+                    as usize;
+
+            let num_bits_val =
+                u32::from_le_bytes([bloom_data[4], bloom_data[5], bloom_data[6], bloom_data[7]])
+                    as usize;
+
             let bits = bloom_data[8..].to_vec();
-            
+
             // Create bloom filter with correct num_bits
-            Some(BloomFilter::from_bytes_with_size(bits, num_bits_val, num_hash))
+            Some(BloomFilter::from_bytes_with_size(
+                bits,
+                num_bits_val,
+                num_hash,
+            ))
         } else {
             None
         };
-        
+
         Ok(Self {
             pager,
             metadata,
@@ -1110,7 +1116,7 @@ impl<FS: FileSystem> SStableReader<FS> {
             config,
         })
     }
-    
+
     /// Helper function to read data of a specific size at a specific offset across pages.
     fn read_data_with_size(
         pager: &Arc<Pager<FS>>,
@@ -1122,17 +1128,17 @@ impl<FS: FileSystem> SStableReader<FS> {
         let mut result = Vec::with_capacity(size);
         let mut remaining = size;
         let mut current_offset = offset;
-        
+
         while remaining > 0 {
             // Calculate which page contains the current offset
             let page_index = current_offset / page_size as u64;
             let page_offset = (current_offset % page_size as u64) as usize;
             let page_id = PageId::from(first_page_id.as_u64() + page_index);
-            
+
             // Read the page
             let page = pager.read_page(page_id)?;
             let data = page.data();
-            
+
             if page_offset >= data.len() {
                 use crate::table::TableError;
                 return Err(TableError::corruption(
@@ -1141,18 +1147,18 @@ impl<FS: FileSystem> SStableReader<FS> {
                     "Offset beyond page data",
                 ));
             }
-            
+
             // Calculate how much to read from this page
             let available = data.len() - page_offset;
             let to_read = remaining.min(available);
-            
+
             // Copy data
             result.extend_from_slice(&data[page_offset..page_offset + to_read]);
-            
+
             remaining -= to_read;
             current_offset += to_read as u64;
         }
-        
+
         Ok(result)
     }
 
@@ -1195,23 +1201,22 @@ impl<FS: FileSystem> SStableReader<FS> {
             Some(idx) => idx,
             None => return Ok(None), // Key is before all data blocks
         };
-        
-        let index_entry = self.index_block.get(index_entry_idx)
-            .ok_or_else(|| {
-                use crate::table::TableError;
-                TableError::corruption(
-                    "SSTableReader::get",
-                    "index_entry_not_found",
-                    "Index entry not found after search",
-                )
-            })?;
+
+        let index_entry = self.index_block.get(index_entry_idx).ok_or_else(|| {
+            use crate::table::TableError;
+            TableError::corruption(
+                "SSTableReader::get",
+                "index_entry_not_found",
+                "Index entry not found after search",
+            )
+        })?;
 
         // Step 3: Read the data block from the page
         // The index entry tells us which page and offset within that page
         let page = self.pager.read_page(index_entry.page_id)?;
         let page_data = page.data();
         let block_start = index_entry.offset as usize;
-        
+
         // Calculate block size by finding where it ends
         // It ends either at the next block's start (if on same page) or at page end
         let block_end = if index_entry_idx + 1 < self.index_block.len() {
@@ -1228,12 +1233,14 @@ impl<FS: FileSystem> SStableReader<FS> {
             // The index block starts at index_offset, which is absolute from first_page_id
             // We need to check if it's on this page or a later page
             let page_size = self.pager.page_size().data_size();
-            let page_index = (index_entry.page_id.as_u64() - self.metadata.first_page_id.as_u64()) as usize;
+            let page_index =
+                (index_entry.page_id.as_u64() - self.metadata.first_page_id.as_u64()) as usize;
             let page_start_offset = page_index * page_size;
             let index_start_in_sstable = self.metadata.index_offset as usize;
-            
-            if index_start_in_sstable >= page_start_offset &&
-               index_start_in_sstable < page_start_offset + page_size {
+
+            if index_start_in_sstable >= page_start_offset
+                && index_start_in_sstable < page_start_offset + page_size
+            {
                 // Index block starts on this page
                 index_start_in_sstable - page_start_offset
             } else {
@@ -1241,28 +1248,33 @@ impl<FS: FileSystem> SStableReader<FS> {
                 page_data.len()
             }
         };
-        
-        if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end {
+
+        if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end
+        {
             use crate::table::TableError;
             return Err(TableError::corruption(
                 "SSTableReader::get",
                 "invalid_block_bounds",
-                format!("Invalid data block bounds: start={}, end={}, page_len={}",
-                    block_start, block_end, page_data.len()),
+                format!(
+                    "Invalid data block bounds: start={}, end={}, page_len={}",
+                    block_start,
+                    block_end,
+                    page_data.len()
+                ),
             ));
         }
-        
+
         let data_block_bytes = &page_data[block_start..block_end];
-        
+
         // Step 5: Deserialize the data block
         let data_block = DataBlock::from_bytes(data_block_bytes)?;
-        
+
         // Step 6: Binary search within the data block for the exact key
         let version_chain = match data_block.get(key) {
             Some(chain) => chain,
             None => return Ok(None), // Key not in this data block (bloom filter false positive)
         };
-        
+
         // Step 7: Walk the version chain to find a visible version
         // For SSTables, all versions are committed, so we just need to check commit_lsn <= snapshot_lsn
         let mut current = Some(version_chain);
@@ -1277,11 +1289,11 @@ impl<FS: FileSystem> SStableReader<FS> {
             // Move to the previous (older) version
             current = version.prev_version.as_deref();
         }
-        
+
         // No visible version found (all versions are too new)
         Ok(None)
     }
-    
+
     /// Get a streaming reader for a value at a specific snapshot LSN.
     ///
     /// This method is similar to `get()` but returns a stream for efficient
@@ -1332,25 +1344,25 @@ impl<FS: FileSystem> SStableReader<FS> {
 pub struct SStableWriter<FS: FileSystem> {
     /// Pager for writing pages
     pager: Arc<Pager<FS>>,
-    
+
     /// SSTable ID
     id: SStableId,
-    
+
     /// Level in the LSM tree
     level: u32,
-    
+
     /// Configuration
     config: SStableConfig,
-    
+
     /// Bloom filter builder
     bloom_builder: Option<BloomFilterBuilder>,
-    
+
     /// Current data being written
     entries: Vec<(Vec<u8>, VersionChain)>,
-    
+
     /// First page ID allocated for this SSTable
     first_page_id: Option<PageId>,
-    
+
     /// Pages allocated for this SSTable
     pages: Vec<PageId>,
 }
@@ -1366,8 +1378,7 @@ impl<FS: FileSystem> SStableWriter<FS> {
     ) -> Self {
         let bloom_builder = if estimated_entries > 0 {
             Some(
-                BloomFilterBuilder::new(estimated_entries)
-                    .bits_per_key(10) // ~1% false positive rate
+                BloomFilterBuilder::new(estimated_entries).bits_per_key(10), // ~1% false positive rate
             )
         } else {
             None
@@ -1391,12 +1402,13 @@ impl<FS: FileSystem> SStableWriter<FS> {
     pub fn add(&mut self, key: Vec<u8>, chain: VersionChain) -> TableResult<()> {
         // Verify keys are in sorted order
         if let Some((last_key, _)) = self.entries.last()
-            && &key <= last_key {
-                return Err(crate::table::TableError::invalid_operation_state(
-                    "SStableBuilder::add",
-                    "Keys must be added in sorted order",
-                ));
-            }
+            && &key <= last_key
+        {
+            return Err(crate::table::TableError::invalid_operation_state(
+                "SStableBuilder::add",
+                "Keys must be added in sorted order",
+            ));
+        }
 
         // Add to bloom filter - will be built when finish() is called
         // The bloom filter is built from all keys at once for efficiency
@@ -1431,24 +1443,24 @@ impl<FS: FileSystem> SStableWriter<FS> {
         // Track current write position
         let mut current_offset = 0u64;
         let page_size = self.pager.page_size().data_size();
-        
+
         // Allocate first page
         let first_page_id = self.pager.allocate_page(PageType::LsmData)?;
         self.first_page_id = Some(first_page_id);
         self.pages.push(first_page_id);
-        
+
         let mut current_page = Page::new(first_page_id, PageType::LsmData, page_size);
         let mut current_page_offset = 0usize;
-        
+
         // Index entries to track data block locations
         let mut index_entries = Vec::new();
-        
+
         // Step 1: Write data blocks
         // Group entries into blocks based on target block size
         let target_block_size = self.config.block_size;
         let mut block_entries = Vec::new();
         let mut block_size_estimate = 0;
-        
+
         for (key, chain) in self.entries {
             // Estimate entry size: key_len (4) + key + chain_len (4) + serialized chain
             // Use bincode to get accurate size of serialized chain
@@ -1456,137 +1468,137 @@ impl<FS: FileSystem> SStableWriter<FS> {
                 .map(|bytes| bytes.len())
                 .unwrap_or(chain.value.len() + 64); // Fallback estimate
             let entry_size = 4 + key.len() + 4 + chain_size;
-            
+
             // Check if adding this entry would exceed block size
             if !block_entries.is_empty() && block_size_estimate + entry_size > target_block_size {
                 // Write current block
                 let block = DataBlock::from_entries(block_entries.clone());
                 let first_key = block.first_key().unwrap().to_vec();
                 let block_bytes = block.to_bytes(self.config.compression.is_some())?;
-                
+
                 // Check if block fits in current page
                 if current_page_offset + block_bytes.len() > page_size {
                     // Write current page and allocate new one
                     self.pager.write_page(&current_page)?;
                     current_offset += page_size as u64;
-                    
+
                     let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
                     self.pages.push(new_page_id);
                     current_page = Page::new(new_page_id, PageType::LsmData, page_size);
                     current_page_offset = 0;
                 }
-                
+
                 // Record index entry for this block
                 index_entries.push(IndexEntry {
                     first_key,
                     page_id: current_page.page_id(),
                     offset: current_page_offset as u64,
                 });
-                
+
                 // Write block to current page
                 current_page.data_mut().extend_from_slice(&block_bytes);
                 current_page_offset += block_bytes.len();
-                
+
                 // Start new block
                 block_entries.clear();
                 block_size_estimate = 0;
             }
-            
+
             block_entries.push((key, chain));
             block_size_estimate += entry_size;
         }
-        
+
         // Write final block if any entries remain
         if !block_entries.is_empty() {
             let block = DataBlock::from_entries(block_entries);
             let first_key = block.first_key().unwrap().to_vec();
             let block_bytes = block.to_bytes(self.config.compression.is_some())?;
-            
+
             // Check if block fits in current page
             if current_page_offset + block_bytes.len() > page_size {
                 // Write current page and allocate new one
                 self.pager.write_page(&current_page)?;
                 current_offset += page_size as u64;
-                
+
                 let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
                 self.pages.push(new_page_id);
                 current_page = Page::new(new_page_id, PageType::LsmData, page_size);
                 current_page_offset = 0;
             }
-            
+
             // Record index entry
             index_entries.push(IndexEntry {
                 first_key,
                 page_id: current_page.page_id(),
                 offset: current_page_offset as u64,
             });
-            
+
             // Write block to current page
             current_page.data_mut().extend_from_slice(&block_bytes);
             current_page_offset += block_bytes.len();
         }
-        
+
         // Step 2: Write index block
         let index_offset = current_offset + current_page_offset as u64;
         let index_block = IndexBlock::from_entries(index_entries);
         let index_bytes = index_block.to_bytes()?;
-        
+
         // Check if index fits in current page
         if current_page_offset + index_bytes.len() > page_size {
             // Write current page and allocate new one
             self.pager.write_page(&current_page)?;
             current_offset += page_size as u64;
-            
+
             let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
             self.pages.push(new_page_id);
             current_page = Page::new(new_page_id, PageType::LsmData, page_size);
             current_page_offset = 0;
         }
-        
+
         // Write index to current page
         current_page.data_mut().extend_from_slice(&index_bytes);
         current_page_offset += index_bytes.len();
-        
+
         // Step 3: Write bloom filter (if enabled)
         let bloom_filter_offset = if let Some(bloom) = &bloom_filter {
             let offset = current_offset + current_page_offset as u64;
             let bloom_bytes = bloom.as_bytes();
-            
+
             // Write bloom filter metadata (num_hash_functions as u32, num_bits as u32)
             let num_hash = bloom.num_hash_functions() as u32;
             let num_bits_val = bloom.num_bits() as u32;
             let mut bloom_header = Vec::new();
             bloom_header.extend_from_slice(&num_hash.to_le_bytes());
             bloom_header.extend_from_slice(&num_bits_val.to_le_bytes());
-            
+
             // Check if bloom filter fits in current page
             if current_page_offset + bloom_header.len() + bloom_bytes.len() > page_size {
                 // Write current page and allocate new one
                 self.pager.write_page(&current_page)?;
                 current_offset += page_size as u64;
-                
+
                 let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
                 self.pages.push(new_page_id);
                 current_page = Page::new(new_page_id, PageType::LsmData, page_size);
                 current_page_offset = 0;
             }
-            
+
             // Write bloom filter header and data
             current_page.data_mut().extend_from_slice(&bloom_header);
             current_page.data_mut().extend_from_slice(bloom_bytes);
             current_page_offset += bloom_header.len() + bloom_bytes.len();
-            
+
             offset
         } else {
             0
         };
-        
+
         // Step 4: Write footer
         let footer_offset = current_offset + current_page_offset as u64;
-        
+
         // Calculate total size
         let total_size = footer_offset + SStableFooter::SIZE as u64;
-        
+
         // Create metadata
         let metadata = SStableMetadata {
             id: self.id,
@@ -1602,7 +1614,7 @@ impl<FS: FileSystem> SStableWriter<FS> {
             bloom_filter_offset,
             footer_offset,
         };
-        
+
         // Calculate checksum of all written data
         let mut hasher = Sha256::new();
         hasher.update(metadata.id.as_u64().to_le_bytes());
@@ -1611,24 +1623,24 @@ impl<FS: FileSystem> SStableWriter<FS> {
         hasher.update(&metadata.max_key);
         hasher.update(metadata.num_entries.to_le_bytes());
         let checksum: [u8; 32] = hasher.finalize().into();
-        
+
         // Create footer
         let footer = SStableFooter::new(metadata.clone(), checksum);
         let footer_bytes = footer.to_bytes();
-        
+
         // Check if footer fits in current page
         if current_page_offset + footer_bytes.len() > page_size {
             // Write current page and allocate new one
             self.pager.write_page(&current_page)?;
-            
+
             let new_page_id = self.pager.allocate_page(PageType::LsmData)?;
             self.pages.push(new_page_id);
             current_page = Page::new(new_page_id, PageType::LsmData, page_size);
         }
-        
+
         // Write footer to current page
         current_page.data_mut().extend_from_slice(&footer_bytes);
-        
+
         // Write final page
         self.pager.write_page(&current_page)?;
 
@@ -1666,9 +1678,9 @@ mod tests {
 
         let footer = SStableFooter::new(metadata, [0u8; 32]);
         let bytes = footer.to_bytes();
-        
+
         assert_eq!(bytes.len(), SStableFooter::SIZE);
-        
+
         let restored = SStableFooter::from_bytes(&bytes).unwrap();
         assert_eq!(restored.magic, SStableFooter::MAGIC);
         assert_eq!(restored.version, SStableFooter::VERSION);
@@ -1692,14 +1704,14 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         // Add entries in sorted order
         let chain1 = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
         block.add(b"key1".to_vec(), chain1).unwrap();
-        
+
         let chain2 = VersionChain::new(b"value2".to_vec(), TransactionId::from(2));
         block.add(b"key2".to_vec(), chain2).unwrap();
-        
+
         let chain3 = VersionChain::new(b"value3".to_vec(), TransactionId::from(3));
         block.add(b"key3".to_vec(), chain3).unwrap();
 
@@ -1713,14 +1725,14 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         let chain1 = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
         block.add(b"key2".to_vec(), chain1).unwrap();
-        
+
         // Try to add a key that's not greater than the last key
         let chain2 = VersionChain::new(b"value2".to_vec(), TransactionId::from(2));
         let result = block.add(b"key1".to_vec(), chain2);
-        
+
         assert!(result.is_err());
     }
 
@@ -1729,7 +1741,7 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         for i in 0..10 {
             let key = format!("key{:02}", i);
             let value = format!("value{}", i);
@@ -1753,10 +1765,10 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         let chain1 = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
         block.add(b"key1".to_vec(), chain1).unwrap();
-        
+
         let chain2 = VersionChain::new(b"value2".to_vec(), TransactionId::from(2));
         block.add(b"key2".to_vec(), chain2).unwrap();
 
@@ -1773,7 +1785,7 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         for i in 0..5 {
             let key = format!("key{}", i);
             let value = format!("value{}", i);
@@ -1783,14 +1795,14 @@ mod tests {
 
         // Serialize without compression
         let bytes = block.to_bytes(false).unwrap();
-        
+
         // Deserialize
         let restored = DataBlock::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(restored.len(), block.len());
         assert_eq!(restored.first_key(), block.first_key());
         assert_eq!(restored.last_key(), block.last_key());
-        
+
         // Verify all entries
         for i in 0..5 {
             let key = format!("key{}", i);
@@ -1804,7 +1816,7 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         // Add enough data to make compression worthwhile
         for i in 0..50 {
             let key = format!("key{:03}", i);
@@ -1815,14 +1827,14 @@ mod tests {
 
         // Serialize with compression
         let bytes = block.to_bytes(true).unwrap();
-        
+
         // Deserialize
         let restored = DataBlock::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(restored.len(), block.len());
         assert_eq!(restored.first_key(), block.first_key());
         assert_eq!(restored.last_key(), block.last_key());
-        
+
         // Verify all entries
         for i in 0..50 {
             let key = format!("key{:03}", i);
@@ -1837,17 +1849,17 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         let chain = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
         block.add(b"key1".to_vec(), chain).unwrap();
 
         let mut bytes = block.to_bytes(false).unwrap();
-        
+
         // Corrupt the data (after the header)
         if bytes.len() > DataBlock::HEADER_SIZE + 10 {
             bytes[DataBlock::HEADER_SIZE + 10] ^= 0xFF;
         }
-        
+
         // Deserialization should fail due to checksum mismatch
         let result = DataBlock::from_bytes(&bytes);
         assert!(result.is_err());
@@ -1862,24 +1874,24 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         // Create a version chain with multiple versions
         let mut chain = VersionChain::new(b"value1".to_vec(), TransactionId::from(1));
         chain.commit(LogSequenceNumber::from(10));
-        
+
         let chain = chain.prepend(b"value2".to_vec(), TransactionId::from(2));
-        
+
         block.add(b"key1".to_vec(), chain).unwrap();
 
         // Serialize and deserialize
         let bytes = block.to_bytes(false).unwrap();
         let restored = DataBlock::from_bytes(&bytes).unwrap();
-        
+
         // Verify version chain is preserved
         let restored_chain = restored.get(b"key1").unwrap();
         assert_eq!(restored_chain.value, b"value2");
         assert!(restored_chain.prev_version.is_some());
-        
+
         let prev = restored_chain.prev_version.as_ref().unwrap();
         assert_eq!(prev.value, b"value1");
         assert_eq!(prev.commit_lsn, Some(LogSequenceNumber::from(10)));
@@ -1890,13 +1902,22 @@ mod tests {
         use crate::txn::TransactionId;
 
         let entries = vec![
-            (b"key1".to_vec(), VersionChain::new(b"value1".to_vec(), TransactionId::from(1))),
-            (b"key2".to_vec(), VersionChain::new(b"value2".to_vec(), TransactionId::from(2))),
-            (b"key3".to_vec(), VersionChain::new(b"value3".to_vec(), TransactionId::from(3))),
+            (
+                b"key1".to_vec(),
+                VersionChain::new(b"value1".to_vec(), TransactionId::from(1)),
+            ),
+            (
+                b"key2".to_vec(),
+                VersionChain::new(b"value2".to_vec(), TransactionId::from(2)),
+            ),
+            (
+                b"key3".to_vec(),
+                VersionChain::new(b"value3".to_vec(), TransactionId::from(3)),
+            ),
         ];
 
         let block = DataBlock::from_entries(entries);
-        
+
         assert_eq!(block.len(), 3);
         assert_eq!(block.first_key(), Some(b"key1".as_slice()));
         assert_eq!(block.last_key(), Some(b"key3".as_slice()));
@@ -1908,8 +1929,14 @@ mod tests {
         use crate::txn::TransactionId;
 
         let entries = vec![
-            (b"key2".to_vec(), VersionChain::new(b"value2".to_vec(), TransactionId::from(2))),
-            (b"key1".to_vec(), VersionChain::new(b"value1".to_vec(), TransactionId::from(1))),
+            (
+                b"key2".to_vec(),
+                VersionChain::new(b"value2".to_vec(), TransactionId::from(2)),
+            ),
+            (
+                b"key1".to_vec(),
+                VersionChain::new(b"value1".to_vec(), TransactionId::from(1)),
+            ),
         ];
 
         DataBlock::from_entries(entries);
@@ -1920,7 +1947,7 @@ mod tests {
         use crate::txn::TransactionId;
 
         let mut block = DataBlock::new();
-        
+
         for i in 0..10 {
             let key = format!("key{}", i);
             let value = format!("value{}", i);
@@ -1930,12 +1957,17 @@ mod tests {
 
         let estimated = block.estimate_size();
         let actual = block.to_bytes(false).unwrap().len();
-        
+
         // Estimate should be reasonably close to actual size
         // Allow 20% margin for estimation error
         let diff = estimated.abs_diff(actual);
-        
-        assert!(diff < actual / 5, "Estimate {} too far from actual {}", estimated, actual);
+
+        assert!(
+            diff < actual / 5,
+            "Estimate {} too far from actual {}",
+            estimated,
+            actual
+        );
     }
 
     #[test]
@@ -1947,11 +1979,11 @@ mod tests {
         block.add(b"key1".to_vec(), chain).unwrap();
 
         let bytes = block.to_bytes(false).unwrap();
-        
+
         // Try to deserialize truncated data
         let truncated = &bytes[..bytes.len() - 10];
         let result = DataBlock::from_bytes(truncated);
-        
+
         assert!(result.is_err());
     }
 
@@ -1961,7 +1993,7 @@ mod tests {
         // but let's test the edge case
         let block = DataBlock::new();
         let bytes = block.to_bytes(false).unwrap();
-        
+
         let restored = DataBlock::from_bytes(&bytes).unwrap();
         assert!(restored.is_empty());
     }
@@ -1979,23 +2011,23 @@ mod tests {
     #[test]
     fn test_index_block_add_entries() {
         let mut block = IndexBlock::new();
-        
+
         block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
         block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
         block.add(b"cherry".to_vec(), PageId::from(3), 200).unwrap();
-        
+
         assert_eq!(block.len(), 3);
         assert!(!block.is_empty());
-        
+
         let entries = block.entries();
         assert_eq!(entries[0].first_key, b"apple");
         assert_eq!(entries[0].page_id, PageId::from(1));
         assert_eq!(entries[0].offset, 0);
-        
+
         assert_eq!(entries[1].first_key, b"banana");
         assert_eq!(entries[1].page_id, PageId::from(2));
         assert_eq!(entries[1].offset, 100);
-        
+
         assert_eq!(entries[2].first_key, b"cherry");
         assert_eq!(entries[2].page_id, PageId::from(3));
         assert_eq!(entries[2].offset, 200);
@@ -2004,13 +2036,13 @@ mod tests {
     #[test]
     fn test_index_block_add_unsorted_fails() {
         let mut block = IndexBlock::new();
-        
+
         block.add(b"banana".to_vec(), PageId::from(1), 0).unwrap();
-        
+
         // Try to add a key that's not greater than the last key
         let result = block.add(b"apple".to_vec(), PageId::from(2), 100);
         assert!(result.is_err());
-        
+
         // Try to add the same key again
         let result = block.add(b"banana".to_vec(), PageId::from(3), 200);
         assert!(result.is_err());
@@ -2019,31 +2051,31 @@ mod tests {
     #[test]
     fn test_index_block_binary_search() {
         let mut block = IndexBlock::new();
-        
+
         // Add entries for data blocks starting with these keys
         block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
         block.add(b"dog".to_vec(), PageId::from(2), 100).unwrap();
         block.add(b"monkey".to_vec(), PageId::from(3), 200).unwrap();
         block.add(b"zebra".to_vec(), PageId::from(4), 300).unwrap();
-        
+
         // Search for keys before first block
         assert_eq!(block.search(b"aaa"), None);
         assert_eq!(block.search(b"aardvark"), None);
-        
+
         // Search for keys in first block (>= "apple", < "dog")
         assert_eq!(block.search(b"apple"), Some(0));
         assert_eq!(block.search(b"banana"), Some(0));
         assert_eq!(block.search(b"cat"), Some(0));
-        
+
         // Search for keys in second block (>= "dog", < "monkey")
         assert_eq!(block.search(b"dog"), Some(1));
         assert_eq!(block.search(b"elephant"), Some(1));
         assert_eq!(block.search(b"lion"), Some(1));
-        
+
         // Search for keys in third block (>= "monkey", < "zebra")
         assert_eq!(block.search(b"monkey"), Some(2));
         assert_eq!(block.search(b"panda"), Some(2));
-        
+
         // Search for keys in fourth block (>= "zebra")
         assert_eq!(block.search(b"zebra"), Some(3));
         assert_eq!(block.search(b"zoo"), Some(3));
@@ -2059,13 +2091,13 @@ mod tests {
     fn test_index_block_search_single_entry() {
         let mut block = IndexBlock::new();
         block.add(b"middle".to_vec(), PageId::from(1), 0).unwrap();
-        
+
         // Key before the entry
         assert_eq!(block.search(b"aaa"), None);
-        
+
         // Key equal to the entry
         assert_eq!(block.search(b"middle"), Some(0));
-        
+
         // Key after the entry
         assert_eq!(block.search(b"zzz"), Some(0));
     }
@@ -2073,58 +2105,58 @@ mod tests {
     #[test]
     fn test_index_block_get() {
         let mut block = IndexBlock::new();
-        
+
         block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
         block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
-        
+
         let entry = block.get(0).unwrap();
         assert_eq!(entry.first_key, b"apple");
         assert_eq!(entry.page_id, PageId::from(1));
         assert_eq!(entry.offset, 0);
-        
+
         let entry = block.get(1).unwrap();
         assert_eq!(entry.first_key, b"banana");
-        
+
         assert!(block.get(2).is_none());
     }
 
     #[test]
     fn test_index_block_serialization() {
         let mut block = IndexBlock::new();
-        
+
         block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
         block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
         block.add(b"cherry".to_vec(), PageId::from(3), 200).unwrap();
-        
+
         let bytes = block.to_bytes().unwrap();
-        
+
         // Verify header
         let num_entries = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         assert_eq!(num_entries, 3);
-        
+
         // Deserialize and verify
         let restored = IndexBlock::from_bytes(&bytes).unwrap();
         assert_eq!(restored.len(), 3);
-        
+
         let entries = restored.entries();
         assert_eq!(entries[0].first_key, b"apple");
         assert_eq!(entries[0].page_id, PageId::from(1));
         assert_eq!(entries[0].offset, 0);
-        
+
         assert_eq!(entries[1].first_key, b"banana");
         assert_eq!(entries[1].page_id, PageId::from(2));
         assert_eq!(entries[1].offset, 100);
-        
+
         assert_eq!(entries[2].first_key, b"cherry");
         assert_eq!(entries[2].page_id, PageId::from(3));
         assert_eq!(entries[2].offset, 200);
     }
     #[test]
     fn test_sstable_writer_finish_small() {
+        use crate::pager::{PageSize, Pager, PagerConfig};
         use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
         use std::sync::Arc;
-        
+
         // Create in-memory pager
         let fs = MemoryFileSystem::new();
         let config = PagerConfig {
@@ -2137,17 +2169,12 @@ mod tests {
             cache_write_back: false,
         };
         let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
+
         // Create writer
         let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config,
-            10,
-        );
-        
+        let mut writer =
+            SStableWriter::new(pager.clone(), SStableId::new(1), 0, sstable_config, 10);
+
         // Add some entries
         let txn_id = crate::txn::TransactionId::from(1);
         for i in 0..10 {
@@ -2157,11 +2184,11 @@ mod tests {
             chain.commit(LogSequenceNumber::from(1));
             writer.add(key, chain).unwrap();
         }
-        
+
         // Finish writing
         let lsn = LogSequenceNumber::from(1);
         let metadata = writer.finish(lsn).unwrap();
-        
+
         // Verify metadata
         assert_eq!(metadata.id.as_u64(), 1);
         assert_eq!(metadata.level, 0);
@@ -2175,13 +2202,13 @@ mod tests {
         assert!(metadata.bloom_filter_offset > 0);
         assert!(metadata.footer_offset > 0);
     }
-    
+
     #[test]
     fn test_sstable_writer_finish_large() {
+        use crate::pager::{PageSize, Pager, PagerConfig};
         use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
         use std::sync::Arc;
-        
+
         // Create in-memory pager
         let fs = MemoryFileSystem::new();
         let config = PagerConfig {
@@ -2194,18 +2221,13 @@ mod tests {
             cache_write_back: false,
         };
         let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
+
         // Create writer with small block size to force multiple blocks
         let mut sstable_config = SStableConfig::default();
         sstable_config.block_size = 512; // Small block size
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(2),
-            1,
-            sstable_config,
-            100,
-        );
-        
+        let mut writer =
+            SStableWriter::new(pager.clone(), SStableId::new(2), 1, sstable_config, 100);
+
         // Add many entries to span multiple blocks
         let txn_id = crate::txn::TransactionId::from(1);
         for i in 0..100 {
@@ -2215,11 +2237,11 @@ mod tests {
             chain.commit(LogSequenceNumber::from(1));
             writer.add(key, chain).unwrap();
         }
-        
+
         // Finish writing
         let lsn = LogSequenceNumber::from(2);
         let metadata = writer.finish(lsn).unwrap();
-        
+
         // Verify metadata
         assert_eq!(metadata.id.as_u64(), 2);
         assert_eq!(metadata.level, 1);
@@ -2233,13 +2255,13 @@ mod tests {
         assert!(metadata.bloom_filter_offset > 0);
         assert!(metadata.footer_offset > 0);
     }
-    
+
     #[test]
     fn test_sstable_writer_finish_empty_fails() {
+        use crate::pager::{PageSize, Pager, PagerConfig};
         use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
         use std::sync::Arc;
-        
+
         // Create in-memory pager
         let fs = MemoryFileSystem::new();
         let config = PagerConfig {
@@ -2252,29 +2274,23 @@ mod tests {
             cache_write_back: false,
         };
         let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
+
         // Create writer without adding entries
         let sstable_config = SStableConfig::default();
-        let writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(3),
-            0,
-            sstable_config,
-            10,
-        );
-        
+        let writer = SStableWriter::new(pager.clone(), SStableId::new(3), 0, sstable_config, 10);
+
         // Finish should fail
         let lsn = LogSequenceNumber::from(1);
         let result = writer.finish(lsn);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_sstable_writer_finish_with_version_chains() {
+        use crate::pager::{PageSize, Pager, PagerConfig};
         use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
         use std::sync::Arc;
-        
+
         // Create in-memory pager
         let fs = MemoryFileSystem::new();
         let config = PagerConfig {
@@ -2287,54 +2303,47 @@ mod tests {
             cache_write_back: false,
         };
         let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
+
         // Create writer
         let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(4),
-            0,
-            sstable_config,
-            5,
-        );
-        
+        let mut writer = SStableWriter::new(pager.clone(), SStableId::new(4), 0, sstable_config, 5);
+
         // Add entries with version chains
         let txn_id1 = crate::txn::TransactionId::from(1);
         let txn_id2 = crate::txn::TransactionId::from(2);
-        
+
         for i in 0..5 {
             let key = format!("key{}", i).into_bytes();
-            
+
             // Create version chain with multiple versions
             let mut chain = VersionChain::new(format!("value{}_v1", i).into_bytes(), txn_id1);
             chain.commit(LogSequenceNumber::from(1));
-            
+
             chain = chain.prepend(format!("value{}_v2", i).into_bytes(), txn_id2);
             chain.commit(LogSequenceNumber::from(2));
-            
+
             writer.add(key, chain).unwrap();
         }
-        
+
         // Finish writing
         let lsn = LogSequenceNumber::from(3);
         let metadata = writer.finish(lsn).unwrap();
-        
+
         // Verify metadata
         assert_eq!(metadata.num_entries, 5);
         assert!(metadata.total_size > 0);
     }
 
-
     #[test]
     fn test_index_block_checksum_validation() {
         let mut block = IndexBlock::new();
         block.add(b"test".to_vec(), PageId::from(1), 0).unwrap();
-        
+
         let mut bytes = block.to_bytes().unwrap();
-        
+
         // Corrupt the checksum
         bytes[4] ^= 0xFF;
-        
+
         let result = IndexBlock::from_bytes(&bytes);
         match result {
             Err(crate::table::TableError::Corruption {
@@ -2421,7 +2430,7 @@ mod tests {
                 offset: 100,
             },
         ];
-        
+
         let block = IndexBlock::from_entries(entries);
         assert_eq!(block.len(), 2);
         assert_eq!(block.entries()[0].first_key, b"apple");
@@ -2443,25 +2452,25 @@ mod tests {
                 offset: 100,
             },
         ];
-        
+
         IndexBlock::from_entries(entries);
     }
 
     #[test]
     fn test_index_block_estimate_size() {
         let mut block = IndexBlock::new();
-        
+
         // Empty block
         let size = block.estimate_size();
         assert_eq!(size, IndexBlock::HEADER_SIZE);
-        
+
         // Add entries
         block.add(b"apple".to_vec(), PageId::from(1), 0).unwrap();
         block.add(b"banana".to_vec(), PageId::from(2), 100).unwrap();
-        
+
         let size = block.estimate_size();
         // Header + 2 entries * (4 + key_len + 8 + 8)
-        let expected = IndexBlock::HEADER_SIZE 
+        let expected = IndexBlock::HEADER_SIZE
             + (4 + 5 + 8 + 8)  // "apple"
             + (4 + 6 + 8 + 8); // "banana"
         assert_eq!(size, expected);
@@ -2471,13 +2480,13 @@ mod tests {
     fn test_index_block_truncated_data() {
         let mut block = IndexBlock::new();
         block.add(b"test".to_vec(), PageId::from(1), 0).unwrap();
-        
+
         let bytes = block.to_bytes().unwrap();
-        
+
         // Truncate at various points
         let result = IndexBlock::from_bytes(&bytes[..10]);
         assert!(result.is_err());
-        
+
         let result = IndexBlock::from_bytes(&bytes[..IndexBlock::HEADER_SIZE]);
         assert!(result.is_err());
     }
@@ -2486,7 +2495,7 @@ mod tests {
     fn test_index_block_empty_serialization() {
         let block = IndexBlock::new();
         let bytes = block.to_bytes().unwrap();
-        
+
         let restored = IndexBlock::from_bytes(&bytes).unwrap();
         assert!(restored.is_empty());
     }
@@ -2494,17 +2503,17 @@ mod tests {
     #[test]
     fn test_index_block_large_keys() {
         let mut block = IndexBlock::new();
-        
+
         // Add entries with large keys
         let large_key1 = vec![b'a'; 1000];
         let large_key2 = vec![b'b'; 1000];
-        
+
         block.add(large_key1.clone(), PageId::from(1), 0).unwrap();
         block.add(large_key2.clone(), PageId::from(2), 100).unwrap();
-        
+
         let bytes = block.to_bytes().unwrap();
         let restored = IndexBlock::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(restored.len(), 2);
         assert_eq!(restored.entries()[0].first_key, large_key1);
         assert_eq!(restored.entries()[1].first_key, large_key2);
@@ -2513,26 +2522,28 @@ mod tests {
     #[test]
     fn test_index_block_many_entries() {
         let mut block = IndexBlock::new();
-        
+
         // Add many entries
         for i in 0..100 {
             let key = format!("key_{:04}", i).into_bytes();
-            block.add(key, PageId::from(i as u64), i as u64 * 100).unwrap();
+            block
+                .add(key, PageId::from(i as u64), i as u64 * 100)
+                .unwrap();
         }
-        
+
         assert_eq!(block.len(), 100);
-        
+
         // Test serialization
         let bytes = block.to_bytes().unwrap();
         let restored = IndexBlock::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(restored.len(), 100);
-        
+
         // Verify a few entries
         assert_eq!(restored.entries()[0].first_key, b"key_0000");
         assert_eq!(restored.entries()[50].first_key, b"key_0050");
         assert_eq!(restored.entries()[99].first_key, b"key_0099");
-        
+
         // Test binary search
         assert_eq!(restored.search(b"key_0025"), Some(25));
         assert_eq!(restored.search(b"key_0075"), Some(75));
@@ -2542,32 +2553,32 @@ mod tests {
     fn test_index_block_unsorted_deserialization_fails() {
         // Manually create bytes with unsorted entries
         let mut bytes = Vec::new();
-        
+
         // Header: num_entries = 2
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&[0u8; 32]); // Placeholder checksum
-        
+
         let entries_start = bytes.len();
-        
+
         // Entry 1: "banana"
         bytes.extend_from_slice(&6u32.to_le_bytes());
         bytes.extend_from_slice(b"banana");
         bytes.extend_from_slice(&1u64.to_le_bytes());
         bytes.extend_from_slice(&0u64.to_le_bytes());
-        
+
         // Entry 2: "apple" (unsorted!)
         bytes.extend_from_slice(&5u32.to_le_bytes());
         bytes.extend_from_slice(b"apple");
         bytes.extend_from_slice(&2u64.to_le_bytes());
         bytes.extend_from_slice(&100u64.to_le_bytes());
-        
+
         // Calculate and write checksum
         let entries_data = &bytes[entries_start..];
         let mut hasher = Sha256::new();
         hasher.update(entries_data);
         let checksum = hasher.finalize();
         bytes[4..36].copy_from_slice(&checksum);
-        
+
         // Should fail because entries are not sorted
         let result = IndexBlock::from_bytes(&bytes);
         assert!(result.is_err());
@@ -2576,739 +2587,756 @@ mod tests {
 
 // Made with Bob
 
+#[test]
+fn test_sstable_reader_open_small() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
 
-    #[test]
-    fn test_sstable_reader_open_small() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create and write SSTable
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            10,
-        );
-        
-        // Add some entries
-        let txn_id = crate::txn::TransactionId::from(1);
-        for i in 0..10 {
-            let key = format!("key{:03}", i).into_bytes();
-            let value = format!("value{}", i).into_bytes();
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(1));
-            writer.add(key, chain).unwrap();
-        }
-        
-        // Finish writing
-        let lsn = LogSequenceNumber::from(1);
-        let metadata = writer.finish(lsn).unwrap();
-        
-        // Open the SSTable for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Verify reader metadata matches writer metadata
-        assert_eq!(reader.metadata().id.as_u64(), metadata.id.as_u64());
-        assert_eq!(reader.metadata().level, metadata.level);
-        assert_eq!(reader.metadata().min_key, metadata.min_key);
-        assert_eq!(reader.metadata().max_key, metadata.max_key);
-        assert_eq!(reader.metadata().num_entries, metadata.num_entries);
-        assert_eq!(reader.metadata().total_size, metadata.total_size);
-        assert_eq!(reader.metadata().created_lsn, metadata.created_lsn);
-        assert_eq!(reader.metadata().first_page_id, metadata.first_page_id);
-        assert_eq!(reader.metadata().num_pages, metadata.num_pages);
-        
-        // Verify bloom filter was loaded
-        assert!(reader.bloom_filter.is_some());
-        
-        // Test bloom filter functionality
-        assert!(reader.may_contain(b"key000"));
-        assert!(reader.may_contain(b"key005"));
-        assert!(reader.may_contain(b"key009"));
-    }
-    
-    #[test]
-    fn test_sstable_reader_open_large() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create and write large SSTable (multiple pages)
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(2),
-            1,
-            sstable_config.clone(),
-            1000,
-        );
-        
-        // Add many entries to span multiple pages
-        let txn_id = crate::txn::TransactionId::from(1);
-        for i in 0..1000 {
-            let key = format!("key{:06}", i).into_bytes();
-            let value = format!("value{}", i).repeat(10).into_bytes(); // Larger values
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(1));
-            writer.add(key, chain).unwrap();
-        }
-        
-        // Finish writing
-        let lsn = LogSequenceNumber::from(1);
-        let metadata = writer.finish(lsn).unwrap();
-        
-        // Verify it spans multiple pages
-        assert!(metadata.num_pages > 1, "Expected multiple pages for large SSTable");
-        
-        // Open the SSTable for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Verify reader metadata
-        assert_eq!(reader.metadata().id.as_u64(), 2);
-        assert_eq!(reader.metadata().level, 1);
-        assert_eq!(reader.metadata().num_entries, 1000);
-        assert_eq!(reader.metadata().min_key, b"key000000");
-        assert_eq!(reader.metadata().max_key, b"key000999");
-        
-        // Verify bloom filter
-        assert!(reader.bloom_filter.is_some());
-        assert!(reader.may_contain(b"key000000"));
-        assert!(reader.may_contain(b"key000500"));
-        assert!(reader.may_contain(b"key000999"));
-    }
-    
-    #[test]
-    fn test_sstable_reader_open_with_version_chains() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create and write SSTable with version chains
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(3),
-            0,
-            sstable_config.clone(),
-            5,
-        );
-        
-        // Add entries with multiple versions
-        let txn_id1 = crate::txn::TransactionId::from(1);
-        let txn_id2 = crate::txn::TransactionId::from(2);
-        
-        for i in 0..5 {
-            let key = format!("key{}", i).into_bytes();
-            let value1 = format!("value{}_v1", i).into_bytes();
-            let value2 = format!("value{}_v2", i).into_bytes();
-            
-            // Create version chain with two versions
-            let mut chain = VersionChain::new(value1, txn_id1);
-            chain.commit(LogSequenceNumber::from(1));
-            let mut chain = chain.prepend(value2, txn_id2);
-            chain.commit(LogSequenceNumber::from(2));
-            
-            writer.add(key, chain).unwrap();
-        }
-        
-        // Finish writing
-        let lsn = LogSequenceNumber::from(2);
-        let metadata = writer.finish(lsn).unwrap();
-        
-        // Open the SSTable for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Verify metadata
-        assert_eq!(reader.metadata().num_entries, 5);
-        assert_eq!(reader.metadata().min_key, b"key0");
-        assert_eq!(reader.metadata().max_key, b"key4");
-        
-        // Verify bloom filter contains all keys
-        for i in 0..5 {
-            let key = format!("key{}", i).into_bytes();
-            assert!(reader.may_contain(&key));
-        }
-    }
-    
-    #[test]
-    fn test_sstable_reader_open_invalid_page() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Try to open SSTable from non-existent page
-        let sstable_config = SStableConfig::default();
-        let result = SStableReader::open(
-            pager.clone(),
-            PageId::from(999), // Non-existent page
-            sstable_config,
-        );
-        
-        // Should fail
-        assert!(result.is_err());
-    }
-    
-    #[test]
-    fn test_sstable_reader_bloom_filter_false_negatives() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create and write SSTable
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(4),
-            0,
-            sstable_config.clone(),
-            10,
-        );
-        
-        // Add specific keys
-        let txn_id = crate::txn::TransactionId::from(1);
-        let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry", b"date", b"elderberry"];
-        
-        for key in &keys {
-            let value = format!("value_{}", String::from_utf8_lossy(key)).into_bytes();
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(1));
-            writer.add(key.to_vec(), chain).unwrap();
-        }
-        
-        // Finish writing
-        let lsn = LogSequenceNumber::from(1);
-        let metadata = writer.finish(lsn).unwrap();
-        
-        // Open the SSTable for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Verify all inserted keys are found (no false negatives)
-        for key in &keys {
-            assert!(reader.may_contain(key), 
-                "Bloom filter should never have false negatives for key: {:?}", 
-                String::from_utf8_lossy(key));
-        }
-        
-        // Keys not in the set might return true (false positives are acceptable)
-        // but should not return false for keys that ARE in the set
-        let not_inserted: Vec<&[u8]> = vec![b"fig", b"grape", b"honeydew"];
-        for key in &not_inserted {
-            // We can't assert false here because bloom filters can have false positives
-            // We just verify the method doesn't panic
-            let _ = reader.may_contain(key);
-        }
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create and write SSTable
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        10,
+    );
+
+    // Add some entries
+    let txn_id = crate::txn::TransactionId::from(1);
+    for i in 0..10 {
+        let key = format!("key{:03}", i).into_bytes();
+        let value = format!("value{}", i).into_bytes();
+        let mut chain = VersionChain::new(value, txn_id);
+        chain.commit(LogSequenceNumber::from(1));
+        writer.add(key, chain).unwrap();
     }
 
+    // Finish writing
+    let lsn = LogSequenceNumber::from(1);
+    let metadata = writer.finish(lsn).unwrap();
 
-    #[test]
-    fn test_sstable_reader_get_successful_lookup() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create and write SSTable
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            10,
-        );
-        
-        // Add entries
-        let txn_id = crate::txn::TransactionId::from(1);
-        for i in 0..10 {
-            let key = format!("key{:03}", i).into_bytes();
-            let value = format!("value{}", i).into_bytes();
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(10));
-            writer.add(key, chain).unwrap();
-        }
-        
-        let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Test successful lookups
-        for i in 0..10 {
-            let key = format!("key{:03}", i).into_bytes();
-            let expected_value = format!("value{}", i).into_bytes();
-            let result = reader.get(&key, LogSequenceNumber::from(10)).unwrap();
-            assert_eq!(result, Some(expected_value), "Failed to get key{:03}", i);
-        }
+    // Open the SSTable for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Verify reader metadata matches writer metadata
+    assert_eq!(reader.metadata().id.as_u64(), metadata.id.as_u64());
+    assert_eq!(reader.metadata().level, metadata.level);
+    assert_eq!(reader.metadata().min_key, metadata.min_key);
+    assert_eq!(reader.metadata().max_key, metadata.max_key);
+    assert_eq!(reader.metadata().num_entries, metadata.num_entries);
+    assert_eq!(reader.metadata().total_size, metadata.total_size);
+    assert_eq!(reader.metadata().created_lsn, metadata.created_lsn);
+    assert_eq!(reader.metadata().first_page_id, metadata.first_page_id);
+    assert_eq!(reader.metadata().num_pages, metadata.num_pages);
+
+    // Verify bloom filter was loaded
+    assert!(reader.bloom_filter.is_some());
+
+    // Test bloom filter functionality
+    assert!(reader.may_contain(b"key000"));
+    assert!(reader.may_contain(b"key005"));
+    assert!(reader.may_contain(b"key009"));
+}
+
+#[test]
+fn test_sstable_reader_open_large() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create and write large SSTable (multiple pages)
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(2),
+        1,
+        sstable_config.clone(),
+        1000,
+    );
+
+    // Add many entries to span multiple pages
+    let txn_id = crate::txn::TransactionId::from(1);
+    for i in 0..1000 {
+        let key = format!("key{:06}", i).into_bytes();
+        let value = format!("value{}", i).repeat(10).into_bytes(); // Larger values
+        let mut chain = VersionChain::new(value, txn_id);
+        chain.commit(LogSequenceNumber::from(1));
+        writer.add(key, chain).unwrap();
     }
-    
-    #[test]
-    fn test_sstable_reader_get_key_not_found() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create and write SSTable with specific keys
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            5,
-        );
-        
-        let txn_id = crate::txn::TransactionId::from(1);
-        let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry", b"date", b"elderberry"];
-        
-        for key in &keys {
-            let value = format!("value_{}", String::from_utf8_lossy(key)).into_bytes();
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(10));
-            writer.add(key.to_vec(), chain).unwrap();
-        }
-        
-        let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Test keys that don't exist
-        assert_eq!(reader.get(b"aardvark", LogSequenceNumber::from(10)).unwrap(), None);
-        assert_eq!(reader.get(b"fig", LogSequenceNumber::from(10)).unwrap(), None);
-        assert_eq!(reader.get(b"zebra", LogSequenceNumber::from(10)).unwrap(), None);
+
+    // Finish writing
+    let lsn = LogSequenceNumber::from(1);
+    let metadata = writer.finish(lsn).unwrap();
+
+    // Verify it spans multiple pages
+    assert!(
+        metadata.num_pages > 1,
+        "Expected multiple pages for large SSTable"
+    );
+
+    // Open the SSTable for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Verify reader metadata
+    assert_eq!(reader.metadata().id.as_u64(), 2);
+    assert_eq!(reader.metadata().level, 1);
+    assert_eq!(reader.metadata().num_entries, 1000);
+    assert_eq!(reader.metadata().min_key, b"key000000");
+    assert_eq!(reader.metadata().max_key, b"key000999");
+
+    // Verify bloom filter
+    assert!(reader.bloom_filter.is_some());
+    assert!(reader.may_contain(b"key000000"));
+    assert!(reader.may_contain(b"key000500"));
+    assert!(reader.may_contain(b"key000999"));
+}
+
+#[test]
+fn test_sstable_reader_open_with_version_chains() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create and write SSTable with version chains
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(3),
+        0,
+        sstable_config.clone(),
+        5,
+    );
+
+    // Add entries with multiple versions
+    let txn_id1 = crate::txn::TransactionId::from(1);
+    let txn_id2 = crate::txn::TransactionId::from(2);
+
+    for i in 0..5 {
+        let key = format!("key{}", i).into_bytes();
+        let value1 = format!("value{}_v1", i).into_bytes();
+        let value2 = format!("value{}_v2", i).into_bytes();
+
+        // Create version chain with two versions
+        let mut chain = VersionChain::new(value1, txn_id1);
+        chain.commit(LogSequenceNumber::from(1));
+        let mut chain = chain.prepend(value2, txn_id2);
+        chain.commit(LogSequenceNumber::from(2));
+
+        writer.add(key, chain).unwrap();
     }
-    
-    #[test]
-    fn test_sstable_reader_get_mvcc_visibility() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create SSTable with version chains
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            3,
+
+    // Finish writing
+    let lsn = LogSequenceNumber::from(2);
+    let metadata = writer.finish(lsn).unwrap();
+
+    // Open the SSTable for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Verify metadata
+    assert_eq!(reader.metadata().num_entries, 5);
+    assert_eq!(reader.metadata().min_key, b"key0");
+    assert_eq!(reader.metadata().max_key, b"key4");
+
+    // Verify bloom filter contains all keys
+    for i in 0..5 {
+        let key = format!("key{}", i).into_bytes();
+        assert!(reader.may_contain(&key));
+    }
+}
+
+#[test]
+fn test_sstable_reader_open_invalid_page() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Try to open SSTable from non-existent page
+    let sstable_config = SStableConfig::default();
+    let result = SStableReader::open(
+        pager.clone(),
+        PageId::from(999), // Non-existent page
+        sstable_config,
+    );
+
+    // Should fail
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_sstable_reader_bloom_filter_false_negatives() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create and write SSTable
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(4),
+        0,
+        sstable_config.clone(),
+        10,
+    );
+
+    // Add specific keys
+    let txn_id = crate::txn::TransactionId::from(1);
+    let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry", b"date", b"elderberry"];
+
+    for key in &keys {
+        let value = format!("value_{}", String::from_utf8_lossy(key)).into_bytes();
+        let mut chain = VersionChain::new(value, txn_id);
+        chain.commit(LogSequenceNumber::from(1));
+        writer.add(key.to_vec(), chain).unwrap();
+    }
+
+    // Finish writing
+    let lsn = LogSequenceNumber::from(1);
+    let metadata = writer.finish(lsn).unwrap();
+
+    // Open the SSTable for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Verify all inserted keys are found (no false negatives)
+    for key in &keys {
+        assert!(
+            reader.may_contain(key),
+            "Bloom filter should never have false negatives for key: {:?}",
+            String::from_utf8_lossy(key)
         );
-        
-        let txn_id1 = crate::txn::TransactionId::from(1);
-        let txn_id2 = crate::txn::TransactionId::from(2);
-        let txn_id3 = crate::txn::TransactionId::from(3);
-        
-        // Key with three versions at LSN 10, 20, 30
-        let mut chain = VersionChain::new(b"value_v1".to_vec(), txn_id1);
+    }
+
+    // Keys not in the set might return true (false positives are acceptable)
+    // but should not return false for keys that ARE in the set
+    let not_inserted: Vec<&[u8]> = vec![b"fig", b"grape", b"honeydew"];
+    for key in &not_inserted {
+        // We can't assert false here because bloom filters can have false positives
+        // We just verify the method doesn't panic
+        let _ = reader.may_contain(key);
+    }
+}
+
+#[test]
+fn test_sstable_reader_get_successful_lookup() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create and write SSTable
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        10,
+    );
+
+    // Add entries
+    let txn_id = crate::txn::TransactionId::from(1);
+    for i in 0..10 {
+        let key = format!("key{:03}", i).into_bytes();
+        let value = format!("value{}", i).into_bytes();
+        let mut chain = VersionChain::new(value, txn_id);
         chain.commit(LogSequenceNumber::from(10));
-        let mut chain = chain.prepend(b"value_v2".to_vec(), txn_id2);
-        chain.commit(LogSequenceNumber::from(20));
-        let mut chain = chain.prepend(b"value_v3".to_vec(), txn_id3);
-        chain.commit(LogSequenceNumber::from(30));
-        writer.add(b"key1".to_vec(), chain).unwrap();
-        
-        let metadata = writer.finish(LogSequenceNumber::from(30)).unwrap();
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Read at LSN 5 - should see nothing (all versions too new)
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(5)).unwrap(), None);
-        
-        // Read at LSN 10 - should see v1
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(10)).unwrap(), Some(b"value_v1".to_vec()));
-        
-        // Read at LSN 15 - should see v1 (v2 not visible yet)
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(15)).unwrap(), Some(b"value_v1".to_vec()));
-        
-        // Read at LSN 20 - should see v2
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(20)).unwrap(), Some(b"value_v2".to_vec()));
-        
-        // Read at LSN 25 - should see v2 (v3 not visible yet)
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(25)).unwrap(), Some(b"value_v2".to_vec()));
-        
-        // Read at LSN 30 - should see v3
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(30)).unwrap(), Some(b"value_v3".to_vec()));
-        
-        // Read at LSN 100 - should see v3 (latest)
-        assert_eq!(reader.get(b"key1", LogSequenceNumber::from(100)).unwrap(), Some(b"value_v3".to_vec()));
+        writer.add(key, chain).unwrap();
     }
-    
-    #[test]
-    fn test_sstable_reader_get_multiple_versions_same_key() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create SSTable with multiple keys, each with version chains
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            5,
-        );
-        
-        let txn_id1 = crate::txn::TransactionId::from(1);
-        let txn_id2 = crate::txn::TransactionId::from(2);
-        
-        for i in 0..5 {
-            let key = format!("key{}", i).into_bytes();
-            let value1 = format!("value{}_v1", i).into_bytes();
-            let value2 = format!("value{}_v2", i).into_bytes();
-            
-            let mut chain = VersionChain::new(value1, txn_id1);
-            chain.commit(LogSequenceNumber::from(10));
-            let mut chain = chain.prepend(value2, txn_id2);
-            chain.commit(LogSequenceNumber::from(20));
-            
-            writer.add(key, chain).unwrap();
-        }
-        
-        let metadata = writer.finish(LogSequenceNumber::from(20)).unwrap();
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Test reading at different LSNs
-        for i in 0..5 {
-            let key = format!("key{}", i).into_bytes();
-            
-            // At LSN 10, should see v1
-            let expected_v1 = format!("value{}_v1", i).into_bytes();
-            assert_eq!(reader.get(&key, LogSequenceNumber::from(10)).unwrap(), Some(expected_v1));
-            
-            // At LSN 20, should see v2
-            let expected_v2 = format!("value{}_v2", i).into_bytes();
-            assert_eq!(reader.get(&key, LogSequenceNumber::from(20)).unwrap(), Some(expected_v2));
-        }
+
+    let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Test successful lookups
+    for i in 0..10 {
+        let key = format!("key{:03}", i).into_bytes();
+        let expected_value = format!("value{}", i).into_bytes();
+        let result = reader.get(&key, LogSequenceNumber::from(10)).unwrap();
+        assert_eq!(result, Some(expected_value), "Failed to get key{:03}", i);
     }
-    
-    #[test]
-    fn test_sstable_reader_get_tombstone_handling() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create SSTable with tombstone (empty value represents deletion)
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            3,
-        );
-        
-        let txn_id1 = crate::txn::TransactionId::from(1);
-        let txn_id2 = crate::txn::TransactionId::from(2);
-        
-        // Key with value, then tombstone
-        let mut chain = VersionChain::new(b"original_value".to_vec(), txn_id1);
+}
+
+#[test]
+fn test_sstable_reader_get_key_not_found() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create and write SSTable with specific keys
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        5,
+    );
+
+    let txn_id = crate::txn::TransactionId::from(1);
+    let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry", b"date", b"elderberry"];
+
+    for key in &keys {
+        let value = format!("value_{}", String::from_utf8_lossy(key)).into_bytes();
+        let mut chain = VersionChain::new(value, txn_id);
         chain.commit(LogSequenceNumber::from(10));
-        let mut chain = chain.prepend(Vec::new(), txn_id2); // Empty value = tombstone
+        writer.add(key.to_vec(), chain).unwrap();
+    }
+
+    let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Test keys that don't exist
+    assert_eq!(
+        reader
+            .get(b"aardvark", LogSequenceNumber::from(10))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        reader.get(b"fig", LogSequenceNumber::from(10)).unwrap(),
+        None
+    );
+    assert_eq!(
+        reader.get(b"zebra", LogSequenceNumber::from(10)).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn test_sstable_reader_get_mvcc_visibility() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create SSTable with version chains
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        3,
+    );
+
+    let txn_id1 = crate::txn::TransactionId::from(1);
+    let txn_id2 = crate::txn::TransactionId::from(2);
+    let txn_id3 = crate::txn::TransactionId::from(3);
+
+    // Key with three versions at LSN 10, 20, 30
+    let mut chain = VersionChain::new(b"value_v1".to_vec(), txn_id1);
+    chain.commit(LogSequenceNumber::from(10));
+    let mut chain = chain.prepend(b"value_v2".to_vec(), txn_id2);
+    chain.commit(LogSequenceNumber::from(20));
+    let mut chain = chain.prepend(b"value_v3".to_vec(), txn_id3);
+    chain.commit(LogSequenceNumber::from(30));
+    writer.add(b"key1".to_vec(), chain).unwrap();
+
+    let metadata = writer.finish(LogSequenceNumber::from(30)).unwrap();
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Read at LSN 5 - should see nothing (all versions too new)
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(5)).unwrap(),
+        None
+    );
+
+    // Read at LSN 10 - should see v1
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(10)).unwrap(),
+        Some(b"value_v1".to_vec())
+    );
+
+    // Read at LSN 15 - should see v1 (v2 not visible yet)
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(15)).unwrap(),
+        Some(b"value_v1".to_vec())
+    );
+
+    // Read at LSN 20 - should see v2
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(20)).unwrap(),
+        Some(b"value_v2".to_vec())
+    );
+
+    // Read at LSN 25 - should see v2 (v3 not visible yet)
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(25)).unwrap(),
+        Some(b"value_v2".to_vec())
+    );
+
+    // Read at LSN 30 - should see v3
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(30)).unwrap(),
+        Some(b"value_v3".to_vec())
+    );
+
+    // Read at LSN 100 - should see v3 (latest)
+    assert_eq!(
+        reader.get(b"key1", LogSequenceNumber::from(100)).unwrap(),
+        Some(b"value_v3".to_vec())
+    );
+}
+
+#[test]
+fn test_sstable_reader_get_multiple_versions_same_key() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create SSTable with multiple keys, each with version chains
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        5,
+    );
+
+    let txn_id1 = crate::txn::TransactionId::from(1);
+    let txn_id2 = crate::txn::TransactionId::from(2);
+
+    for i in 0..5 {
+        let key = format!("key{}", i).into_bytes();
+        let value1 = format!("value{}_v1", i).into_bytes();
+        let value2 = format!("value{}_v2", i).into_bytes();
+
+        let mut chain = VersionChain::new(value1, txn_id1);
+        chain.commit(LogSequenceNumber::from(10));
+        let mut chain = chain.prepend(value2, txn_id2);
         chain.commit(LogSequenceNumber::from(20));
-        writer.add(b"deleted_key".to_vec(), chain).unwrap();
-        
-        let metadata = writer.finish(LogSequenceNumber::from(20)).unwrap();
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // At LSN 10, should see original value
+
+        writer.add(key, chain).unwrap();
+    }
+
+    let metadata = writer.finish(LogSequenceNumber::from(20)).unwrap();
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Test reading at different LSNs
+    for i in 0..5 {
+        let key = format!("key{}", i).into_bytes();
+
+        // At LSN 10, should see v1
+        let expected_v1 = format!("value{}_v1", i).into_bytes();
         assert_eq!(
-            reader.get(b"deleted_key", LogSequenceNumber::from(10)).unwrap(),
-            Some(b"original_value".to_vec())
+            reader.get(&key, LogSequenceNumber::from(10)).unwrap(),
+            Some(expected_v1)
         );
-        
-        // At LSN 20, should see tombstone (empty value)
+
+        // At LSN 20, should see v2
+        let expected_v2 = format!("value{}_v2", i).into_bytes();
         assert_eq!(
-            reader.get(b"deleted_key", LogSequenceNumber::from(20)).unwrap(),
-            Some(Vec::new())
+            reader.get(&key, LogSequenceNumber::from(20)).unwrap(),
+            Some(expected_v2)
         );
     }
-    
-    #[test]
-    fn test_sstable_reader_get_large_sstable() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create large SSTable spanning multiple pages
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            1000,
-        );
-        
-        let txn_id = crate::txn::TransactionId::from(1);
-        for i in 0..1000 {
-            let key = format!("key{:06}", i).into_bytes();
-            let value = format!("value{}", i).repeat(10).into_bytes();
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(10));
-            writer.add(key, chain).unwrap();
-        }
-        
-        let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
-        
-        // Verify it spans multiple pages
-        assert!(metadata.num_pages > 1);
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Test lookups across different data blocks
-        for i in [0, 100, 500, 999] {
-            let key = format!("key{:06}", i).into_bytes();
-            let expected_value = format!("value{}", i).repeat(10).into_bytes();
-            let result = reader.get(&key, LogSequenceNumber::from(10)).unwrap();
-            assert_eq!(result, Some(expected_value), "Failed to get key{:06}", i);
-        }
+}
+
+#[test]
+fn test_sstable_reader_get_tombstone_handling() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create SSTable with tombstone (empty value represents deletion)
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        3,
+    );
+
+    let txn_id1 = crate::txn::TransactionId::from(1);
+    let txn_id2 = crate::txn::TransactionId::from(2);
+
+    // Key with value, then tombstone
+    let mut chain = VersionChain::new(b"original_value".to_vec(), txn_id1);
+    chain.commit(LogSequenceNumber::from(10));
+    let mut chain = chain.prepend(Vec::new(), txn_id2); // Empty value = tombstone
+    chain.commit(LogSequenceNumber::from(20));
+    writer.add(b"deleted_key".to_vec(), chain).unwrap();
+
+    let metadata = writer.finish(LogSequenceNumber::from(20)).unwrap();
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // At LSN 10, should see original value
+    assert_eq!(
+        reader
+            .get(b"deleted_key", LogSequenceNumber::from(10))
+            .unwrap(),
+        Some(b"original_value".to_vec())
+    );
+
+    // At LSN 20, should see tombstone (empty value)
+    assert_eq!(
+        reader
+            .get(b"deleted_key", LogSequenceNumber::from(20))
+            .unwrap(),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn test_sstable_reader_get_large_sstable() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create large SSTable spanning multiple pages
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        1000,
+    );
+
+    let txn_id = crate::txn::TransactionId::from(1);
+    for i in 0..1000 {
+        let key = format!("key{:06}", i).into_bytes();
+        let value = format!("value{}", i).repeat(10).into_bytes();
+        let mut chain = VersionChain::new(value, txn_id);
+        chain.commit(LogSequenceNumber::from(10));
+        writer.add(key, chain).unwrap();
     }
-    
-    #[test]
-    fn test_sstable_reader_get_bloom_filter_false_positive() {
-        use crate::vfs::MemoryFileSystem;
-        use crate::pager::{Pager, PagerConfig, PageSize};
-        use std::sync::Arc;
-        
-        // Create in-memory pager
-        let fs = MemoryFileSystem::new();
-        let config = PagerConfig {
-            page_size: PageSize::Size4KB,
-            compression: crate::pager::CompressionType::None,
-            encryption: crate::pager::EncryptionType::None,
-            encryption_key: None,
-            enable_checksums: true,
-            cache_capacity: 100,
-            cache_write_back: false,
-        };
-        let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
-        
-        // Create SSTable with specific keys
-        let sstable_config = SStableConfig::default();
-        let mut writer = SStableWriter::new(
-            pager.clone(),
-            SStableId::new(1),
-            0,
-            sstable_config.clone(),
-            5,
-        );
-        
-        let txn_id = crate::txn::TransactionId::from(1);
-        let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry", b"date", b"elderberry"];
-        
-        for key in &keys {
-            let value = format!("value_{}", String::from_utf8_lossy(key)).into_bytes();
-            let mut chain = VersionChain::new(value, txn_id);
-            chain.commit(LogSequenceNumber::from(10));
-            writer.add(key.to_vec(), chain).unwrap();
-        }
-        
-        let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
-        
-        // Open for reading
-        let reader = SStableReader::open(
-            pager.clone(),
-            metadata.first_page_id,
-            sstable_config,
-        ).unwrap();
-        
-        // Test that keys not in SSTable return None
-        // Even if bloom filter has false positive, get() should return None
-        let not_present: Vec<&[u8]> = vec![b"aardvark", b"fig", b"grape", b"honeydew", b"zebra"];
-        for key in &not_present {
-            let result = reader.get(key, LogSequenceNumber::from(10)).unwrap();
-            assert_eq!(result, None, "Key {:?} should not be found", String::from_utf8_lossy(key));
-        }
+
+    let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
+
+    // Verify it spans multiple pages
+    assert!(metadata.num_pages > 1);
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Test lookups across different data blocks
+    for i in [0, 100, 500, 999] {
+        let key = format!("key{:06}", i).into_bytes();
+        let expected_value = format!("value{}", i).repeat(10).into_bytes();
+        let result = reader.get(&key, LogSequenceNumber::from(10)).unwrap();
+        assert_eq!(result, Some(expected_value), "Failed to get key{:06}", i);
     }
+}
+
+#[test]
+fn test_sstable_reader_get_bloom_filter_false_positive() {
+    use crate::pager::{PageSize, Pager, PagerConfig};
+    use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
+
+    // Create in-memory pager
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig {
+        page_size: PageSize::Size4KB,
+        compression: crate::pager::CompressionType::None,
+        encryption: crate::pager::EncryptionType::None,
+        encryption_key: None,
+        enable_checksums: true,
+        cache_capacity: 100,
+        cache_write_back: false,
+    };
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).unwrap());
+
+    // Create SSTable with specific keys
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        SStableId::new(1),
+        0,
+        sstable_config.clone(),
+        5,
+    );
+
+    let txn_id = crate::txn::TransactionId::from(1);
+    let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry", b"date", b"elderberry"];
+
+    for key in &keys {
+        let value = format!("value_{}", String::from_utf8_lossy(key)).into_bytes();
+        let mut chain = VersionChain::new(value, txn_id);
+        chain.commit(LogSequenceNumber::from(10));
+        writer.add(key.to_vec(), chain).unwrap();
+    }
+
+    let metadata = writer.finish(LogSequenceNumber::from(10)).unwrap();
+
+    // Open for reading
+    let reader =
+        SStableReader::open(pager.clone(), metadata.first_page_id, sstable_config).unwrap();
+
+    // Test that keys not in SSTable return None
+    // Even if bloom filter has false positive, get() should return None
+    let not_present: Vec<&[u8]> = vec![b"aardvark", b"fig", b"grape", b"honeydew", b"zebra"];
+    for key in &not_present {
+        let result = reader.get(key, LogSequenceNumber::from(10)).unwrap();
+        assert_eq!(
+            result,
+            None,
+            "Key {:?} should not be found",
+            String::from_utf8_lossy(key)
+        );
+    }
+}

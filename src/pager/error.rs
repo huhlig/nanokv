@@ -16,8 +16,8 @@
 
 //! Pager error types
 
-use crate::pager::config::{CompressionType, EncryptionType};
 use crate::pager::PageId;
+use crate::pager::config::{CompressionType, EncryptionType};
 use crate::vfs::FileSystemError;
 use thiserror::Error;
 
@@ -48,7 +48,9 @@ pub enum PagerError {
     InvalidPageSize(u32),
 
     /// Invalid file header with structured context
-    #[error("Invalid file header: expected magic {expected_magic:#x}, found {found_magic:#x} - {details}")]
+    #[error(
+        "Invalid file header: expected magic {expected_magic:#x}, found {found_magic:#x} - {details}"
+    )]
     InvalidFileHeader {
         expected_magic: u32,
         found_magic: u32,

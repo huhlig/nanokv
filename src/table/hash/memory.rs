@@ -30,11 +30,11 @@
 
 use crate::snap::Snapshot;
 use crate::table::{
-    BatchOps, BatchReport, Flushable, MutableTable, PointLookup, Table,
-    TableCapabilities, TableEngineKind, TableError, TableResult, TableStatistics, WriteBatch,
+    BatchOps, BatchReport, Flushable, MutableTable, PointLookup, Table, TableCapabilities,
+    TableEngineKind, TableError, TableResult, TableStatistics, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{TableId, ScanBounds, ValueBuf};
+use crate::types::{ScanBounds, TableId, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -112,9 +112,13 @@ impl MemoryHashTable {
         }
         size
     }
-    
+
     /// Get a value at a specific snapshot (direct access, no reader needed).
-    pub fn get(&self, key: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Option<ValueBuf>> {
+    pub fn get(
+        &self,
+        key: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Option<ValueBuf>> {
         let data = self.data.read().unwrap();
         if let Some(chain) = data.get(key) {
             // Create a snapshot for visibility checking
@@ -132,11 +136,17 @@ impl MemoryHashTable {
         }
         Ok(None)
     }
-    
+
     /// Put a value (direct access, no writer needed for simple cases).
-    pub fn put(&self, key: &[u8], value: &[u8], tx_id: TransactionId, commit_lsn: LogSequenceNumber) -> TableResult<u64> {
+    pub fn put(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<u64> {
         let mut data = self.data.write().unwrap();
-        
+
         // Calculate memory delta
         let old_size = data
             .get(key)
@@ -158,10 +168,10 @@ impl MemoryHashTable {
         // Update memory usage
         let delta = new_size as isize - old_size as isize;
         self.update_memory_usage(delta);
-        
+
         Ok((key.len() + value.len() + 16) as u64)
     }
-    
+
     /// Delete a value (direct access).
     pub fn delete(&self, key: &[u8]) -> TableResult<bool> {
         let mut data = self.data.write().unwrap();
@@ -173,15 +183,19 @@ impl MemoryHashTable {
             Ok(false)
         }
     }
-    
+
     /// Get approximate length.
     pub fn approximate_len(&self) -> TableResult<Option<u64>> {
         let data = self.data.read().unwrap();
         Ok(Some(data.len() as u64))
     }
-    
+
     /// Batch get operation.
-    pub fn batch_get(&self, keys: &[&[u8]], snapshot_lsn: LogSequenceNumber) -> TableResult<Vec<Option<ValueBuf>>> {
+    pub fn batch_get(
+        &self,
+        keys: &[&[u8]],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Vec<Option<ValueBuf>>> {
         let data = self.data.read().unwrap();
         let snapshot = Snapshot::new(
             crate::snap::SnapshotId::from(0),
@@ -226,7 +240,7 @@ impl Table for MemoryHashTable {
         TableCapabilities {
             ordered: false, // Hash tables are NOT ordered
             point_lookup: true,
-            prefix_scan: false, // No prefix scans
+            prefix_scan: false,  // No prefix scans
             reverse_scan: false, // No reverse scans
             range_delete: false, // No range operations
             merge_operator: false,
@@ -265,14 +279,21 @@ pub struct MemoryHashTableWriter<'a> {
 }
 
 impl MemoryHashTable {
-    pub fn reader(&self, snapshot_lsn: LogSequenceNumber) -> TableResult<MemoryHashTableReader<'_>> {
+    pub fn reader(
+        &self,
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<MemoryHashTableReader<'_>> {
         Ok(MemoryHashTableReader {
             table: self,
             snapshot_lsn,
         })
     }
 
-    pub fn writer(&self, tx_id: TransactionId, snapshot_lsn: LogSequenceNumber) -> TableResult<MemoryHashTableWriter<'_>> {
+    pub fn writer(
+        &self,
+        tx_id: TransactionId,
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<MemoryHashTableWriter<'_>> {
         Ok(MemoryHashTableWriter {
             table: self,
             tx_id,
@@ -379,7 +400,9 @@ mod tests {
     #[test]
     fn test_hash_table_basic_operations() {
         let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
-        let mut writer = table.writer(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
+        let mut writer = table
+            .writer(TransactionId::from(1), LogSequenceNumber::from(1))
+            .unwrap();
 
         // Test put
         let bytes = writer.put(b"key1", b"value1").unwrap();
@@ -391,7 +414,9 @@ mod tests {
         assert_eq!(value, Some(ValueBuf(b"value1".to_vec())));
 
         // Test delete
-        let mut writer = table.writer(TransactionId::from(2), LogSequenceNumber::from(2)).unwrap();
+        let mut writer = table
+            .writer(TransactionId::from(2), LogSequenceNumber::from(2))
+            .unwrap();
         assert!(writer.delete(b"key1").unwrap());
 
         let reader = table.reader(LogSequenceNumber::from(2)).unwrap();
@@ -402,7 +427,9 @@ mod tests {
     #[test]
     fn test_hash_table_no_range_delete() {
         let table = MemoryHashTable::new(TableId::from(1), "test_hash".to_string());
-        let mut writer = table.writer(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
+        let mut writer = table
+            .writer(TransactionId::from(1), LogSequenceNumber::from(1))
+            .unwrap();
 
         // Range delete should fail
         let result = writer.range_delete(ScanBounds::All);

@@ -16,8 +16,8 @@
 
 //! Tests for MVCC conflict detection
 
-use nanokv::types::TableId;
 use nanokv::txn::{ConflictDetector, TransactionError, TransactionId};
+use nanokv::types::TableId;
 use std::collections::HashSet;
 
 #[test]
@@ -52,7 +52,12 @@ fn test_write_write_conflict_same_key() {
     assert!(result.is_err());
 
     match result {
-        Err(TransactionError::WriteWriteConflict { object_id, key, holder_txn_id, requester_txn_id }) => {
+        Err(TransactionError::WriteWriteConflict {
+            object_id,
+            key,
+            holder_txn_id,
+            requester_txn_id,
+        }) => {
             assert_eq!(object_id, table);
             assert_eq!(key, b"a");
             assert_eq!(holder_txn_id, txn1);
@@ -164,7 +169,12 @@ fn test_read_write_conflict_detection() {
     assert!(result.is_err());
 
     match result {
-        Err(TransactionError::ReadWriteConflict { object_id, key, reader_txn_id, writer_txn_id }) => {
+        Err(TransactionError::ReadWriteConflict {
+            object_id,
+            key,
+            reader_txn_id,
+            writer_txn_id,
+        }) => {
             assert_eq!(object_id, table);
             assert_eq!(key, b"a");
             assert_eq!(reader_txn_id, txn2);

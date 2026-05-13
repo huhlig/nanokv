@@ -24,7 +24,7 @@
 //! - Chain corruption detection
 //! - Free chain and verify pages released
 
-use nanokv::pager::{Pager, PagerConfig, OverflowChainStream};
+use nanokv::pager::{OverflowChainStream, Pager, PagerConfig};
 use nanokv::table::ValueStream;
 use nanokv::vfs::MemoryFileSystem;
 
@@ -48,7 +48,7 @@ fn test_single_page_overflow() {
     // Also test streaming API
     let mut stream = OverflowChainStream::new(&pager, page_ids[0], test_data.len() as u64);
     assert_eq!(stream.size_hint(), Some(test_data.len() as u64));
-    
+
     let mut buffer = vec![0u8; test_data.len()];
     let n = stream.read(&mut buffer).unwrap();
     assert_eq!(n, test_data.len());
@@ -229,7 +229,7 @@ fn test_empty_data() {
     // Empty data - implementation may or may not allocate pages
     let test_data = b"";
     let page_ids = pager.allocate_overflow_chain(test_data).unwrap();
-    
+
     // If pages were allocated, verify we can read back empty data
     if !page_ids.is_empty() {
         let result = pager.read_overflow_chain(page_ids[0]).unwrap();
@@ -319,7 +319,7 @@ fn test_stream_eof_behavior() {
     let page_ids = pager.allocate_overflow_chain(&test_data).unwrap();
 
     let mut stream = OverflowChainStream::new(&pager, page_ids[0], test_data.len() as u64);
-    
+
     // Read all data
     let mut buffer = vec![0u8; 200];
     let n = stream.read(&mut buffer).unwrap();
@@ -328,7 +328,7 @@ fn test_stream_eof_behavior() {
     // Further reads should return 0 (EOF)
     let n = stream.read(&mut buffer).unwrap();
     assert_eq!(n, 0);
-    
+
     let n = stream.read(&mut buffer).unwrap();
     assert_eq!(n, 0);
 }

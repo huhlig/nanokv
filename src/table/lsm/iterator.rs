@@ -172,11 +172,7 @@ pub struct MemtableIterator {
 
 impl MemtableIterator {
     /// Create a new memtable iterator.
-    pub fn new(
-        memtable: &Memtable,
-        direction: Direction,
-        priority: usize,
-    ) -> TableResult<Self> {
+    pub fn new(memtable: &Memtable, direction: Direction, priority: usize) -> TableResult<Self> {
         // Get all entries from the memtable
         // Note: This requires the memtable to be immutable
         let entries = if memtable.is_immutable() {
@@ -215,11 +211,12 @@ impl MemtableIterator {
     /// Update the current entry cache.
     fn update_current(&mut self) {
         if let Some(pos) = self.position
-            && pos < self.entries.len() {
-                let (key, chain) = &self.entries[pos];
-                self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
-                return;
-            }
+            && pos < self.entries.len()
+        {
+            let (key, chain) = &self.entries[pos];
+            self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
+            return;
+        }
         self.current = None;
     }
 }
@@ -371,15 +368,14 @@ impl<FS: FileSystem> SStableIterator<FS> {
 
     /// Load a data block by index.
     fn load_block(&mut self, block_idx: usize) -> TableResult<()> {
-        let index_entry = self.reader.index_block().get(block_idx)
-            .ok_or_else(|| {
-                use crate::table::TableError;
-                TableError::corruption(
-                    "SSTableIterator::load_block",
-                    "invalid_block_index",
-                    format!("Invalid block index: {}", block_idx),
-                )
-            })?;
+        let index_entry = self.reader.index_block().get(block_idx).ok_or_else(|| {
+            use crate::table::TableError;
+            TableError::corruption(
+                "SSTableIterator::load_block",
+                "invalid_block_index",
+                format!("Invalid block index: {}", block_idx),
+            )
+        })?;
 
         // Read the data block from the page
         let page = self.reader.pager().read_page(index_entry.page_id)?;
@@ -397,25 +393,33 @@ impl<FS: FileSystem> SStableIterator<FS> {
         } else {
             // Last data block - find where index block starts
             let page_size = self.reader.pager().page_size().data_size();
-            let page_index = (index_entry.page_id.as_u64() - self.reader.metadata().first_page_id.as_u64()) as usize;
+            let page_index = (index_entry.page_id.as_u64()
+                - self.reader.metadata().first_page_id.as_u64())
+                as usize;
             let page_start_offset = page_index * page_size;
             let index_start_in_sstable = self.reader.metadata().index_offset as usize;
 
-            if index_start_in_sstable >= page_start_offset &&
-               index_start_in_sstable < page_start_offset + page_size {
+            if index_start_in_sstable >= page_start_offset
+                && index_start_in_sstable < page_start_offset + page_size
+            {
                 index_start_in_sstable - page_start_offset
             } else {
                 page_data.len()
             }
         };
 
-        if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end {
+        if block_start >= page_data.len() || block_end > page_data.len() || block_start >= block_end
+        {
             use crate::table::TableError;
             return Err(TableError::corruption(
                 "SSTableIterator::load_block",
                 "invalid_block_bounds",
-                format!("Invalid data block bounds: start={}, end={}, page_len={}",
-                    block_start, block_end, page_data.len()),
+                format!(
+                    "Invalid data block bounds: start={}, end={}, page_len={}",
+                    block_start,
+                    block_end,
+                    page_data.len()
+                ),
             ));
         }
 
@@ -431,17 +435,18 @@ impl<FS: FileSystem> SStableIterator<FS> {
     /// Update the current entry cache from the current block and position.
     fn update_current(&mut self) {
         if let (Some(block), Some(pos)) = (&self.current_block, self.position_in_block)
-            && let Some((key, chain)) = block.entries().get(pos) {
-                self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
-                return;
-            }
+            && let Some((key, chain)) = block.entries().get(pos)
+        {
+            self.current = Some(LsmEntry::new(key.clone(), chain.clone(), self.priority));
+            return;
+        }
         self.current = None;
     }
 
     /// Move to the next block in the iteration direction.
     fn advance_to_next_block(&mut self) -> TableResult<bool> {
         let num_blocks = self.reader.index_block().len();
-        
+
         if let Some(current_idx) = self.current_block_idx {
             let next_idx = match self.direction {
                 Direction::Forward => {
@@ -464,14 +469,15 @@ impl<FS: FileSystem> SStableIterator<FS> {
                 self.load_block(idx)?;
                 // Position at first/last entry in new block
                 if let Some(block) = &self.current_block
-                    && !block.is_empty() {
-                        self.position_in_block = match self.direction {
-                            Direction::Forward => Some(0),
-                            Direction::Backward => Some(block.len() - 1),
-                        };
-                        self.update_current();
-                        return Ok(true);
-                    }
+                    && !block.is_empty()
+                {
+                    self.position_in_block = match self.direction {
+                        Direction::Forward => Some(0),
+                        Direction::Backward => Some(block.len() - 1),
+                    };
+                    self.update_current();
+                    return Ok(true);
+                }
             }
         }
 
@@ -560,7 +566,8 @@ impl<FS: FileSystem> LsmIterator for SStableIterator<FS> {
             match self.direction {
                 Direction::Forward => {
                     // Find first entry >= target
-                    let pos = block.entries()
+                    let pos = block
+                        .entries()
                         .binary_search_by(|(k, _)| k.as_slice().cmp(target))
                         .unwrap_or_else(|pos| pos);
 
@@ -574,7 +581,8 @@ impl<FS: FileSystem> LsmIterator for SStableIterator<FS> {
                 }
                 Direction::Backward => {
                     // Find last entry <= target
-                    let pos = block.entries()
+                    let pos = block
+                        .entries()
                         .binary_search_by(|(k, _)| k.as_slice().cmp(target));
 
                     self.position_in_block = match pos {
@@ -770,17 +778,18 @@ impl MergeIterator {
             let mut current_chain = Some(&entry.chain);
             while let Some(version) = current_chain {
                 if let Some(commit_lsn) = version.commit_lsn
-                    && commit_lsn <= self.snapshot_lsn {
-                        // Found visible version
-                        // Check if it's a tombstone (empty value)
-                        if !version.value.is_empty() {
-                            self.current = Some((entry.key.clone(), version.value.clone()));
-                            return Ok(());
-                        } else {
-                            // Tombstone - skip this key
-                            break;
-                        }
+                    && commit_lsn <= self.snapshot_lsn
+                {
+                    // Found visible version
+                    // Check if it's a tombstone (empty value)
+                    if !version.value.is_empty() {
+                        self.current = Some((entry.key.clone(), version.value.clone()));
+                        return Ok(());
+                    } else {
+                        // Tombstone - skip this key
+                        break;
                     }
+                }
                 current_chain = version.prev_version.as_deref();
             }
 

@@ -21,7 +21,7 @@
 
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::{DenseOrdered, MemoryBTree, PagedBTree, SpecialtyTableCursor};
-use nanokv::types::{Bound, KeyBuf, TableId, ScanBounds};
+use nanokv::types::{Bound, KeyBuf, ScanBounds, TableId};
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
 
@@ -50,27 +50,31 @@ fn create_paged_index(name: &str) -> (PagedBTree<MemoryFileSystem>, Arc<Pager<Me
 #[test]
 fn test_memory_btree_insert_entry() {
     let mut index = create_memory_index("user_email_idx");
-    
+
     // Insert index entries: email -> user_id
-    index.insert_entry(b"alice@example.com", b"user_001").unwrap();
+    index
+        .insert_entry(b"alice@example.com", b"user_001")
+        .unwrap();
     index.insert_entry(b"bob@example.com", b"user_002").unwrap();
-    index.insert_entry(b"charlie@example.com", b"user_003").unwrap();
-    
+    index
+        .insert_entry(b"charlie@example.com", b"user_003")
+        .unwrap();
+
     // Verify entries exist via scan
     let mut cursor = index.scan(ScanBounds::All).unwrap();
-    
+
     assert!(cursor.valid());
     assert_eq!(cursor.index_key(), Some(b"alice@example.com".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"user_001".as_ref()));
-    
+
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"bob@example.com".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"user_002".as_ref()));
-    
+
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"charlie@example.com".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"user_003".as_ref()));
-    
+
     cursor.next().unwrap();
     assert!(!cursor.valid());
 }
@@ -78,30 +82,34 @@ fn test_memory_btree_insert_entry() {
 #[test]
 fn test_paged_btree_insert_entry() {
     let (mut index, pager) = create_paged_index("user_email_idx");
-    
+
     // Insert index entries: email -> user_id
-    index.insert_entry(b"alice@example.com", b"user_001").unwrap();
+    index
+        .insert_entry(b"alice@example.com", b"user_001")
+        .unwrap();
     index.insert_entry(b"bob@example.com", b"user_002").unwrap();
-    index.insert_entry(b"charlie@example.com", b"user_003").unwrap();
-    
+    index
+        .insert_entry(b"charlie@example.com", b"user_003")
+        .unwrap();
+
     // Flush pager cache to ensure writes are persisted
     pager.flush_cache().unwrap();
-    
+
     // Verify entries exist via scan
     let mut cursor = index.scan(ScanBounds::All).unwrap();
-    
+
     assert!(cursor.valid());
     assert_eq!(cursor.index_key(), Some(b"alice@example.com".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"user_001".as_ref()));
-    
+
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"bob@example.com".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"user_002".as_ref()));
-    
+
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"charlie@example.com".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"user_003".as_ref()));
-    
+
     cursor.next().unwrap();
     assert!(!cursor.valid());
 }
@@ -109,24 +117,28 @@ fn test_paged_btree_insert_entry() {
 #[test]
 fn test_memory_btree_delete_entry() {
     let mut index = create_memory_index("user_email_idx");
-    
+
     // Insert entries
-    index.insert_entry(b"alice@example.com", b"user_001").unwrap();
+    index
+        .insert_entry(b"alice@example.com", b"user_001")
+        .unwrap();
     index.insert_entry(b"bob@example.com", b"user_002").unwrap();
-    index.insert_entry(b"charlie@example.com", b"user_003").unwrap();
-    
+    index
+        .insert_entry(b"charlie@example.com", b"user_003")
+        .unwrap();
+
     // Delete one entry
     index.delete_entry(b"bob@example.com", b"user_002").unwrap();
-    
+
     // Verify deletion
     let mut cursor = index.scan(ScanBounds::All).unwrap();
-    
+
     assert!(cursor.valid());
     assert_eq!(cursor.index_key(), Some(b"alice@example.com".as_ref()));
-    
+
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"charlie@example.com".as_ref()));
-    
+
     cursor.next().unwrap();
     assert!(!cursor.valid());
 }
@@ -134,27 +146,31 @@ fn test_memory_btree_delete_entry() {
 #[test]
 fn test_paged_btree_delete_entry() {
     let (mut index, pager) = create_paged_index("user_email_idx");
-    
+
     // Insert entries
-    index.insert_entry(b"alice@example.com", b"user_001").unwrap();
+    index
+        .insert_entry(b"alice@example.com", b"user_001")
+        .unwrap();
     index.insert_entry(b"bob@example.com", b"user_002").unwrap();
-    index.insert_entry(b"charlie@example.com", b"user_003").unwrap();
-    
+    index
+        .insert_entry(b"charlie@example.com", b"user_003")
+        .unwrap();
+
     // Delete one entry
     index.delete_entry(b"bob@example.com", b"user_002").unwrap();
-    
+
     // Flush pager cache
     pager.flush_cache().unwrap();
-    
+
     // Verify deletion
     let mut cursor = index.scan(ScanBounds::All).unwrap();
-    
+
     assert!(cursor.valid());
     assert_eq!(cursor.index_key(), Some(b"alice@example.com".as_ref()));
-    
+
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"charlie@example.com".as_ref()));
-    
+
     cursor.next().unwrap();
     assert!(!cursor.valid());
 }
@@ -166,110 +182,134 @@ fn test_paged_btree_delete_entry() {
 #[test]
 fn test_memory_btree_range_scan() {
     let mut index = create_memory_index("timestamp_idx");
-    
+
     // Insert timestamp -> record_id entries
     for i in 0..10 {
         let timestamp = format!("2024-01-{:02}T00:00:00Z", i + 1);
         let record_id = format!("rec_{:03}", i);
-        index.insert_entry(timestamp.as_bytes(), record_id.as_bytes()).unwrap();
+        index
+            .insert_entry(timestamp.as_bytes(), record_id.as_bytes())
+            .unwrap();
     }
-    
+
     // Range scan: from 2024-01-03 to 2024-01-07 (inclusive)
     let bounds = ScanBounds::Range {
         start: Bound::Included(KeyBuf(b"2024-01-03T00:00:00Z".to_vec())),
         end: Bound::Included(KeyBuf(b"2024-01-07T00:00:00Z".to_vec())),
     };
-    
+
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 5); // Days 3, 4, 5, 6, 7
 }
 
 #[test]
 fn test_paged_btree_range_scan() {
     let (mut index, pager) = create_paged_index("timestamp_idx");
-    
+
     // Insert timestamp -> record_id entries
     for i in 0..10 {
         let timestamp = format!("2024-01-{:02}T00:00:00Z", i + 1);
         let record_id = format!("rec_{:03}", i);
-        index.insert_entry(timestamp.as_bytes(), record_id.as_bytes()).unwrap();
+        index
+            .insert_entry(timestamp.as_bytes(), record_id.as_bytes())
+            .unwrap();
     }
-    
+
     // Flush pager cache
     pager.flush_cache().unwrap();
-    
+
     // Range scan: from 2024-01-03 to 2024-01-07 (inclusive)
     let bounds = ScanBounds::Range {
         start: Bound::Included(KeyBuf(b"2024-01-03T00:00:00Z".to_vec())),
         end: Bound::Included(KeyBuf(b"2024-01-07T00:00:00Z".to_vec())),
     };
-    
+
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 5); // Days 3, 4, 5, 6, 7
 }
 
 #[test]
 fn test_memory_btree_prefix_scan() {
     let mut index = create_memory_index("category_idx");
-    
+
     // Insert category -> product_id entries
-    index.insert_entry(b"electronics:laptop:001", b"prod_001").unwrap();
-    index.insert_entry(b"electronics:laptop:002", b"prod_002").unwrap();
-    index.insert_entry(b"electronics:phone:001", b"prod_003").unwrap();
-    index.insert_entry(b"furniture:chair:001", b"prod_004").unwrap();
-    index.insert_entry(b"furniture:desk:001", b"prod_005").unwrap();
-    
+    index
+        .insert_entry(b"electronics:laptop:001", b"prod_001")
+        .unwrap();
+    index
+        .insert_entry(b"electronics:laptop:002", b"prod_002")
+        .unwrap();
+    index
+        .insert_entry(b"electronics:phone:001", b"prod_003")
+        .unwrap();
+    index
+        .insert_entry(b"furniture:chair:001", b"prod_004")
+        .unwrap();
+    index
+        .insert_entry(b"furniture:desk:001", b"prod_005")
+        .unwrap();
+
     // Prefix scan: all electronics
     let bounds = ScanBounds::Prefix(KeyBuf(b"electronics:".to_vec()));
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 3); // All electronics items
 }
 
 #[test]
 fn test_paged_btree_prefix_scan() {
     let (mut index, pager) = create_paged_index("category_idx");
-    
+
     // Insert category -> product_id entries
-    index.insert_entry(b"electronics:laptop:001", b"prod_001").unwrap();
-    index.insert_entry(b"electronics:laptop:002", b"prod_002").unwrap();
-    index.insert_entry(b"electronics:phone:001", b"prod_003").unwrap();
-    index.insert_entry(b"furniture:chair:001", b"prod_004").unwrap();
-    index.insert_entry(b"furniture:desk:001", b"prod_005").unwrap();
-    
+    index
+        .insert_entry(b"electronics:laptop:001", b"prod_001")
+        .unwrap();
+    index
+        .insert_entry(b"electronics:laptop:002", b"prod_002")
+        .unwrap();
+    index
+        .insert_entry(b"electronics:phone:001", b"prod_003")
+        .unwrap();
+    index
+        .insert_entry(b"furniture:chair:001", b"prod_004")
+        .unwrap();
+    index
+        .insert_entry(b"furniture:desk:001", b"prod_005")
+        .unwrap();
+
     // Flush pager cache
     pager.flush_cache().unwrap();
-    
+
     // Prefix scan: all electronics
     let bounds = ScanBounds::Prefix(KeyBuf(b"electronics:".to_vec()));
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 3); // All electronics items
 }
 
@@ -280,53 +320,73 @@ fn test_paged_btree_prefix_scan() {
 #[test]
 fn test_memory_btree_composite_key() {
     let mut index = create_memory_index("user_timestamp_idx");
-    
+
     // Composite key: user_id + timestamp -> event_id
     // Format: "user_id|timestamp"
-    index.insert_entry(b"user_001|2024-01-01T10:00:00Z", b"event_001").unwrap();
-    index.insert_entry(b"user_001|2024-01-01T11:00:00Z", b"event_002").unwrap();
-    index.insert_entry(b"user_001|2024-01-01T12:00:00Z", b"event_003").unwrap();
-    index.insert_entry(b"user_002|2024-01-01T10:00:00Z", b"event_004").unwrap();
-    index.insert_entry(b"user_002|2024-01-01T11:00:00Z", b"event_005").unwrap();
-    
+    index
+        .insert_entry(b"user_001|2024-01-01T10:00:00Z", b"event_001")
+        .unwrap();
+    index
+        .insert_entry(b"user_001|2024-01-01T11:00:00Z", b"event_002")
+        .unwrap();
+    index
+        .insert_entry(b"user_001|2024-01-01T12:00:00Z", b"event_003")
+        .unwrap();
+    index
+        .insert_entry(b"user_002|2024-01-01T10:00:00Z", b"event_004")
+        .unwrap();
+    index
+        .insert_entry(b"user_002|2024-01-01T11:00:00Z", b"event_005")
+        .unwrap();
+
     // Query all events for user_001
     let bounds = ScanBounds::Prefix(KeyBuf(b"user_001|".to_vec()));
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 3); // All user_001 events
 }
 
 #[test]
 fn test_paged_btree_composite_key() {
     let (mut index, pager) = create_paged_index("user_timestamp_idx");
-    
+
     // Composite key: user_id + timestamp -> event_id
     // Format: "user_id|timestamp"
-    index.insert_entry(b"user_001|2024-01-01T10:00:00Z", b"event_001").unwrap();
-    index.insert_entry(b"user_001|2024-01-01T11:00:00Z", b"event_002").unwrap();
-    index.insert_entry(b"user_001|2024-01-01T12:00:00Z", b"event_003").unwrap();
-    index.insert_entry(b"user_002|2024-01-01T10:00:00Z", b"event_004").unwrap();
-    index.insert_entry(b"user_002|2024-01-01T11:00:00Z", b"event_005").unwrap();
-    
+    index
+        .insert_entry(b"user_001|2024-01-01T10:00:00Z", b"event_001")
+        .unwrap();
+    index
+        .insert_entry(b"user_001|2024-01-01T11:00:00Z", b"event_002")
+        .unwrap();
+    index
+        .insert_entry(b"user_001|2024-01-01T12:00:00Z", b"event_003")
+        .unwrap();
+    index
+        .insert_entry(b"user_002|2024-01-01T10:00:00Z", b"event_004")
+        .unwrap();
+    index
+        .insert_entry(b"user_002|2024-01-01T11:00:00Z", b"event_005")
+        .unwrap();
+
     // Flush pager cache
     pager.flush_cache().unwrap();
-    
+
     // Query all events for user_001
     let bounds = ScanBounds::Prefix(KeyBuf(b"user_001|".to_vec()));
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 3); // All user_001 events
 }
 
@@ -337,7 +397,7 @@ fn test_paged_btree_composite_key() {
 #[test]
 fn test_memory_btree_non_unique_index() {
     let mut index = create_memory_index("status_idx");
-    
+
     // Non-unique index: status -> user_id
     // Multiple users can have the same status
     index.insert_entry(b"active", b"user_001").unwrap();
@@ -345,20 +405,20 @@ fn test_memory_btree_non_unique_index() {
     index.insert_entry(b"active", b"user_003").unwrap();
     index.insert_entry(b"inactive", b"user_004").unwrap();
     index.insert_entry(b"pending", b"user_005").unwrap();
-    
+
     // Note: Current implementation overwrites entries with same key
     // For true non-unique indexes, we'd need to encode primary key in index key
     // e.g., "active|user_001", "active|user_002", etc.
-    
+
     // Scan all entries
     let mut cursor = index.scan(ScanBounds::All).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     // With current implementation, duplicate keys overwrite
     assert_eq!(count, 3); // active (last), inactive, pending
 }
@@ -366,25 +426,29 @@ fn test_memory_btree_non_unique_index() {
 #[test]
 fn test_memory_btree_non_unique_with_encoded_key() {
     let mut index = create_memory_index("status_idx");
-    
+
     // Proper non-unique index: encode primary key in index key
     // Format: "status|primary_key"
     index.insert_entry(b"active|user_001", b"user_001").unwrap();
     index.insert_entry(b"active|user_002", b"user_002").unwrap();
     index.insert_entry(b"active|user_003", b"user_003").unwrap();
-    index.insert_entry(b"inactive|user_004", b"user_004").unwrap();
-    index.insert_entry(b"pending|user_005", b"user_005").unwrap();
-    
+    index
+        .insert_entry(b"inactive|user_004", b"user_004")
+        .unwrap();
+    index
+        .insert_entry(b"pending|user_005", b"user_005")
+        .unwrap();
+
     // Query all active users
     let bounds = ScanBounds::Prefix(KeyBuf(b"active|".to_vec()));
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 3); // All active users
 }
 
@@ -395,26 +459,28 @@ fn test_memory_btree_non_unique_with_encoded_key() {
 #[test]
 fn test_memory_btree_cursor_seek() {
     let mut index = create_memory_index("score_idx");
-    
+
     // Insert score -> player_id entries
     for i in 0..10 {
         let score = format!("{:05}", i * 100); // 00000, 00100, 00200, ...
         let player = format!("player_{:02}", i);
-        index.insert_entry(score.as_bytes(), player.as_bytes()).unwrap();
+        index
+            .insert_entry(score.as_bytes(), player.as_bytes())
+            .unwrap();
     }
-    
+
     // Seek to score 00500
     let mut cursor = index.scan(ScanBounds::All).unwrap();
     cursor.seek(b"00500").unwrap();
-    
+
     assert!(cursor.valid());
     assert_eq!(cursor.index_key(), Some(b"00500".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"player_05".as_ref()));
-    
+
     // Move forward
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"00600".as_ref()));
-    
+
     // Move backward
     cursor.prev().unwrap();
     assert_eq!(cursor.index_key(), Some(b"00500".as_ref()));
@@ -423,26 +489,28 @@ fn test_memory_btree_cursor_seek() {
 #[test]
 fn test_paged_btree_cursor_seek() {
     let (mut index, _pager) = create_paged_index("score_idx");
-    
+
     // Insert score -> player_id entries
     for i in 0..10 {
         let score = format!("{:05}", i * 100); // 00000, 00100, 00200, ...
         let player = format!("player_{:02}", i);
-        index.insert_entry(score.as_bytes(), player.as_bytes()).unwrap();
+        index
+            .insert_entry(score.as_bytes(), player.as_bytes())
+            .unwrap();
     }
-    
+
     // Seek to score 00500
     let mut cursor = index.scan(ScanBounds::All).unwrap();
     cursor.seek(b"00500").unwrap();
-    
+
     assert!(cursor.valid());
     assert_eq!(cursor.index_key(), Some(b"00500".as_ref()));
     assert_eq!(cursor.primary_key(), Some(b"player_05".as_ref()));
-    
+
     // Move forward
     cursor.next().unwrap();
     assert_eq!(cursor.index_key(), Some(b"00600".as_ref()));
-    
+
     // Move backward
     cursor.prev().unwrap();
     assert_eq!(cursor.index_key(), Some(b"00500".as_ref()));
@@ -455,14 +523,16 @@ fn test_paged_btree_cursor_seek() {
 #[test]
 fn test_memory_btree_stats() {
     let mut index = create_memory_index("test_idx");
-    
+
     // Insert entries
     for i in 0..100 {
         let key = format!("key_{:03}", i);
         let value = format!("value_{:03}", i);
-        index.insert_entry(key.as_bytes(), value.as_bytes()).unwrap();
+        index
+            .insert_entry(key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
-    
+
     let stats = index.stats().unwrap();
     assert_eq!(stats.entry_count, Some(100));
     assert!(stats.size_bytes.is_some());
@@ -472,14 +542,16 @@ fn test_memory_btree_stats() {
 #[test]
 fn test_paged_btree_stats() {
     let (mut index, _pager) = create_paged_index("test_idx");
-    
+
     // Insert entries
     for i in 0..100 {
         let key = format!("key_{:03}", i);
         let value = format!("value_{:03}", i);
-        index.insert_entry(key.as_bytes(), value.as_bytes()).unwrap();
+        index
+            .insert_entry(key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
-    
+
     let stats = index.stats().unwrap();
     assert_eq!(stats.entry_count, Some(100));
     assert_eq!(stats.distinct_keys, Some(100));
@@ -488,14 +560,16 @@ fn test_paged_btree_stats() {
 #[test]
 fn test_memory_btree_verify() {
     let mut index = create_memory_index("test_idx");
-    
+
     // Insert entries
     for i in 0..50 {
         let key = format!("key_{:03}", i);
         let value = format!("value_{:03}", i);
-        index.insert_entry(key.as_bytes(), value.as_bytes()).unwrap();
+        index
+            .insert_entry(key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
-    
+
     let report = index.verify().unwrap();
     assert_eq!(report.checked_items, 50);
     assert!(report.errors.is_empty());
@@ -505,14 +579,16 @@ fn test_memory_btree_verify() {
 #[test]
 fn test_paged_btree_verify() {
     let (mut index, _pager) = create_paged_index("test_idx");
-    
+
     // Insert entries
     for i in 0..50 {
         let key = format!("key_{:03}", i);
         let value = format!("value_{:03}", i);
-        index.insert_entry(key.as_bytes(), value.as_bytes()).unwrap();
+        index
+            .insert_entry(key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
-    
+
     let report = index.verify().unwrap();
     assert!(report.checked_items > 0);
     assert!(report.errors.is_empty());
@@ -526,7 +602,7 @@ fn test_paged_btree_verify() {
 fn test_memory_btree_capabilities() {
     let index = create_memory_index("test_idx");
     let caps = index.capabilities();
-    
+
     assert!(caps.exact);
     assert!(!caps.approximate);
     assert!(caps.ordered);
@@ -541,7 +617,7 @@ fn test_memory_btree_capabilities() {
 fn test_paged_btree_capabilities() {
     let (index, _pager) = create_paged_index("test_idx");
     let caps = index.capabilities();
-    
+
     assert!(caps.exact);
     assert!(!caps.approximate);
     assert!(caps.ordered);
@@ -559,67 +635,71 @@ fn test_paged_btree_capabilities() {
 #[test]
 fn test_memory_btree_large_dataset() {
     let mut index = create_memory_index("large_idx");
-    
+
     // Insert 1000 entries
     for i in 0..1000 {
         let key = format!("key_{:06}", i);
         let value = format!("value_{:06}", i);
-        index.insert_entry(key.as_bytes(), value.as_bytes()).unwrap();
+        index
+            .insert_entry(key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
-    
+
     // Verify count
     let stats = index.stats().unwrap();
     assert_eq!(stats.entry_count, Some(1000));
-    
+
     // Verify range scan works
     let bounds = ScanBounds::Range {
         start: Bound::Included(KeyBuf(b"key_000500".to_vec())),
         end: Bound::Excluded(KeyBuf(b"key_000600".to_vec())),
     };
-    
+
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 100); // 500-599
 }
 
 #[test]
 fn test_paged_btree_large_dataset() {
     let (mut index, pager) = create_paged_index("large_idx");
-    
+
     // Insert 1000 entries
     for i in 0..1000 {
         let key = format!("key_{:06}", i);
         let value = format!("value_{:06}", i);
-        index.insert_entry(key.as_bytes(), value.as_bytes()).unwrap();
+        index
+            .insert_entry(key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
-    
+
     // Flush pager cache
     pager.flush_cache().unwrap();
-    
+
     // Verify count
     let stats = index.stats().unwrap();
     assert_eq!(stats.entry_count, Some(1000));
-    
+
     // Verify range scan works
     let bounds = ScanBounds::Range {
         start: Bound::Included(KeyBuf(b"key_000500".to_vec())),
         end: Bound::Excluded(KeyBuf(b"key_000600".to_vec())),
     };
-    
+
     let mut cursor = index.scan(bounds).unwrap();
     let mut count = 0;
-    
+
     while cursor.valid() {
         count += 1;
         cursor.next().unwrap();
     }
-    
+
     assert_eq!(count, 100); // 500-599
 }
 

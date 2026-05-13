@@ -141,7 +141,8 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
     /// Write a node to a page.
     fn write_node(pager: &Pager<FS>, page_id: PageId, node: &RTreeNode) -> TableResult<()> {
-        let mut page = crate::pager::Page::new(page_id, PageType::RTreeNode, pager.page_size().data_size());
+        let mut page =
+            crate::pager::Page::new(page_id, PageType::RTreeNode, pager.page_size().data_size());
         page.data_mut().extend_from_slice(&node.to_bytes());
         let page_len = page.data().len();
         let header_len = crate::pager::PageHeader::SIZE;
@@ -159,11 +160,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
     }
 
     /// Calculate the height of the tree.
-    fn calculate_height(
-        pager: &Pager<FS>,
-        _page_id: PageId,
-        node: &RTreeNode,
-    ) -> TableResult<u32> {
+    fn calculate_height(pager: &Pager<FS>, _page_id: PageId, node: &RTreeNode) -> TableResult<u32> {
         match node {
             RTreeNode::Leaf { .. } => Ok(1),
             RTreeNode::Internal { entries, level, .. } => {
@@ -172,7 +169,8 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 } else {
                     // Recursively check first child
                     let child_node = Self::read_node(pager, entries[0].child_page_id)?;
-                    let child_height = Self::calculate_height(pager, entries[0].child_page_id, &child_node)?;
+                    let child_height =
+                        Self::calculate_height(pager, entries[0].child_page_id, &child_node)?;
                     Ok(child_height + 1)
                 }
             }
@@ -180,11 +178,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
     }
 
     /// Count the total number of objects in the tree.
-    fn count_objects(
-        pager: &Pager<FS>,
-        _page_id: PageId,
-        node: &RTreeNode,
-    ) -> TableResult<usize> {
+    fn count_objects(pager: &Pager<FS>, _page_id: PageId, node: &RTreeNode) -> TableResult<usize> {
         match node {
             RTreeNode::Leaf { entries, .. } => Ok(entries.len()),
             RTreeNode::Internal { entries, .. } => {
@@ -206,18 +200,24 @@ impl<FS: FileSystem> PagedRTree<FS> {
         let entry = LeafEntry::new(mbr, object_id);
 
         let root_page_id = self.root_page_id();
-        let root_node = Self::read_node(&self.pager, root_page_id)
-            .map_err(|e| TableError::Other(format!("Failed to read root node {root_page_id} before insert of {:?}: {e}", id)))?;
+        let root_node = Self::read_node(&self.pager, root_page_id).map_err(|e| {
+            TableError::Other(format!(
+                "Failed to read root node {root_page_id} before insert of {:?}: {e}",
+                id
+            ))
+        })?;
 
         // Find the appropriate leaf node
         let leaf_page_id = self.choose_leaf(root_page_id, &root_node, &entry.mbr)?;
-        let mut leaf_node = Self::read_node(&self.pager, leaf_page_id)
-            .map_err(|e| TableError::Other(format!("Failed to read leaf node {leaf_page_id} before insert of {:?}: {e}", id)))?;
+        let mut leaf_node = Self::read_node(&self.pager, leaf_page_id).map_err(|e| {
+            TableError::Other(format!(
+                "Failed to read leaf node {leaf_page_id} before insert of {:?}: {e}",
+                id
+            ))
+        })?;
 
         // Add entry to leaf
-        leaf_node
-            .add_leaf_entry(entry)
-            .map_err(TableError::Other)?;
+        leaf_node.add_leaf_entry(entry).map_err(TableError::Other)?;
 
         // Check if split is needed
         if leaf_node.entry_count() > self.config.max_entries_per_node {
@@ -233,12 +233,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
     }
 
     /// Choose the best leaf node for inserting an entry.
-    fn choose_leaf(
-        &self,
-        page_id: PageId,
-        node: &RTreeNode,
-        mbr: &Mbr,
-    ) -> TableResult<PageId> {
+    fn choose_leaf(&self, page_id: PageId, node: &RTreeNode, mbr: &Mbr) -> TableResult<PageId> {
         match node {
             RTreeNode::Leaf { .. } => Ok(page_id),
             RTreeNode::Internal { entries, .. } => {
@@ -259,8 +254,11 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 }
 
                 let child_page_id = entries[best_idx].child_page_id;
-                let child_node = Self::read_node(&self.pager, child_page_id)
-                    .map_err(|e| TableError::Other(format!("Failed to read child node {child_page_id} during choose_leaf: {e}")))?;
+                let child_node = Self::read_node(&self.pager, child_page_id).map_err(|e| {
+                    TableError::Other(format!(
+                        "Failed to read child node {child_page_id} during choose_leaf: {e}"
+                    ))
+                })?;
                 self.choose_leaf(child_page_id, &child_node, mbr)
             }
         }
@@ -269,8 +267,13 @@ impl<FS: FileSystem> PagedRTree<FS> {
     /// Split a node that has overflowed.
     fn split_node(&self, page_id: PageId, node: RTreeNode) -> TableResult<()> {
         match node {
-            RTreeNode::Leaf { entries, parent_page_id, next_leaf } => {
-                let split_result = split_leaf_entries(entries, self.config.split_strategy, self.config.dimensions);
+            RTreeNode::Leaf {
+                entries,
+                parent_page_id,
+                next_leaf,
+            } => {
+                let split_result =
+                    split_leaf_entries(entries, self.config.split_strategy, self.config.dimensions);
 
                 // Create new leaf node for right split
                 let new_page_id = self.pager.allocate_page(PageType::RTreeNode)?;
@@ -284,14 +287,24 @@ impl<FS: FileSystem> PagedRTree<FS> {
                     left_node.add_leaf_entry(entry).map_err(TableError::Other)?;
                 }
                 for entry in split_result.right {
-                    right_node.add_leaf_entry(entry).map_err(TableError::Other)?;
+                    right_node
+                        .add_leaf_entry(entry)
+                        .map_err(TableError::Other)?;
                 }
 
                 // Update leaf chain
-                if let RTreeNode::Leaf { next_leaf: ref mut left_next, .. } = left_node {
+                if let RTreeNode::Leaf {
+                    next_leaf: ref mut left_next,
+                    ..
+                } = left_node
+                {
                     *left_next = new_page_id;
                 }
-                if let RTreeNode::Leaf { next_leaf: ref mut right_next, .. } = right_node {
+                if let RTreeNode::Leaf {
+                    next_leaf: ref mut right_next,
+                    ..
+                } = right_node
+                {
                     *right_next = next_leaf;
                 }
 
@@ -330,11 +343,25 @@ impl<FS: FileSystem> PagedRTree<FS> {
                     *self.height.write().unwrap() += 1;
                 } else {
                     // Update existing parent
-                    self.update_parent_after_split(parent_page_id, page_id, left_mbr, new_page_id, right_mbr)?;
+                    self.update_parent_after_split(
+                        parent_page_id,
+                        page_id,
+                        left_mbr,
+                        new_page_id,
+                        right_mbr,
+                    )?;
                 }
             }
-            RTreeNode::Internal { entries, parent_page_id, level } => {
-                let split_result = split_internal_entries(entries, self.config.split_strategy, self.config.dimensions);
+            RTreeNode::Internal {
+                entries,
+                parent_page_id,
+                level,
+            } => {
+                let split_result = split_internal_entries(
+                    entries,
+                    self.config.split_strategy,
+                    self.config.dimensions,
+                );
 
                 let new_page_id = self.pager.allocate_page(PageType::RTreeNode)?;
 
@@ -344,10 +371,14 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 right_node.set_parent_page_id(parent_page_id);
 
                 for entry in split_result.left {
-                    left_node.add_internal_entry(entry).map_err(TableError::Other)?;
+                    left_node
+                        .add_internal_entry(entry)
+                        .map_err(TableError::Other)?;
                 }
                 for entry in split_result.right {
-                    right_node.add_internal_entry(entry).map_err(TableError::Other)?;
+                    right_node
+                        .add_internal_entry(entry)
+                        .map_err(TableError::Other)?;
                 }
 
                 Self::write_node(&self.pager, page_id, &left_node)?;
@@ -384,7 +415,13 @@ impl<FS: FileSystem> PagedRTree<FS> {
                     self.update_children_parent_page_ids(new_page_id, &right_node)?;
                     *self.height.write().unwrap() += 1;
                 } else {
-                    self.update_parent_after_split(parent_page_id, page_id, left_mbr, new_page_id, right_mbr)?;
+                    self.update_parent_after_split(
+                        parent_page_id,
+                        page_id,
+                        left_mbr,
+                        new_page_id,
+                        right_mbr,
+                    )?;
                 }
             }
         }
@@ -393,7 +430,11 @@ impl<FS: FileSystem> PagedRTree<FS> {
     }
 
     /// Update parent page IDs for all children of an internal node.
-    fn update_children_parent_page_ids(&self, parent_page_id: PageId, node: &RTreeNode) -> TableResult<()> {
+    fn update_children_parent_page_ids(
+        &self,
+        parent_page_id: PageId,
+        node: &RTreeNode,
+    ) -> TableResult<()> {
         if let Some(entries) = node.internal_entries() {
             for entry in entries {
                 let mut child_node = Self::read_node(&self.pager, entry.child_page_id)?;
@@ -406,7 +447,11 @@ impl<FS: FileSystem> PagedRTree<FS> {
     }
 
     /// Find the leaf page containing the specified object ID.
-    fn find_leaf_containing_id(&self, page_id: PageId, object_id: &[u8]) -> TableResult<Option<PageId>> {
+    fn find_leaf_containing_id(
+        &self,
+        page_id: PageId,
+        object_id: &[u8],
+    ) -> TableResult<Option<PageId>> {
         let node = Self::read_node(&self.pager, page_id)?;
         match node {
             RTreeNode::Leaf { entries, .. } => Ok(entries
@@ -415,7 +460,9 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 .then_some(page_id)),
             RTreeNode::Internal { entries, .. } => {
                 for entry in entries {
-                    if let Some(found_page_id) = self.find_leaf_containing_id(entry.child_page_id, object_id)? {
+                    if let Some(found_page_id) =
+                        self.find_leaf_containing_id(entry.child_page_id, object_id)?
+                    {
                         return Ok(Some(found_page_id));
                     }
                 }
@@ -435,7 +482,10 @@ impl<FS: FileSystem> PagedRTree<FS> {
         let parent_page_id = leaf_node.parent_page_id();
 
         let removed = if let Some(entries) = leaf_node.leaf_entries_mut() {
-            if let Some(index) = entries.iter().position(|entry| entry.object_id.as_ref() == id) {
+            if let Some(index) = entries
+                .iter()
+                .position(|entry| entry.object_id.as_ref() == id)
+            {
                 entries.remove(index);
                 true
             } else {
@@ -498,12 +548,19 @@ impl<FS: FileSystem> PagedRTree<FS> {
     }
 
     /// Remove a child reference from an internal parent node.
-    fn remove_child_from_parent(&self, parent_page_id: PageId, child_page_id: PageId) -> TableResult<()> {
+    fn remove_child_from_parent(
+        &self,
+        parent_page_id: PageId,
+        child_page_id: PageId,
+    ) -> TableResult<()> {
         let mut parent_node = Self::read_node(&self.pager, parent_page_id)?;
         if let Some(entries) = parent_node.internal_entries_mut()
-            && let Some(index) = entries.iter().position(|entry| entry.child_page_id == child_page_id) {
-                entries.remove(index);
-            }
+            && let Some(index) = entries
+                .iter()
+                .position(|entry| entry.child_page_id == child_page_id)
+        {
+            entries.remove(index);
+        }
         Self::write_node(&self.pager, parent_page_id, &parent_node)
     }
 
@@ -516,14 +573,21 @@ impl<FS: FileSystem> PagedRTree<FS> {
     ) -> TableResult<()> {
         let mut parent_node = Self::read_node(&self.pager, parent_page_id)?;
         if let Some(entries) = parent_node.internal_entries_mut()
-            && let Some(entry) = entries.iter_mut().find(|entry| entry.child_page_id == child_page_id) {
-                entry.mbr = child_node.calculate_mbr(self.config.dimensions);
-            }
+            && let Some(entry) = entries
+                .iter_mut()
+                .find(|entry| entry.child_page_id == child_page_id)
+        {
+            entry.mbr = child_node.calculate_mbr(self.config.dimensions);
+        }
         Self::write_node(&self.pager, parent_page_id, &parent_node)
     }
 
     /// Adjust the root node after deletion, shrinking tree height when possible.
-    fn adjust_root_after_delete(&self, root_page_id: PageId, root_node: RTreeNode) -> TableResult<()> {
+    fn adjust_root_after_delete(
+        &self,
+        root_page_id: PageId,
+        root_node: RTreeNode,
+    ) -> TableResult<()> {
         match root_node {
             RTreeNode::Internal { entries, .. } if entries.len() == 1 => {
                 let child_page_id = entries[0].child_page_id;
@@ -564,9 +628,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
             let leaf_page_id = self.choose_leaf(root_page_id, &root_node, &entry.mbr)?;
             let mut leaf_node = Self::read_node(&self.pager, leaf_page_id)?;
 
-            leaf_node
-                .add_leaf_entry(entry)
-                .map_err(TableError::Other)?;
+            leaf_node.add_leaf_entry(entry).map_err(TableError::Other)?;
 
             if leaf_node.entry_count() > self.config.max_entries_per_node {
                 self.split_node(leaf_page_id, leaf_node)?;
@@ -620,14 +682,21 @@ impl<FS: FileSystem> PagedRTree<FS> {
         right_node.set_parent_page_id(new_root_page_id);
         Self::write_node(&self.pager, right_page_id, &right_node)?;
 
-        Self::write_node(&self.pager, new_root_page_id, &new_root)
-            .map_err(|e| TableError::Other(format!("Failed to write new root page {new_root_page_id}: {e}")))?;
+        Self::write_node(&self.pager, new_root_page_id, &new_root).map_err(|e| {
+            TableError::Other(format!(
+                "Failed to write new root page {new_root_page_id}: {e}"
+            ))
+        })?;
 
         // Update root page ID and height
         *self.root_page_id.write().unwrap() = new_root_page_id;
         *self.height.write().unwrap() += 1;
 
-        debug!("Created new root at page {}, height now {}", new_root_page_id, *self.height.read().unwrap());
+        debug!(
+            "Created new root at page {}, height now {}",
+            new_root_page_id,
+            *self.height.read().unwrap()
+        );
 
         Ok(())
     }
@@ -688,7 +757,13 @@ impl<FS: FileSystem> PagedRTree<FS> {
         let root_page_id = self.root_page_id();
         let root_node = Self::read_node(&self.pager, root_page_id)?;
 
-        self.search_intersects_recursive(root_page_id, &root_node, &query_mbr, &mut results, limit)?;
+        self.search_intersects_recursive(
+            root_page_id,
+            &root_node,
+            &query_mbr,
+            &mut results,
+            limit,
+        )?;
 
         Ok(results)
     }
@@ -753,7 +828,9 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
         // Priority queue entry: (negative distance, page_id, is_leaf)
         heap.push(std::cmp::Reverse((
-            -root_node.calculate_mbr(self.config.dimensions).min_distance(point) as i64,
+            -root_node
+                .calculate_mbr(self.config.dimensions)
+                .min_distance(point) as i64,
             root_page_id,
             matches!(root_node, RTreeNode::Leaf { .. }),
         )));

@@ -85,10 +85,7 @@ impl<FS: FileSystem> WalReader<FS> {
             return Err(WalError::CorruptedWal {
                 offset: self.offset,
                 corruption_type: "Incomplete record".to_string(),
-                details: format!(
-                    "Expected {} bytes, found {} bytes",
-                    total_size, bytes_read
-                ),
+                details: format!("Expected {} bytes, found {} bytes", total_size, bytes_read),
             });
         }
 

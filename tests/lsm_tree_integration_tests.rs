@@ -22,16 +22,14 @@
 //! Note: Many tests are marked as #[ignore] because the LSM implementation
 //! is not yet complete or the API differs from expectations.
 
-use nanokv::table::lsm::{
-    BloomFilterBuilder, CompactionConfig, CompactionStrategy, LsmConfig,
-};
+use nanokv::table::lsm::{BloomFilterBuilder, CompactionConfig, CompactionStrategy, LsmConfig};
 
 /// Test bloom filter creation
 #[test]
 fn test_bloom_filter_creation() {
     let builder = BloomFilterBuilder::new(1000);
     let _filter = builder.build();
-    
+
     // Filter should be created successfully (no panic)
 }
 
@@ -39,7 +37,7 @@ fn test_bloom_filter_creation() {
 #[test]
 fn test_lsm_config_creation() {
     let config = LsmConfig::default();
-    
+
     assert!(config.memtable.max_size > 0);
     assert!(!config.compaction.levels.is_empty());
 }
@@ -47,11 +45,8 @@ fn test_lsm_config_creation() {
 /// Test compaction strategies
 #[test]
 fn test_compaction_strategies() {
-    let strategies = vec![
-        CompactionStrategy::Leveled,
-        CompactionStrategy::Universal,
-    ];
-    
+    let strategies = vec![CompactionStrategy::Leveled, CompactionStrategy::Universal];
+
     for strategy in strategies {
         let mut config = CompactionConfig::default();
         config.strategy = strategy;
@@ -63,7 +58,7 @@ fn test_compaction_strategies() {
 #[test]
 fn test_default_lsm_config() {
     let config = LsmConfig::default();
-    
+
     // Verify reasonable defaults
     assert!(config.memtable.max_size >= 1024 * 1024); // At least 1MB
     assert!(config.sstable.target_size >= 1024); // At least 1KB

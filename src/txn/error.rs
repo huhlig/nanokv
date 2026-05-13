@@ -24,7 +24,9 @@ pub type TransactionResult<T> = Result<T, TransactionError>;
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionError {
     /// Invalid state for the attempted operation
-    #[error("Transaction {transaction_id} has invalid state '{current_state}' for operation '{attempted_operation}'")]
+    #[error(
+        "Transaction {transaction_id} has invalid state '{current_state}' for operation '{attempted_operation}'"
+    )]
     InvalidState {
         transaction_id: TransactionId,
         current_state: String,
@@ -32,7 +34,9 @@ pub enum TransactionError {
     },
 
     /// Write-write conflict: two transactions trying to write the same key
-    #[error("Write-write conflict on object {object_id}, key {key:?}: already locked by transaction {holder_txn_id}, requested by transaction {requester_txn_id}")]
+    #[error(
+        "Write-write conflict on object {object_id}, key {key:?}: already locked by transaction {holder_txn_id}, requested by transaction {requester_txn_id}"
+    )]
     WriteWriteConflict {
         object_id: TableId,
         key: Vec<u8>,
@@ -41,7 +45,9 @@ pub enum TransactionError {
     },
 
     /// Read-write conflict: a transaction read a key that was later modified
-    #[error("Read-write conflict on object {object_id}, key {key:?}: read by transaction {reader_txn_id}, modified by transaction {writer_txn_id}")]
+    #[error(
+        "Read-write conflict on object {object_id}, key {key:?}: read by transaction {reader_txn_id}, modified by transaction {writer_txn_id}"
+    )]
     ReadWriteConflict {
         object_id: TableId,
         key: Vec<u8>,
@@ -164,16 +170,11 @@ pub type CursorResult<T> = Result<T, CursorError>;
 pub enum CursorError {
     /// Cursor is in an invalid state for the operation
     #[error("Cursor invalid state: {state} for operation '{operation}'")]
-    InvalidState {
-        state: String,
-        operation: String,
-    },
+    InvalidState { state: String, operation: String },
 
     /// Cursor position is invalid
     #[error("Cursor invalid position: {details}")]
-    InvalidPosition {
-        details: String,
-    },
+    InvalidPosition { details: String },
 
     /// Transaction error occurred during cursor operation
     #[error("Transaction error in cursor: {0}")]
@@ -186,10 +187,7 @@ pub enum CursorError {
 
 impl CursorError {
     /// Create an invalid state error with full context
-    pub fn invalid_state(
-        state: impl Into<String>,
-        operation: impl Into<String>,
-    ) -> Self {
+    pub fn invalid_state(state: impl Into<String>, operation: impl Into<String>) -> Self {
         Self::InvalidState {
             state: state.into(),
             operation: operation.into(),

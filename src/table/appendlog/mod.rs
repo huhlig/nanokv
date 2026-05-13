@@ -55,8 +55,8 @@ pub use self::segment::{Segment, SegmentId, SegmentMetadata};
 
 use crate::pager::{PageId, Pager};
 use crate::table::{
-    Flushable, MutableTable, OrderedScan, PointLookup, Table, TableCapabilities,
-    TableCursor, TableEngineKind, TableResult, TableStatistics,
+    Flushable, MutableTable, OrderedScan, PointLookup, Table, TableCapabilities, TableCursor,
+    TableEngineKind, TableResult, TableStatistics,
 };
 use crate::types::{Bound, ScanBounds, ValueBuf};
 use crate::vfs::FileSystem;
@@ -127,7 +127,9 @@ impl<FS: FileSystem> AppendLog<FS> {
         // Allocate root page for metadata - use LsmMeta as placeholder
         let root_page_id = pager
             .allocate_page(crate::pager::PageType::LsmMeta)
-            .map_err(|e| crate::table::TableError::Other(format!("Failed to allocate root page: {}", e)))?;
+            .map_err(|e| {
+                crate::table::TableError::Other(format!("Failed to allocate root page: {}", e))
+            })?;
 
         // Create initial active segment
         let active_segment = Segment::new(SegmentId(0), pager.clone())?;
@@ -356,14 +358,14 @@ impl<FS: FileSystem> MutableTable for AppendLog<FS> {
 
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
         let mut state = self.state.write().unwrap();
-        
+
         // Remove from index
         let existed = state.index.remove(key).is_some();
-        
+
         if existed {
             state.entry_count = state.entry_count.saturating_sub(1);
         }
-        
+
         Ok(existed)
     }
 
@@ -380,9 +382,16 @@ impl<FS: FileSystem> MutableTable for AppendLog<FS> {
 // =============================================================================
 
 impl<FS: FileSystem> OrderedScan for AppendLog<FS> {
-    type Cursor<'a> = AppendLogCursor<'a, FS> where FS: 'a;
+    type Cursor<'a>
+        = AppendLogCursor<'a, FS>
+    where
+        FS: 'a;
 
-    fn scan(&self, bounds: ScanBounds, _snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>> {
+    fn scan(
+        &self,
+        bounds: ScanBounds,
+        _snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Cursor<'_>> {
         AppendLogCursor::new(self, bounds)
     }
 }
@@ -421,16 +430,13 @@ impl<'a, FS: FileSystem> AppendLogCursor<'a, FS> {
 
         // Collect entries within bounds
         let entries: Vec<_> = match bounds {
-            ScanBounds::All => {
-                state.index.iter().map(|(k, v)| (k.clone(), *v)).collect()
-            }
-            ScanBounds::Prefix(prefix) => {
-                state.index
-                    .range(prefix.0.clone()..)
-                    .take_while(|(k, _)| k.starts_with(&prefix.0))
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect()
-            }
+            ScanBounds::All => state.index.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            ScanBounds::Prefix(prefix) => state
+                .index
+                .range(prefix.0.clone()..)
+                .take_while(|(k, _)| k.starts_with(&prefix.0))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
             ScanBounds::Range { start, end } => {
                 let start_bound = match start {
                     Bound::Unbounded => std::ops::Bound::Unbounded,
@@ -442,7 +448,8 @@ impl<'a, FS: FileSystem> AppendLogCursor<'a, FS> {
                     Bound::Included(k) => std::ops::Bound::Included(k.0),
                     Bound::Excluded(k) => std::ops::Bound::Excluded(k.0),
                 };
-                state.index
+                state
+                    .index
                     .range((start_bound, end_bound))
                     .map(|(k, v)| (k.clone(), *v))
                     .collect()
@@ -452,11 +459,7 @@ impl<'a, FS: FileSystem> AppendLogCursor<'a, FS> {
         let mut iter = entries.into_iter();
         let current = iter.next();
 
-        Ok(Self {
-            log,
-            current,
-            iter,
-        })
+        Ok(Self { log, current, iter })
     }
 }
 

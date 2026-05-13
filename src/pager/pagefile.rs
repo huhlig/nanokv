@@ -229,7 +229,7 @@ impl<FS: FileSystem> Pager<FS> {
     pub fn allocate_page(&self, page_type: PageType) -> PagerResult<PageId> {
         let start = Instant::now();
         debug!("Allocating page");
-        
+
         // STEP 1: Lock-free allocation from free list or superblock
         // Lock ordering: superblock first (level 2)
         let page_id = if let Some(page_id) = self.free_list.pop_page() {
@@ -245,7 +245,7 @@ impl<FS: FileSystem> Pager<FS> {
             drop(superblock); // Release immediately
             page_id
         };
-        
+
         counter!("pager.page_allocated").increment(1);
 
         // STEP 2: Prepare data (no locks held)
@@ -281,7 +281,7 @@ impl<FS: FileSystem> Pager<FS> {
 
         // STEP 4: Acquire page lock (level 4), then file lock (level 6)
         let _page_lock = self.page_table.write_lock(page_id);
-        
+
         {
             let mut file = self.file.write();
             file.write_to_offset(page_id.as_u64() * page_size as u64, &page_bytes)?;
@@ -304,7 +304,7 @@ impl<FS: FileSystem> Pager<FS> {
                 superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(page_size as u64, &superblock_bytes)?;
         }
-        
+
         histogram!("pager.allocate_duration").record(start.elapsed().as_secs_f64());
         Ok(page_id)
     }
@@ -317,7 +317,7 @@ impl<FS: FileSystem> Pager<FS> {
     pub fn free_page(&self, page_id: PageId) -> PagerResult<()> {
         let start = Instant::now();
         debug!("Freeing page");
-        
+
         if page_id == PageId::from(0) || page_id == PageId::from(1) {
             warn!("Attempted to free reserved page");
             counter!("pager.error", "type" => "invalid_page_id").increment(1);
@@ -337,7 +337,7 @@ impl<FS: FileSystem> Pager<FS> {
 
         // STEP 2: Acquire page lock (level 4), then file lock (level 6) to verify page
         let _page_lock = self.page_table.write_lock(page_id);
-        
+
         {
             let mut file = self.file.write();
             let mut buffer = vec![0u8; page_size];
@@ -363,7 +363,7 @@ impl<FS: FileSystem> Pager<FS> {
 
         // STEP 3: Add to free list (lock-free, no ordering needed)
         self.free_list.push_page(page_id);
-        
+
         // STEP 4: Update superblock (level 2)
         {
             let mut superblock = self.superblock.write();
@@ -416,7 +416,7 @@ impl<FS: FileSystem> Pager<FS> {
                 superblock_page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
             file.write_to_offset(page_size as u64, &superblock_bytes)?;
         }
-        
+
         counter!("pager.page_freed").increment(1);
         histogram!("pager.free_duration").record(start.elapsed().as_secs_f64());
         Ok(())
@@ -430,7 +430,7 @@ impl<FS: FileSystem> Pager<FS> {
     pub fn read_page(&self, page_id: PageId) -> PagerResult<Page> {
         let start = Instant::now();
         debug!("Reading page");
-        
+
         if page_id.as_u64() >= self.total_pages() {
             counter!("pager.error", "type" => "page_not_found").increment(1);
             return Err(PagerError::PageNotFound(page_id));
@@ -438,11 +438,12 @@ impl<FS: FileSystem> Pager<FS> {
 
         // Try cache first (level 5 - cache)
         if let Some(cache) = &self.cache
-            && let Some(page) = cache.get(page_id) {
-                counter!("pager.page_read").increment(1);
-                histogram!("pager.read_duration").record(start.elapsed().as_secs_f64());
-                return Ok(page);
-            }
+            && let Some(page) = cache.get(page_id)
+        {
+            counter!("pager.page_read").increment(1);
+            histogram!("pager.read_duration").record(start.elapsed().as_secs_f64());
+            return Ok(page);
+        }
 
         // STEP 1: Pin the page (level 1 - pin_table)
         // This ensures the page cannot be freed and reallocated while we're reading it
@@ -483,7 +484,7 @@ impl<FS: FileSystem> Pager<FS> {
 
         // CRITICAL: Always unpin the page (level 1), even if an error occurred
         self.pin_table.unpin(page_id);
-        
+
         if result.is_ok() {
             counter!("pager.page_read").increment(1);
             histogram!("pager.read_duration").record(start.elapsed().as_secs_f64());
@@ -517,12 +518,12 @@ impl<FS: FileSystem> Pager<FS> {
 
         // No cache - write directly to disk
         let result = self.write_page_to_disk(page);
-        
+
         if result.is_ok() {
             counter!("pager.page_write").increment(1);
             histogram!("pager.write_duration").record(start.elapsed().as_secs_f64());
         }
-        
+
         result
     }
 
@@ -539,7 +540,7 @@ impl<FS: FileSystem> Pager<FS> {
         let offset = page.page_id().as_u64() * page_size as u64;
 
         let buffer = page.to_bytes(page_size, self.config.encryption_key.as_ref())?;
-        
+
         // STEP 2: Acquire file lock (level 6 - file)
         let mut file = self.file.write();
         file.write_to_offset(offset, &buffer)?;
@@ -562,14 +563,14 @@ impl<FS: FileSystem> Pager<FS> {
     /// Get cache statistics
     pub fn cache_stats(&self) -> Option<crate::pager::CacheStats> {
         let stats = self.cache.as_ref().map(|c| c.stats());
-        
+
         // Update metrics gauges with current cache stats
         if let Some(ref s) = stats {
             gauge!("pager.cache.size").set(s.current_size as f64);
             gauge!("pager.cache.dirty_pages").set(s.dirty_pages as f64);
             gauge!("pager.cache.hit_rate").set(s.hit_rate());
         }
-        
+
         stats
     }
 
@@ -590,13 +591,13 @@ impl<FS: FileSystem> Pager<FS> {
     pub fn sync(&self) -> PagerResult<()> {
         let start = Instant::now();
         debug!("Syncing pager to disk");
-        
+
         // Flush cache first
         self.flush_cache()?;
 
         let mut file = self.file.write();
         file.sync_all()?;
-        
+
         histogram!("pager.sync_duration").record(start.elapsed().as_secs_f64());
         Ok(())
     }
@@ -663,20 +664,20 @@ impl<FS: FileSystem> Pager<FS> {
         data: &[u8],
         next_page_id: Option<PageId>,
     ) -> PagerResult<()> {
-        use crate::pager::page::{calculate_crc32, OverflowPageHeader};
-        
+        use crate::pager::page::{OverflowPageHeader, calculate_crc32};
+
         debug!("Writing overflow page");
-        
+
         // Calculate checksum
         let checksum = calculate_crc32(data);
-        
+
         // Create overflow header
         let header = OverflowPageHeader::new(
             next_page_id.map(|id| id.as_u64() as u32).unwrap_or(0),
             data.len() as u32,
             checksum,
         );
-        
+
         // Create page with overflow data
         let mut page = Page::new(
             page_id,
@@ -685,13 +686,13 @@ impl<FS: FileSystem> Pager<FS> {
         );
         page.header.compression = self.config.compression;
         page.header.encryption = self.config.encryption;
-        
+
         // Write header and data to page
         page.data_mut().extend_from_slice(&header.to_bytes());
         page.data_mut().extend_from_slice(data);
-        
+
         self.write_page(&page)?;
-        
+
         counter!("pager.overflow_page_write").increment(1);
         Ok(())
     }
@@ -700,30 +701,26 @@ impl<FS: FileSystem> Pager<FS> {
     ///
     /// Updates the first page's header to point to the second page.
     #[instrument(skip(self), fields(from = %from_page_id, to = %to_page_id))]
-    pub fn link_overflow_pages(
-        &self,
-        from_page_id: PageId,
-        to_page_id: PageId,
-    ) -> PagerResult<()> {
+    pub fn link_overflow_pages(&self, from_page_id: PageId, to_page_id: PageId) -> PagerResult<()> {
         use crate::pager::page::OverflowPageHeader;
-        
+
         debug!("Linking overflow pages");
-        
+
         // Read the current page
         let page = self.read_page(from_page_id)?;
-        
+
         // Parse the overflow header
         let _header = OverflowPageHeader::from_bytes(page.data())?;
-        
+
         // Update next_page_id
         // TODO: Use _header to update the page data before writing
-        
+
         // Extract the data (skip header)
         let data = &page.data()[OverflowPageHeader::SIZE..];
-        
+
         // Write updated page
         self.write_overflow_page(from_page_id, data, Some(to_page_id))?;
-        
+
         Ok(())
     }
 
@@ -733,44 +730,44 @@ impl<FS: FileSystem> Pager<FS> {
     #[instrument(skip(self, data), fields(data_len = data.len()))]
     pub fn allocate_overflow_chain(&self, data: &[u8]) -> PagerResult<Vec<PageId>> {
         use crate::pager::page::OverflowPageHeader;
-        
+
         debug!("Allocating overflow chain");
-        
+
         if data.is_empty() {
             return Ok(Vec::new());
         }
-        
+
         // Calculate how much data fits in each overflow page
         let page_data_size = self.config.page_size.data_size() - OverflowPageHeader::SIZE;
-        
+
         // Calculate number of pages needed
         let num_pages = data.len().div_ceil(page_data_size);
-        
+
         // Allocate all pages first
         let mut page_ids = Vec::with_capacity(num_pages);
         for _ in 0..num_pages {
             let page_id = self.allocate_page(PageType::Overflow)?;
             page_ids.push(page_id);
         }
-        
+
         // Write data to pages
         for (i, page_id) in page_ids.iter().enumerate() {
             let start = i * page_data_size;
             let end = ((i + 1) * page_data_size).min(data.len());
             let chunk = &data[start..end];
-            
+
             let next_page_id = if i + 1 < page_ids.len() {
                 Some(page_ids[i + 1])
             } else {
                 None
             };
-            
+
             self.write_overflow_page(*page_id, chunk, next_page_id)?;
         }
-        
+
         counter!("pager.overflow_chain_allocated").increment(1);
         histogram!("pager.overflow_chain_pages").record(num_pages as f64);
-        
+
         Ok(page_ids)
     }
 
@@ -779,18 +776,18 @@ impl<FS: FileSystem> Pager<FS> {
     /// Reads and validates all pages in the chain, returning the complete data.
     #[instrument(skip(self), fields(first_page = %first_page_id))]
     pub fn read_overflow_chain(&self, first_page_id: PageId) -> PagerResult<Vec<u8>> {
-        use crate::pager::page::{calculate_crc32, OverflowPageHeader};
-        
+        use crate::pager::page::{OverflowPageHeader, calculate_crc32};
+
         debug!("Reading overflow chain");
-        
+
         let mut result = Vec::new();
         let mut current_page_id = first_page_id;
         let mut pages_read = 0;
-        
+
         loop {
             // Read the page
             let page = self.read_page(current_page_id)?;
-            
+
             // Verify it's an overflow page
             if page.page_type() != PageType::Overflow {
                 return Err(PagerError::InternalError(format!(
@@ -798,23 +795,23 @@ impl<FS: FileSystem> Pager<FS> {
                     page.page_type()
                 )));
             }
-            
+
             // Parse header
             let header = OverflowPageHeader::from_bytes(page.data())?;
-            
+
             // Extract data (skip header)
             let data_start = OverflowPageHeader::SIZE;
             let data_end = data_start + header.data_length as usize;
-            
+
             if data_end > page.data().len() {
                 return Err(PagerError::InternalError(format!(
                     "Overflow page data length {} exceeds page size",
                     header.data_length
                 )));
             }
-            
+
             let data = &page.data()[data_start..data_end];
-            
+
             // Verify checksum
             let actual_checksum = calculate_crc32(data);
             if actual_checksum != header.checksum {
@@ -823,23 +820,23 @@ impl<FS: FileSystem> Pager<FS> {
                     header.checksum, actual_checksum
                 )));
             }
-            
+
             // Append data to result
             result.extend_from_slice(data);
             pages_read += 1;
-            
+
             // Check if this is the last page
             if header.is_last() {
                 break;
             }
-            
+
             // Move to next page
             current_page_id = PageId::from(header.next_page_id as u64);
         }
-        
+
         counter!("pager.overflow_chain_read").increment(1);
         histogram!("pager.overflow_chain_pages_read").record(pages_read as f64);
-        
+
         Ok(result)
     }
 
@@ -849,16 +846,16 @@ impl<FS: FileSystem> Pager<FS> {
     #[instrument(skip(self), fields(first_page = %first_page_id))]
     pub fn free_overflow_chain(&self, first_page_id: PageId) -> PagerResult<()> {
         use crate::pager::page::OverflowPageHeader;
-        
+
         debug!("Freeing overflow chain");
-        
+
         let mut current_page_id = first_page_id;
         let mut pages_freed = 0;
-        
+
         loop {
             // Read the page to get the next page ID
             let page = self.read_page(current_page_id)?;
-            
+
             // Verify it's an overflow page
             if page.page_type() != PageType::Overflow {
                 return Err(PagerError::InternalError(format!(
@@ -866,7 +863,7 @@ impl<FS: FileSystem> Pager<FS> {
                     page.page_type()
                 )));
             }
-            
+
             // Parse header to get next page
             let header = OverflowPageHeader::from_bytes(page.data())?;
             let next_page_id = if header.is_last() {
@@ -874,21 +871,21 @@ impl<FS: FileSystem> Pager<FS> {
             } else {
                 Some(PageId::from(header.next_page_id as u64))
             };
-            
+
             // Free the current page
             self.free_page(current_page_id)?;
             pages_freed += 1;
-            
+
             // Move to next page or exit
             match next_page_id {
                 Some(next_id) => current_page_id = next_id,
                 None => break,
             }
         }
-        
+
         counter!("pager.overflow_chain_freed").increment(1);
         histogram!("pager.overflow_chain_pages_freed").record(pages_freed as f64);
-        
+
         Ok(())
     }
 }

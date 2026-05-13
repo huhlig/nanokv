@@ -80,9 +80,10 @@ impl VersionChain {
 
         while let Some(version) = current {
             if let Some(commit_lsn) = version.commit_lsn
-                && snapshot.is_visible(commit_lsn, version.created_by) {
-                    return Some(version.value.as_slice());
-                }
+                && snapshot.is_visible(commit_lsn, version.created_by)
+            {
+                return Some(version.value.as_slice());
+            }
 
             current = version.prev_version.as_deref();
         }

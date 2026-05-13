@@ -16,9 +16,9 @@
 
 //! Comprehensive integration tests for PagedBloomFilter
 
-use nanokv::pager::{Pager, PagerConfig, PageSize};
-use nanokv::table::bloom::PagedBloomFilter;
+use nanokv::pager::{PageSize, Pager, PagerConfig};
 use nanokv::table::ApproximateMembership;
+use nanokv::table::bloom::PagedBloomFilter;
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
@@ -65,9 +65,13 @@ fn test_basic_insert_and_contains() {
             false_positives += 1;
         }
     }
-    
+
     // With 10 bits per key, false positive rate should be low
-    assert!(false_positives < 20, "Too many false positives: {}", false_positives);
+    assert!(
+        false_positives < 20,
+        "Too many false positives: {}",
+        false_positives
+    );
 }
 
 #[test]
@@ -79,8 +83,7 @@ fn test_persistence_and_reopen() {
     // Create and populate filter
     let root_page_id = {
         let filter =
-            PagedBloomFilter::new(table_id, name.clone(), pager.clone(), 100, 10, None)
-                .unwrap();
+            PagedBloomFilter::new(table_id, name.clone(), pager.clone(), 100, 10, None).unwrap();
 
         filter.insert(b"persistent_key1").unwrap();
         filter.insert(b"persistent_key2").unwrap();
@@ -130,7 +133,7 @@ fn test_false_positive_rate_calculation() {
     }
 
     let actual_fpr = false_positives as f64 / test_items as f64;
-    
+
     // Actual FPR should be close to theoretical (within 3x due to hash function variance)
     assert!(
         actual_fpr < theoretical_fpr * 3.0,
@@ -161,7 +164,7 @@ fn test_clear_operation() {
 
     // Clear and verify
     filter.clear().unwrap();
-    
+
     // After clear, false positive rate should be very low
     let mut found = 0;
     for i in 0u32..100u32 {
@@ -169,7 +172,7 @@ fn test_clear_operation() {
             found += 1;
         }
     }
-    
+
     // Should find very few (ideally 0, but some false positives possible)
     assert!(found < 5, "Found {} items after clear", found);
 }
@@ -218,7 +221,7 @@ fn test_large_filter() {
 #[test]
 fn test_different_bits_per_key() {
     let pager = create_test_pager();
-    
+
     // Test with different bits_per_key values
     for bits_per_key in [5, 10, 15, 20] {
         let filter = PagedBloomFilter::new(
@@ -245,7 +248,7 @@ fn test_different_bits_per_key() {
         }
 
         let fpr = false_positives as f64 / 1000.0;
-        
+
         // Higher bits_per_key should give lower FPR
         // Note: These are generous bounds due to hash function variance
         let expected_max_fpr = match bits_per_key {
@@ -255,7 +258,7 @@ fn test_different_bits_per_key() {
             20 => 0.015,
             _ => 1.0,
         };
-        
+
         assert!(
             fpr < expected_max_fpr,
             "FPR {:.4} too high for {} bits/key (expected < {:.4})",
@@ -269,7 +272,7 @@ fn test_different_bits_per_key() {
 #[test]
 fn test_custom_hash_functions() {
     let pager = create_test_pager();
-    
+
     // Test with different numbers of hash functions
     for num_hash in [3, 5, 7, 10] {
         let filter = PagedBloomFilter::new(
@@ -311,13 +314,13 @@ fn test_table_trait_implementation() {
     use nanokv::table::Table;
     assert_eq!(Table::table_id(&filter), TableId::from(42));
     assert_eq!(Table::name(&filter), "trait_test");
-    
+
     let caps = Table::capabilities(&filter);
     assert!(!caps.ordered);
     assert!(caps.point_lookup);
     assert!(!caps.prefix_scan);
     assert!(caps.disk_resident);
-    
+
     let stats = Table::stats(&filter).unwrap();
     assert_eq!(stats.row_count, Some(0));
 }
@@ -338,10 +341,10 @@ fn test_approximate_membership_trait() {
     // Test ApproximateMembership trait methods
     filter.insert_key(b"test_key").unwrap();
     assert!(filter.might_contain(b"test_key").unwrap());
-    
+
     let fpr = filter.false_positive_rate();
     assert!(fpr > 0.0);
-    
+
     use nanokv::table::ApproximateMembership;
     let caps = ApproximateMembership::capabilities(&filter);
     assert!(!caps.exact);
@@ -370,7 +373,7 @@ fn test_verification() {
     // Verify the filter
     let report = filter.verify().unwrap();
     assert_eq!(report.errors.len(), 0);
-    
+
     // Should not have high FPR warning with only 50 items
     assert!(report.warnings.is_empty() || report.warnings.len() < 2);
 }
@@ -392,7 +395,7 @@ fn test_empty_filter() {
     for i in 0u32..100u32 {
         assert!(!filter.contains(&i.to_le_bytes()).unwrap());
     }
-    
+
     // False positive rate should be 0 for empty filter
     assert_eq!(filter.false_positive_rate(), 0.0);
 }
@@ -400,7 +403,7 @@ fn test_empty_filter() {
 #[test]
 fn test_concurrent_reads() {
     use std::thread;
-    
+
     let pager = create_test_pager();
     let filter = PagedBloomFilter::new(
         TableId::from(1),
@@ -427,7 +430,7 @@ fn test_concurrent_reads() {
         let handle = thread::spawn(move || {
             let start = thread_id * 250u32;
             let end = start + 250u32;
-            
+
             for i in start..end {
                 assert!(
                     filter_clone.contains(&i.to_le_bytes()).unwrap(),

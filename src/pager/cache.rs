@@ -239,7 +239,7 @@ impl PageCache {
             }
             Entry::Vacant(_vacant) => {
                 // Page doesn't exist - need to evict if at capacity before inserting
-                
+
                 // Evict if at capacity
                 let evicted = if shard.entries.len() >= shard.capacity {
                     shard.evict_lru()
@@ -259,9 +259,10 @@ impl PageCache {
 
                 // Update LRU list
                 if let Some(old_head) = shard.lru_head
-                    && let Some(head_entry) = shard.entries.get_mut(&old_head) {
-                        head_entry.prev = Some(page_id);
-                    }
+                    && let Some(head_entry) = shard.entries.get_mut(&old_head)
+                {
+                    head_entry.prev = Some(page_id);
+                }
 
                 shard.lru_head = Some(page_id);
 
@@ -398,7 +399,7 @@ impl PageCache {
             total_stats.current_size += shard.stats.current_size;
             total_stats.dirty_pages += shard.stats.dirty_pages;
         }
-        
+
         // Update metrics gauges
         gauge!("cache.size").set(total_stats.current_size as f64);
         gauge!("cache.dirty_pages").set(total_stats.dirty_pages as f64);
@@ -449,15 +450,17 @@ impl CacheShard {
 
             // Update previous node's next pointer
             if let Some(prev_id) = prev
-                && let Some(prev_entry) = self.entries.get_mut(&prev_id) {
-                    prev_entry.next = next;
-                }
+                && let Some(prev_entry) = self.entries.get_mut(&prev_id)
+            {
+                prev_entry.next = next;
+            }
 
             // Update next node's prev pointer
             if let Some(next_id) = next
-                && let Some(next_entry) = self.entries.get_mut(&next_id) {
-                    next_entry.prev = prev;
-                }
+                && let Some(next_entry) = self.entries.get_mut(&next_id)
+            {
+                next_entry.prev = prev;
+            }
 
             // Update tail if this was the tail
             if self.lru_tail == Some(page_id) {
@@ -472,9 +475,10 @@ impl CacheShard {
         }
 
         if let Some(old_head) = self.lru_head
-            && let Some(head_entry) = self.entries.get_mut(&old_head) {
-                head_entry.prev = Some(page_id);
-            }
+            && let Some(head_entry) = self.entries.get_mut(&old_head)
+        {
+            head_entry.prev = Some(page_id);
+        }
 
         self.lru_head = Some(page_id);
 
@@ -574,7 +578,7 @@ mod tests {
         // Find pages that hash to the same shard
         let mut same_shard_pages = Vec::new();
         let target_shard = cache.shard_index(PageId::from(1));
-        
+
         for i in 1..=100 {
             let page_id = PageId::from(i);
             if cache.shard_index(page_id) == target_shard {
@@ -585,7 +589,10 @@ mod tests {
             }
         }
 
-        assert!(same_shard_pages.len() >= 4, "Need at least 4 pages in same shard");
+        assert!(
+            same_shard_pages.len() >= 4,
+            "Need at least 4 pages in same shard"
+        );
 
         // Fill the shard (capacity is 1 per shard)
         cache.put(create_test_page(same_shard_pages[0]), false);
@@ -598,7 +605,7 @@ mod tests {
 
         // The second page should be in cache, first might be evicted
         assert!(cache.contains(same_shard_pages[1]));
-        
+
         // Verify eviction occurred
         let stats = cache.stats();
         assert!(stats.evictions >= 1 || stats.current_size <= 32);
@@ -663,7 +670,7 @@ mod tests {
         // Find pages that hash to the same shard
         let mut same_shard_pages = Vec::new();
         let target_shard = cache.shard_index(PageId::from(1));
-        
+
         for i in 1..=100 {
             let page_id = PageId::from(i);
             if cache.shard_index(page_id) == target_shard {
@@ -674,7 +681,10 @@ mod tests {
             }
         }
 
-        assert!(same_shard_pages.len() >= 3, "Need at least 3 pages in same shard");
+        assert!(
+            same_shard_pages.len() >= 3,
+            "Need at least 3 pages in same shard"
+        );
 
         // Fill shard with dirty pages (capacity is 1 per shard)
         cache.put(create_test_page(same_shard_pages[0]), true);
@@ -682,10 +692,13 @@ mod tests {
 
         // Add another page to same shard (should evict one of the dirty pages)
         let evicted = cache.put(create_test_page(same_shard_pages[2]), false);
-        
+
         // With capacity of 1 per shard, we should get an eviction
-        assert!(evicted.is_some(), "Expected eviction with shard at capacity");
-        
+        assert!(
+            evicted.is_some(),
+            "Expected eviction with shard at capacity"
+        );
+
         let stats = cache.stats();
         assert!(stats.evictions >= 1);
     }
@@ -746,7 +759,7 @@ mod tests {
 
         // Track which shards pages go to
         let mut shard_counts = vec![0; NUM_SHARDS];
-        
+
         // Add 1000 pages and track distribution
         for i in 0..1000 {
             let page_id = PageId::from(i);
@@ -788,17 +801,17 @@ mod tests {
 
                 for i in start..end {
                     let page_id = PageId::from(i as u64);
-                    
+
                     // Put page
                     cache_clone.put(create_test_page(page_id), false);
-                    
+
                     // Get page
                     assert!(cache_clone.get(page_id).is_some());
-                    
+
                     // Mark dirty
                     cache_clone.mark_dirty(page_id);
                     assert!(cache_clone.is_dirty(page_id));
-                    
+
                     // Mark clean
                     cache_clone.mark_clean(page_id);
                     assert!(!cache_clone.is_dirty(page_id));
@@ -853,7 +866,10 @@ mod tests {
         assert!(stats.evictions > 0, "Expected evictions with small cache");
         // With sharding, size can slightly exceed capacity due to rounding
         // Each shard gets capacity/NUM_SHARDS, so total can be up to capacity + NUM_SHARDS - 1
-        assert!(stats.current_size <= 100 + NUM_SHARDS,
-            "Cache size {} should be close to capacity 100", stats.current_size);
+        assert!(
+            stats.current_size <= 100 + NUM_SHARDS,
+            "Cache size {} should be close to capacity 100",
+            stats.current_size
+        );
     }
 }

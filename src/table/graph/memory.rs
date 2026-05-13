@@ -93,7 +93,10 @@ impl MemoryGraphTable {
     fn next_tx(&self) -> (TransactionId, LogSequenceNumber) {
         let mut counter = self.tx_counter.write().unwrap();
         *counter += 1;
-        (TransactionId::from(*counter), LogSequenceNumber::from(*counter))
+        (
+            TransactionId::from(*counter),
+            LogSequenceNumber::from(*counter),
+        )
     }
 
     /// Add a vertex to the graph (implicit when adding edges).
@@ -196,7 +199,12 @@ impl MemoryGraphTable {
     }
 
     /// Check if there's an edge between two vertices.
-    pub fn has_edge(&self, source: &[u8], target: &[u8], label: Option<&[u8]>) -> TableResult<bool> {
+    pub fn has_edge(
+        &self,
+        source: &[u8],
+        target: &[u8],
+        label: Option<&[u8]>,
+    ) -> TableResult<bool> {
         let cursor = self.outgoing(source, label)?;
         let edges = cursor.collect_all()?;
         Ok(edges.iter().any(|e| e.target.0 == target))
@@ -296,7 +304,8 @@ impl GraphAdjacency for MemoryGraphTable {
         let edge_key = GraphKey::EdgeData {
             edge_id: KeyBuf(edge_id.to_vec()),
         };
-        self.storage.put(&edge_key.encode(), &edge_data.encode(), tx_id, lsn)?;
+        self.storage
+            .put(&edge_key.encode(), &edge_data.encode(), tx_id, lsn)?;
 
         // Store outgoing edge index
         let out_key = GraphKey::Outgoing {
@@ -321,7 +330,8 @@ impl GraphAdjacency for MemoryGraphTable {
                 label: KeyBuf(label.to_vec()),
                 edge_id: KeyBuf(edge_id.to_vec()),
             };
-            self.storage.put(&rev_out_key.encode(), source, tx_id, lsn)?;
+            self.storage
+                .put(&rev_out_key.encode(), source, tx_id, lsn)?;
 
             let rev_in_key = GraphKey::Incoming {
                 target: KeyBuf(source.to_vec()),

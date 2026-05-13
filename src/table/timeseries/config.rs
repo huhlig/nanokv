@@ -55,11 +55,11 @@ pub struct TimeSeriesConfig {
 impl Default for TimeSeriesConfig {
     fn default() -> Self {
         Self {
-            bucket_size: 3600,                                    // 1 hour
+            bucket_size: 3600, // 1 hour
             compression: TimeSeriesCompression::DeltaOfDelta,
             retention_policy: TimeSeriesRetentionPolicy::None,
             enable_downsampling: false,
-            downsampling_interval: 86400,                         // 1 day
+            downsampling_interval: 86400, // 1 day
             max_points_per_bucket: 10000,
             use_memory_index: true,
         }
@@ -176,7 +176,9 @@ mod tests {
         let config = TimeSeriesConfig::new()
             .with_bucket_size(7200)
             .with_compression(TimeSeriesCompression::Gorilla)
-            .with_retention_policy(TimeSeriesRetentionPolicy::max_age(Duration::from_secs(86400 * 30)))
+            .with_retention_policy(TimeSeriesRetentionPolicy::max_age(Duration::from_secs(
+                86400 * 30,
+            )))
             .with_downsampling(true, 3600)
             .with_max_points_per_bucket(5000)
             .with_memory_index(false);
@@ -196,13 +198,19 @@ mod tests {
     #[test]
     fn test_retention_policy() {
         let policy1 = TimeSeriesRetentionPolicy::max_age(Duration::from_secs(3600));
-        assert_eq!(policy1, TimeSeriesRetentionPolicy::MaxAge(Duration::from_secs(3600)));
+        assert_eq!(
+            policy1,
+            TimeSeriesRetentionPolicy::MaxAge(Duration::from_secs(3600))
+        );
 
         let policy2 = TimeSeriesRetentionPolicy::max_points(1000);
         assert_eq!(policy2, TimeSeriesRetentionPolicy::MaxPoints(1000));
 
         let policy3 = TimeSeriesRetentionPolicy::until_timestamp(1234567890);
-        assert_eq!(policy3, TimeSeriesRetentionPolicy::UntilTimestamp(1234567890));
+        assert_eq!(
+            policy3,
+            TimeSeriesRetentionPolicy::UntilTimestamp(1234567890)
+        );
     }
 }
 

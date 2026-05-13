@@ -16,9 +16,9 @@
 
 //! R-Tree node structures.
 
+use super::mbr::Mbr;
 use crate::pager::PageId;
 use crate::types::KeyBuf;
-use super::mbr::Mbr;
 
 /// R-Tree node type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +59,7 @@ impl InternalEntry {
 
         let mbr_len = bytes.len() - 8;
         let mbr = Mbr::from_bytes(&bytes[..mbr_len])?;
-        
+
         let page_id_bytes: [u8; 8] = bytes[mbr_len..].try_into().unwrap();
         let child_page_id = PageId::from(u64::from_le_bytes(page_id_bytes));
 
@@ -85,13 +85,13 @@ impl LeafEntry {
     /// Serialize the entry to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = self.mbr.to_bytes();
-        
+
         // Write object ID length and data
         let id_data = self.object_id.as_ref();
         let id_len = id_data.len() as u32;
         bytes.extend_from_slice(&id_len.to_le_bytes());
         bytes.extend_from_slice(id_data);
-        
+
         bytes
     }
 
@@ -104,16 +104,16 @@ impl LeafEntry {
         // Find where MBR ends (need to parse it to know the length)
         let dimensions = bytes[0] as usize;
         let mbr_len = 1 + dimensions * 2 * 8;
-        
+
         if bytes.len() < mbr_len + 4 {
             return Err("Insufficient bytes for leaf entry".to_string());
         }
 
         let mbr = Mbr::from_bytes(&bytes[..mbr_len])?;
-        
+
         let id_len_bytes: [u8; 4] = bytes[mbr_len..mbr_len + 4].try_into().unwrap();
         let id_len = u32::from_le_bytes(id_len_bytes) as usize;
-        
+
         if bytes.len() < mbr_len + 4 + id_len {
             return Err("Insufficient bytes for object ID".to_string());
         }
@@ -459,10 +459,7 @@ mod tests {
 
     #[test]
     fn test_internal_entry_serialization() {
-        let mbr = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 1.0, y: 1.0 },
-        );
+        let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
         let entry = InternalEntry::new(mbr, PageId::from(42));
 
         let bytes = entry.to_bytes();
@@ -474,10 +471,7 @@ mod tests {
 
     #[test]
     fn test_leaf_entry_serialization() {
-        let mbr = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 1.0, y: 1.0 },
-        );
+        let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
         let object_id = KeyBuf(b"test_object".to_vec());
         let entry = LeafEntry::new(mbr, object_id.clone());
 
@@ -491,11 +485,8 @@ mod tests {
     #[test]
     fn test_node_serialization() {
         let mut node = RTreeNode::new_leaf();
-        
-        let mbr = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 1.0, y: 1.0 },
-        );
+
+        let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
         let entry = LeafEntry::new(mbr, KeyBuf(b"test".to_vec()));
         node.add_leaf_entry(entry).unwrap();
 
@@ -509,18 +500,14 @@ mod tests {
     #[test]
     fn test_calculate_mbr() {
         let mut node = RTreeNode::new_leaf();
-        
-        let mbr1 = Mbr::from_points_2d(
-            GeoPoint { x: 0.0, y: 0.0 },
-            GeoPoint { x: 1.0, y: 1.0 },
-        );
-        let mbr2 = Mbr::from_points_2d(
-            GeoPoint { x: 2.0, y: 2.0 },
-            GeoPoint { x: 3.0, y: 3.0 },
-        );
 
-        node.add_leaf_entry(LeafEntry::new(mbr1, KeyBuf(b"obj1".to_vec()))).unwrap();
-        node.add_leaf_entry(LeafEntry::new(mbr2, KeyBuf(b"obj2".to_vec()))).unwrap();
+        let mbr1 = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
+        let mbr2 = Mbr::from_points_2d(GeoPoint { x: 2.0, y: 2.0 }, GeoPoint { x: 3.0, y: 3.0 });
+
+        node.add_leaf_entry(LeafEntry::new(mbr1, KeyBuf(b"obj1".to_vec())))
+            .unwrap();
+        node.add_leaf_entry(LeafEntry::new(mbr2, KeyBuf(b"obj2".to_vec())))
+            .unwrap();
 
         let combined_mbr = node.calculate_mbr(2);
         assert_eq!(combined_mbr.min[0], 0.0);

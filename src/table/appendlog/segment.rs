@@ -69,11 +69,16 @@ pub struct Segment {
 
 impl Segment {
     /// Create a new segment.
-    pub fn new<FS: FileSystem + 'static>(id: SegmentId, pager: Arc<Pager<FS>>) -> TableResult<Self> {
+    pub fn new<FS: FileSystem + 'static>(
+        id: SegmentId,
+        pager: Arc<Pager<FS>>,
+    ) -> TableResult<Self> {
         // Allocate first page for the segment
         let first_page_id = pager
             .allocate_page(crate::pager::PageType::LsmData)
-            .map_err(|e| crate::table::TableError::Other(format!("Failed to allocate segment page: {}", e)))?;
+            .map_err(|e| {
+                crate::table::TableError::Other(format!("Failed to allocate segment page: {}", e))
+            })?;
 
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -285,10 +290,10 @@ mod tests {
 
         let key = b"key";
         let value = b"value";
-        
+
         // Entry size: 4 (key_len) + 3 (key) + 4 (value_len) + 5 (value) = 16 bytes
         segment.append(key, value).unwrap();
-        
+
         assert_eq!(segment.size(), 16);
     }
 

@@ -28,8 +28,8 @@ pub use self::tokenizer::{Tokenizer, TokenizerConfig, TokenizerKind};
 use crate::pager::{Page, PageId, PageType, Pager};
 use crate::table::{
     FullTextSearch, ScoredDocument, SpecialtyTableCapabilities, SpecialtyTableStats, Table,
-    TableCapabilities, TableEngineKind, TableError, TableId, TableResult, TableStatistics, TextField, TextQuery,
-    VerificationReport,
+    TableCapabilities, TableEngineKind, TableError, TableId, TableResult, TableStatistics,
+    TextField, TextQuery, VerificationReport,
 };
 use crate::types::KeyBuf;
 use crate::vfs::FileSystem;
@@ -118,8 +118,14 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
         let root_page_id = pager.allocate_page(PageType::InvertedIndex)?;
 
         // Initialize root page with metadata
-        let mut root_page = Page::new(root_page_id, PageType::InvertedIndex, pager.page_size().data_size());
-        root_page.data_mut().resize(pager.page_size().data_size(), 0);
+        let mut root_page = Page::new(
+            root_page_id,
+            PageType::InvertedIndex,
+            pager.page_size().data_size(),
+        );
+        root_page
+            .data_mut()
+            .resize(pager.page_size().data_size(), 0);
         let metadata = FullTextMetadata {
             magic: FULLTEXT_MAGIC,
             version: FULLTEXT_VERSION,
@@ -160,9 +166,7 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
     ) -> TableResult<Self> {
         // Read metadata from root page
         let root_page = pager.read_page(root_page_id)?;
-        let metadata = unsafe {
-            &*(root_page.data().as_ptr() as *const FullTextMetadata)
-        };
+        let metadata = unsafe { &*(root_page.data().as_ptr() as *const FullTextMetadata) };
 
         if metadata.magic != FULLTEXT_MAGIC {
             return Err(TableError::corruption(
@@ -199,17 +203,17 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
     fn persist_index(&self) -> TableResult<()> {
         let inverted_index = self.inverted_index.read().unwrap();
         let document_store = self.document_store.read().unwrap();
-        
+
         // Serialize inverted index: term -> posting list
         let mut index_data = Vec::new();
         let term_count = inverted_index.len() as u32;
         index_data.extend_from_slice(&term_count.to_le_bytes());
-        
+
         for (term, posting_list) in inverted_index.iter() {
             // Encode term length and term
             index_data.extend_from_slice(&(term.len() as u32).to_le_bytes());
             index_data.extend_from_slice(term.as_bytes());
-            
+
             // Encode posting list using bincode
             let posting_bytes = posting_list.to_bytes().map_err(|e| {
                 TableError::Other(format!("Failed to serialize posting list: {}", e))
@@ -217,17 +221,17 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
             index_data.extend_from_slice(&(posting_bytes.len() as u32).to_le_bytes());
             index_data.extend_from_slice(&posting_bytes);
         }
-        
+
         // Serialize document store
         let mut doc_data = Vec::new();
         let doc_count = document_store.len() as u32;
         doc_data.extend_from_slice(&doc_count.to_le_bytes());
-        
+
         for (doc_id, doc_entry) in document_store.iter() {
             // Encode doc_id length and doc_id
             doc_data.extend_from_slice(&(doc_id.len() as u32).to_le_bytes());
             doc_data.extend_from_slice(doc_id);
-            
+
             // Encode document entry using bincode
             let entry_bytes = doc_entry.to_bytes().map_err(|e| {
                 TableError::Other(format!("Failed to serialize document entry: {}", e))
@@ -235,60 +239,70 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
             doc_data.extend_from_slice(&(entry_bytes.len() as u32).to_le_bytes());
             doc_data.extend_from_slice(&entry_bytes);
         }
-        
+
         // Write index data to pages
         self.write_data_to_pages(&index_data, PageType::InvertedIndex)?;
-        
+
         // Write document store to pages
         self.write_data_to_pages(&doc_data, PageType::InvertedIndex)?;
-        
+
         // Update metadata
         self.update_metadata()?;
-        
+
         Ok(())
     }
-    
+
     /// Write data to pages, allocating as needed.
     fn write_data_to_pages(&self, data: &[u8], page_type: PageType) -> TableResult<()> {
         if data.is_empty() {
             return Ok(());
         }
-        
+
         let data_size = self.pager.page_size().data_size();
         let mut offset = 0;
         let mut prev_page_id: Option<PageId> = None;
-        
+
         while offset < data.len() {
             let chunk_size = std::cmp::min(data_size - 8, data.len() - offset);
             let page_id = self.pager.allocate_page(page_type)?;
-            
+
             let mut page_data = vec![0u8; data_size];
-            let next_page_id = if offset + chunk_size >= data.len() { 0u64 } else { 0u64 };
+            let next_page_id = if offset + chunk_size >= data.len() {
+                0u64
+            } else {
+                0u64
+            };
             page_data[..8].copy_from_slice(&next_page_id.to_le_bytes());
             page_data[8..8 + chunk_size].copy_from_slice(&data[offset..offset + chunk_size]);
-            
+
             let mut page = Page::new(page_id, page_type, data_size);
             *page.data_mut() = page_data;
             self.pager.write_page(&page)?;
-            
+
             // Update previous page's next pointer
             if let Some(prev_id) = prev_page_id {
                 let mut prev_page = self.pager.read_page(prev_id)?;
                 prev_page.data_mut()[..8].copy_from_slice(&page_id.as_u64().to_le_bytes());
                 self.pager.write_page(&prev_page)?;
             }
-            
+
             prev_page_id = Some(page_id);
             offset += chunk_size;
         }
-        
+
         Ok(())
     }
 
     /// Update metadata in root page.
     fn update_metadata(&self) -> TableResult<()> {
-        let mut root_page = Page::new(self.root_page_id, PageType::InvertedIndex, self.pager.page_size().data_size());
-        root_page.data_mut().resize(self.pager.page_size().data_size(), 0);
+        let mut root_page = Page::new(
+            self.root_page_id,
+            PageType::InvertedIndex,
+            self.pager.page_size().data_size(),
+        );
+        root_page
+            .data_mut()
+            .resize(self.pager.page_size().data_size(), 0);
         let metadata = FullTextMetadata {
             magic: FULLTEXT_MAGIC,
             version: FULLTEXT_VERSION,
@@ -390,11 +404,7 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
         }
     }
 
-    fn index_document(
-        &mut self,
-        doc_id: &[u8],
-        fields: &[TextField<'_>],
-    ) -> TableResult<()> {
+    fn index_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()> {
         // Remove existing document first if it exists (for updates)
         {
             let doc_store = self.document_store.read().unwrap();
@@ -424,9 +434,10 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
                 let posting_list = index.entry(term.clone()).or_insert_with(PostingList::new);
 
                 // Find or create entry for this document
-                let entry = posting_list.entries.iter_mut().find(|e| {
-                    e.doc_id == doc_id && e.field == field_name
-                });
+                let entry = posting_list
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.doc_id == doc_id && e.field == field_name);
 
                 if let Some(entry) = entry {
                     if self.enable_positions {
@@ -436,7 +447,11 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
                     posting_list.add(PostingEntry {
                         doc_id: doc_id.to_vec(),
                         field: field_name,
-                        positions: if self.enable_positions { vec![position] } else { vec![] },
+                        positions: if self.enable_positions {
+                            vec![position]
+                        } else {
+                            vec![]
+                        },
                         boost,
                     });
                 }
@@ -460,11 +475,7 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
         Ok(())
     }
 
-    fn update_document(
-        &mut self,
-        doc_id: &[u8],
-        fields: &[TextField<'_>],
-    ) -> TableResult<()> {
+    fn update_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()> {
         // Delete and re-index
         self.delete_document(doc_id)?;
         self.index_document(doc_id, fields)
@@ -497,11 +508,7 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
         Ok(())
     }
 
-    fn search(
-        &self,
-        query: TextQuery<'_>,
-        limit: usize,
-    ) -> TableResult<Vec<ScoredDocument>> {
+    fn search(&self, query: TextQuery<'_>, limit: usize) -> TableResult<Vec<ScoredDocument>> {
         let terms = self.tokenizer.tokenize(query.query);
         let mut scores: HashMap<Vec<u8>, f32> = HashMap::new();
 
@@ -525,7 +532,11 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
 
         Ok(results)
@@ -578,7 +589,8 @@ mod tests {
         let fs = MemoryFileSystem::new();
         let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
         let config = FullTextConfig::default();
-        let mut index = PagedFullTextIndex::new(TableId::from(1), "test_index".into(), pager, config).unwrap();
+        let mut index =
+            PagedFullTextIndex::new(TableId::from(1), "test_index".into(), pager, config).unwrap();
         // Disable persistence for tests to avoid pager issues
         index.num_documents = RwLock::new(0);
         index.num_terms = RwLock::new(0);
@@ -589,54 +601,88 @@ mod tests {
     fn test_index_and_search() {
         let mut index = create_test_index();
 
-        index.index_document(
-            b"doc1",
-            &[
-                TextField { name: "title", text: "Rust programming language", boost: 2.0 },
-                TextField { name: "body", text: "Rust is a systems programming language", boost: 1.0 },
-            ],
-        ).unwrap();
+        index
+            .index_document(
+                b"doc1",
+                &[
+                    TextField {
+                        name: "title",
+                        text: "Rust programming language",
+                        boost: 2.0,
+                    },
+                    TextField {
+                        name: "body",
+                        text: "Rust is a systems programming language",
+                        boost: 1.0,
+                    },
+                ],
+            )
+            .unwrap();
 
-        index.index_document(
-            b"doc2",
-            &[
-                TextField { name: "title", text: "Python programming", boost: 2.0 },
-                TextField { name: "body", text: "Python is great for scripting", boost: 1.0 },
-            ],
-        ).unwrap();
+        index
+            .index_document(
+                b"doc2",
+                &[
+                    TextField {
+                        name: "title",
+                        text: "Python programming",
+                        boost: 2.0,
+                    },
+                    TextField {
+                        name: "body",
+                        text: "Python is great for scripting",
+                        boost: 1.0,
+                    },
+                ],
+            )
+            .unwrap();
 
-        let results = index.search(
-            TextQuery {
-                query: "rust",
-                default_field: None,
-                require_positions: false,
-            },
-            10,
-        ).unwrap();
+        let results = index
+            .search(
+                TextQuery {
+                    query: "rust",
+                    default_field: None,
+                    require_positions: false,
+                },
+                10,
+            )
+            .unwrap();
 
         assert!(!results.is_empty(), "Search should return results");
-        assert_eq!(results[0].doc_id.as_ref(), b"doc1", "First result should be doc1");
+        assert_eq!(
+            results[0].doc_id.as_ref(),
+            b"doc1",
+            "First result should be doc1"
+        );
     }
 
     #[test]
     fn test_delete_document() {
         let mut index = create_test_index();
 
-        index.index_document(
-            b"doc1",
-            &[TextField { name: "title", text: "Hello world", boost: 1.0 }],
-        ).unwrap();
+        index
+            .index_document(
+                b"doc1",
+                &[TextField {
+                    name: "title",
+                    text: "Hello world",
+                    boost: 1.0,
+                }],
+            )
+            .unwrap();
 
         index.delete_document(b"doc1").unwrap();
 
-        let results = index.search(
-            TextQuery {
-                query: "hello",
-                default_field: None,
-                require_positions: false,
-            },
-            10,
-        ).unwrap();
+        let results = index
+            .search(
+                TextQuery {
+                    query: "hello",
+                    default_field: None,
+                    require_positions: false,
+                },
+                10,
+            )
+            .unwrap();
 
         assert!(results.is_empty());
     }
@@ -645,35 +691,51 @@ mod tests {
     fn test_update_document() {
         let mut index = create_test_index();
 
-        index.index_document(
-            b"doc1",
-            &[TextField { name: "title", text: "Hello world", boost: 1.0 }],
-        ).unwrap();
+        index
+            .index_document(
+                b"doc1",
+                &[TextField {
+                    name: "title",
+                    text: "Hello world",
+                    boost: 1.0,
+                }],
+            )
+            .unwrap();
 
-        index.update_document(
-            b"doc1",
-            &[TextField { name: "title", text: "Hello rust", boost: 1.0 }],
-        ).unwrap();
+        index
+            .update_document(
+                b"doc1",
+                &[TextField {
+                    name: "title",
+                    text: "Hello rust",
+                    boost: 1.0,
+                }],
+            )
+            .unwrap();
 
-        let results = index.search(
-            TextQuery {
-                query: "rust",
-                default_field: None,
-                require_positions: false,
-            },
-            10,
-        ).unwrap();
+        let results = index
+            .search(
+                TextQuery {
+                    query: "rust",
+                    default_field: None,
+                    require_positions: false,
+                },
+                10,
+            )
+            .unwrap();
 
         assert!(!results.is_empty());
 
-        let results = index.search(
-            TextQuery {
-                query: "world",
-                default_field: None,
-                require_positions: false,
-            },
-            10,
-        ).unwrap();
+        let results = index
+            .search(
+                TextQuery {
+                    query: "world",
+                    default_field: None,
+                    require_positions: false,
+                },
+                10,
+            )
+            .unwrap();
 
         assert!(results.is_empty());
     }

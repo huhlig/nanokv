@@ -25,9 +25,7 @@
 //! The implementation uses a HashMap to store blobs by key, with memory tracking
 //! and optional size limits.
 
-use crate::table::{
-    Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
-};
+use crate::table::{Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics};
 use crate::types::{TableId, ValueBuf};
 use crate::wal::LogSequenceNumber;
 use std::collections::HashMap;
@@ -130,7 +128,7 @@ impl MemoryBlob {
         }
 
         let mut store = self.data.write().unwrap();
-        
+
         // Calculate memory delta
         let new_size = Self::estimate_entry_size(key, value);
         let old_size = store

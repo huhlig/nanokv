@@ -23,35 +23,33 @@
 use crate::types::{CompressionKind, EncryptionKind};
 
 /// LSM tree configuration.
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LsmConfig {
     /// Memtable configuration
     pub memtable: MemtableConfig,
-    
+
     /// SSTable configuration
     pub sstable: SStableConfig,
-    
+
     /// Compaction configuration
     pub compaction: CompactionConfig,
-    
+
     /// Bloom filter configuration
     pub bloom_filter: BloomFilterConfig,
-    
+
     /// Block cache configuration
     pub block_cache: BlockCacheConfig,
 }
-
 
 /// Memtable configuration.
 #[derive(Clone, Debug)]
 pub struct MemtableConfig {
     /// Maximum memtable size in bytes before flush (default: 64MB)
     pub max_size: usize,
-    
+
     /// Maximum number of immutable memtables to keep (default: 2)
     pub max_immutable_count: usize,
-    
+
     /// Memtable implementation type
     pub implementation: MemtableType,
 }
@@ -80,19 +78,19 @@ pub enum MemtableType {
 pub struct SStableConfig {
     /// Target SSTable size in bytes (default: 2MB)
     pub target_size: usize,
-    
+
     /// Block size in bytes (default: 4KB)
     pub block_size: usize,
-    
+
     /// Compression algorithm (default: None)
     pub compression: Option<CompressionKind>,
-    
+
     /// Encryption algorithm (default: None)
     pub encryption: Option<EncryptionKind>,
-    
+
     /// Enable checksums for data blocks (default: true)
     pub enable_checksums: bool,
-    
+
     /// Index block interval (keys per index entry, default: 16)
     pub index_interval: usize,
 }
@@ -115,16 +113,16 @@ impl Default for SStableConfig {
 pub struct CompactionConfig {
     /// Compaction strategy
     pub strategy: CompactionStrategy,
-    
+
     /// Maximum number of concurrent compaction threads (default: 1)
     pub max_threads: usize,
-    
+
     /// Level-specific configuration
     pub levels: Vec<LevelConfig>,
-    
+
     /// Minimum number of SSTables to trigger compaction (default: 4)
     pub min_merge_width: usize,
-    
+
     /// Maximum number of SSTables to merge at once (default: 10)
     pub max_merge_width: usize,
 }
@@ -147,25 +145,25 @@ impl CompactionConfig {
         vec![
             LevelConfig {
                 level: 0,
-                max_size: 10 * 1024 * 1024,      // 10MB (L0 is special)
+                max_size: 10 * 1024 * 1024, // 10MB (L0 is special)
                 max_files: 4,
                 target_file_size: 2 * 1024 * 1024, // 2MB
             },
             LevelConfig {
                 level: 1,
-                max_size: 10 * 1024 * 1024,      // 10MB
+                max_size: 10 * 1024 * 1024, // 10MB
                 max_files: 10,
                 target_file_size: 2 * 1024 * 1024, // 2MB
             },
             LevelConfig {
                 level: 2,
-                max_size: 100 * 1024 * 1024,     // 100MB
+                max_size: 100 * 1024 * 1024, // 100MB
                 max_files: 100,
                 target_file_size: 2 * 1024 * 1024, // 2MB
             },
             LevelConfig {
                 level: 3,
-                max_size: 1024 * 1024 * 1024,    // 1GB
+                max_size: 1024 * 1024 * 1024, // 1GB
                 max_files: 1000,
                 target_file_size: 2 * 1024 * 1024, // 2MB
             },
@@ -199,13 +197,13 @@ pub enum CompactionStrategy {
     /// - SSTables in each level (except L0) are non-overlapping
     /// - Compaction merges SSTables from level N to N+1
     Leveled,
-    
+
     /// Size-tiered compaction (Cassandra-style)
     /// - Group SSTables by size
     /// - Merge similar-sized SSTables
     /// - Better for write-heavy workloads
     SizeTiered,
-    
+
     /// Universal compaction
     /// - Simpler strategy with fewer levels
     /// - Good for small datasets
@@ -217,13 +215,13 @@ pub enum CompactionStrategy {
 pub struct LevelConfig {
     /// Level number (0 = L0, 1 = L1, etc.)
     pub level: u32,
-    
+
     /// Maximum total size for this level in bytes
     pub max_size: u64,
-    
+
     /// Maximum number of SSTables in this level
     pub max_files: usize,
-    
+
     /// Target size for SSTables in this level
     pub target_file_size: usize,
 }
@@ -233,10 +231,10 @@ pub struct LevelConfig {
 pub struct BloomFilterConfig {
     /// Enable bloom filters (default: true)
     pub enabled: bool,
-    
+
     /// Bits per key (default: 10, ~1% false positive rate)
     pub bits_per_key: usize,
-    
+
     /// Number of hash functions (default: calculated from bits_per_key)
     pub num_hash_functions: Option<usize>,
 }
@@ -261,7 +259,7 @@ impl BloomFilterConfig {
             ((self.bits_per_key as f64) * 0.693).ceil() as usize
         }
     }
-    
+
     /// Calculate expected false positive rate.
     pub fn false_positive_rate(&self) -> f64 {
         let k = self.optimal_hash_functions() as f64;
@@ -276,10 +274,10 @@ impl BloomFilterConfig {
 pub struct BlockCacheConfig {
     /// Enable block cache (default: true)
     pub enabled: bool,
-    
+
     /// Maximum cache size in bytes (default: 8MB)
     pub max_size: usize,
-    
+
     /// Cache eviction policy
     pub eviction_policy: CacheEvictionPolicy,
 }
@@ -323,7 +321,7 @@ mod tests {
         let config = BloomFilterConfig::default();
         let k = config.optimal_hash_functions();
         assert!(k > 0 && k < 20); // Reasonable range
-        
+
         let fpr = config.false_positive_rate();
         assert!(fpr > 0.0 && fpr < 0.1); // Should be less than 10%
     }
@@ -332,12 +330,12 @@ mod tests {
     fn test_level_configs() {
         let config = CompactionConfig::default();
         assert_eq!(config.levels.len(), 7);
-        
+
         // Verify exponential growth (starting from L2, since L0 and L1 are special)
         for i in 2..config.levels.len() {
             assert!(config.levels[i].max_size > config.levels[i - 1].max_size);
         }
-        
+
         // Verify L0 and L1 have same size (both 10MB)
         assert_eq!(config.levels[0].max_size, 10 * 1024 * 1024);
         assert_eq!(config.levels[1].max_size, 10 * 1024 * 1024);

@@ -28,7 +28,8 @@ use crate::pager::PhysicalLocation;
 use crate::table::TableResult;
 use crate::txn::TransactionId;
 use crate::types::{
-    CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, TableId, ScanBounds, ValueBuf,
+    CompressionKind, EncryptionKind, KeyBuf, KeyEncoding, MemoryPressure, ScanBounds, TableId,
+    ValueBuf,
 };
 use crate::wal::LogSequenceNumber;
 use std::borrow::Cow;
@@ -36,7 +37,6 @@ use std::borrow::Cow;
 // TableId has been removed - use ObjectId directly throughout the codebase.
 // This completes the type system unification where tables and indexes share
 // the same identifier type without wrapper aliases.
-
 
 /// Options for creating a table.
 ///
@@ -219,7 +219,7 @@ impl ValueStream for SliceValueStream {
         if remaining == 0 {
             return Ok(0);
         }
-        
+
         let to_copy = remaining.min(buf.len());
         buf[..to_copy].copy_from_slice(&self.data[self.position..self.position + to_copy]);
         self.position += to_copy;
@@ -295,7 +295,11 @@ pub trait OrderedScan {
     ///
     /// * `bounds` - The range of keys to scan
     /// * `snapshot_lsn` - The LSN at which to read (for MVCC visibility)
-    fn scan(&self, bounds: ScanBounds, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>>;
+    fn scan(
+        &self,
+        bounds: ScanBounds,
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Cursor<'_>>;
 }
 
 /// Prefix scan capability.
@@ -308,7 +312,11 @@ pub trait PrefixScan: OrderedScan {
     /// Scan all keys with the given prefix at a specific snapshot.
     ///
     /// Implementations should check that the engine's capabilities include prefix_scan support.
-    fn scan_prefix(&self, prefix: &[u8], snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Cursor<'_>>;
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Cursor<'_>>;
 }
 
 /// Mutation capability.
@@ -347,7 +355,7 @@ pub trait MutableTable {
         if let Some(size_hint) = stream.size_hint() {
             buffer.reserve(size_hint as usize);
         }
-        
+
         let mut temp_buf = vec![0u8; 8192]; // 8KB chunks
         loop {
             let n = stream.read(&mut temp_buf)?;
@@ -356,7 +364,7 @@ pub trait MutableTable {
             }
             buffer.extend_from_slice(&temp_buf[..n]);
         }
-        
+
         self.put(key, &buffer)
     }
 
@@ -515,7 +523,11 @@ pub trait SearchableTable: Table {
     /// - Check-and-set operations need to read current values
     /// - Read-before-delete operations need visibility checks
     /// - Conditional updates need snapshot isolation
-    fn writer(&self, tx_id: TransactionId, snapshot_lsn: LogSequenceNumber) -> TableResult<Self::Writer<'_>>;
+    fn writer(
+        &self,
+        tx_id: TransactionId,
+        snapshot_lsn: LogSequenceNumber,
+    ) -> TableResult<Self::Writer<'_>>;
 }
 
 /// Marker trait for a full ordered key-value table.
@@ -794,9 +806,7 @@ pub struct RepairPlan {
 pub enum RepairAction {
     RebuildTable(TableId),
     ReclaimOrphanedPages,
-    RestoreFromWal {
-        through: LogSequenceNumber,
-    },
+    RestoreFromWal { through: LogSequenceNumber },
     DropCorruptedTable(TableId),
 }
 
@@ -806,7 +816,6 @@ pub struct RepairReport {
     pub actions_succeeded: u64,
     pub unrepaired_errors: Vec<ConsistencyError>,
 }
-
 
 // =============================================================================
 // Specialty table traits (formerly index traits)
@@ -881,11 +890,7 @@ pub trait SparseOrdered {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn add_marker(
-        &mut self,
-        marker_key: &[u8],
-        target: PhysicalLocation,
-    ) -> TableResult<()>;
+    fn add_marker(&mut self, marker_key: &[u8], target: PhysicalLocation) -> TableResult<()>;
 
     /// Remove a marker by key and page ID.
     ///
@@ -898,10 +903,7 @@ pub trait SparseOrdered {
         page_id: crate::pager::PageId,
     ) -> TableResult<bool>;
 
-    fn find_candidate_ranges(
-        &self,
-        query: SparseQuery<'_>,
-    ) -> TableResult<Vec<PhysicalRange>>;
+    fn find_candidate_ranges(&self, query: SparseQuery<'_>) -> TableResult<Vec<PhysicalRange>>;
 
     /// Convert physical ranges to scan bounds for ordered scan layer.
     ///
@@ -946,29 +948,17 @@ pub trait FullTextSearch {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn index_document(
-        &mut self,
-        doc_id: &[u8],
-        fields: &[TextField<'_>],
-    ) -> TableResult<()>;
+    fn index_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
 
     /// Update an existing document, replacing its indexed content.
     ///
     /// This is more efficient than delete-then-insert for posting list updates,
     /// as it can reuse existing posting list entries where terms haven't changed.
-    fn update_document(
-        &mut self,
-        doc_id: &[u8],
-        fields: &[TextField<'_>],
-    ) -> TableResult<()>;
+    fn update_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
 
     fn delete_document(&mut self, doc_id: &[u8]) -> TableResult<()>;
 
-    fn search(
-        &self,
-        query: TextQuery<'_>,
-        limit: usize,
-    ) -> TableResult<Vec<ScoredDocument>>;
+    fn search(&self, query: TextQuery<'_>, limit: usize) -> TableResult<Vec<ScoredDocument>>;
 
     fn stats(&self) -> TableResult<SpecialtyTableStats>;
 
@@ -1059,17 +1049,9 @@ pub trait GraphAdjacency {
         edge_id: &[u8],
     ) -> TableResult<()>;
 
-    fn outgoing(
-        &self,
-        source: &[u8],
-        label: Option<&[u8]>,
-    ) -> TableResult<Self::EdgeCursor<'_>>;
+    fn outgoing(&self, source: &[u8], label: Option<&[u8]>) -> TableResult<Self::EdgeCursor<'_>>;
 
-    fn incoming(
-        &self,
-        target: &[u8],
-        label: Option<&[u8]>,
-    ) -> TableResult<Self::EdgeCursor<'_>>;
+    fn incoming(&self, target: &[u8], label: Option<&[u8]>) -> TableResult<Self::EdgeCursor<'_>>;
 
     fn stats(&self) -> TableResult<SpecialtyTableStats>;
 
@@ -1089,12 +1071,7 @@ pub trait TimeSeries {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn append_point(
-        &self,
-        series_key: &[u8],
-        timestamp: i64,
-        value_key: &[u8],
-    ) -> TableResult<()>;
+    fn append_point(&self, series_key: &[u8], timestamp: i64, value_key: &[u8]) -> TableResult<()>;
 
     fn scan_series(
         &self,
@@ -1103,11 +1080,8 @@ pub trait TimeSeries {
         end_ts: i64,
     ) -> TableResult<Self::TimeSeriesCursor<'_>>;
 
-    fn latest_before(
-        &self,
-        series_key: &[u8],
-        timestamp: i64,
-    ) -> TableResult<Option<TimePointRef>>;
+    fn latest_before(&self, series_key: &[u8], timestamp: i64)
+    -> TableResult<Option<TimePointRef>>;
 
     fn stats(&self) -> TableResult<SpecialtyTableStats>;
 

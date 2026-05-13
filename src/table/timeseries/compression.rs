@@ -336,7 +336,8 @@ mod tests {
     fn test_delta_of_delta_compression() {
         let timestamps = vec![1000, 1010, 1020, 1030, 1040];
         let compressed = compress_timestamps_delta_of_delta(&timestamps).unwrap();
-        let decompressed = decompress_timestamps_delta_of_delta(&compressed, timestamps.len()).unwrap();
+        let decompressed =
+            decompress_timestamps_delta_of_delta(&compressed, timestamps.len()).unwrap();
         assert_eq!(timestamps, decompressed);
     }
 
@@ -344,7 +345,8 @@ mod tests {
     fn test_delta_of_delta_irregular() {
         let timestamps = vec![1000, 1015, 1025, 1040, 1050];
         let compressed = compress_timestamps_delta_of_delta(&timestamps).unwrap();
-        let decompressed = decompress_timestamps_delta_of_delta(&compressed, timestamps.len()).unwrap();
+        let decompressed =
+            decompress_timestamps_delta_of_delta(&compressed, timestamps.len()).unwrap();
         assert_eq!(timestamps, decompressed);
     }
 

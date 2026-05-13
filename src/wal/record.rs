@@ -32,7 +32,19 @@ use std::io::Write;
 /// Implementations may encode term, segment, offset, shard, or epoch information
 /// in a richer internal representation. The public trait only requires stable
 /// ordering.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct LogSequenceNumber(u64);
 
 impl LogSequenceNumber {
@@ -312,13 +324,13 @@ impl WalRecord {
         let compressed_data = match self.compression {
             CompressionType::None => data_bytes,
             CompressionType::Lz4 => lz4_flex::compress_prepend_size(&data_bytes),
-            CompressionType::Zstd => zstd::encode_all(&data_bytes[..], 3).map_err(|e| {
-                WalError::SerializationError {
+            CompressionType::Zstd => {
+                zstd::encode_all(&data_bytes[..], 3).map_err(|e| WalError::SerializationError {
                     lsn: self.lsn,
                     record_type: format!("{:?}", self.data.record_type()),
                     details: format!("Zstd compression failed: {}", e),
-                }
-            })?,
+                })?
+            }
         };
 
         // Encrypt data if needed (after compression)
@@ -408,14 +420,12 @@ impl WalRecord {
         cursor += 8;
 
         // Timestamp
-        let timestamp = u64::from_le_bytes(
-            bytes[cursor..cursor + 8]
-                .try_into()
-                .map_err(|_| WalError::DeserializationError {
-                    offset: 12,
-                    details: "Invalid timestamp bytes".to_string(),
-                })?,
-        );
+        let timestamp = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().map_err(|_| {
+            WalError::DeserializationError {
+                offset: 12,
+                details: "Invalid timestamp bytes".to_string(),
+            }
+        })?);
         cursor += 8;
 
         // Record type
@@ -451,14 +461,13 @@ impl WalRecord {
         cursor += 4;
 
         // Stored size
-        let stored_size = u32::from_le_bytes(
-            bytes[cursor..cursor + 4]
-                .try_into()
-                .map_err(|_| WalError::DeserializationError {
+        let stored_size =
+            u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().map_err(|_| {
+                WalError::DeserializationError {
                     offset: cursor as u64,
                     details: "Invalid stored size bytes".to_string(),
-                })?,
-        ) as usize;
+                }
+            })?) as usize;
         cursor += 4;
 
         // Verify we have enough bytes
@@ -526,23 +535,21 @@ impl WalRecord {
         };
 
         // Decompress if needed
-        let data_bytes = match compression {
-            CompressionType::None => compressed_data,
-            CompressionType::Lz4 => {
-                lz4_flex::decompress_size_prepended(&compressed_data).map_err(|e| {
-                    WalError::DeserializationError {
+        let data_bytes =
+            match compression {
+                CompressionType::None => compressed_data,
+                CompressionType::Lz4 => lz4_flex::decompress_size_prepended(&compressed_data)
+                    .map_err(|e| WalError::DeserializationError {
                         offset: cursor as u64,
                         details: format!("LZ4 decompression failed: {}", e),
+                    })?,
+                CompressionType::Zstd => zstd::decode_all(&compressed_data[..]).map_err(|e| {
+                    WalError::DeserializationError {
+                        offset: cursor as u64,
+                        details: format!("Zstd decompression failed: {}", e),
                     }
-                })?
-            }
-            CompressionType::Zstd => zstd::decode_all(&compressed_data[..]).map_err(|e| {
-                WalError::DeserializationError {
-                    offset: cursor as u64,
-                    details: format!("Zstd decompression failed: {}", e),
-                }
-            })?,
-        };
+                })?,
+            };
 
         // Deserialize data
         let data = Self::deserialize_data(record_type, &data_bytes)?;
@@ -699,7 +706,10 @@ impl WalRecord {
                 if bytes.len() < cursor + key_len {
                     return Err(WalError::DeserializationError {
                         offset: cursor as u64,
-                        details: format!("Invalid Write record: missing key data ({} bytes)", key_len),
+                        details: format!(
+                            "Invalid Write record: missing key data ({} bytes)",
+                            key_len
+                        ),
                     });
                 }
                 let key = bytes[cursor..cursor + key_len].to_vec();
@@ -719,7 +729,10 @@ impl WalRecord {
                 if bytes.len() < cursor + value_len {
                     return Err(WalError::DeserializationError {
                         offset: cursor as u64,
-                        details: format!("Invalid Write record: missing value data ({} bytes)", value_len),
+                        details: format!(
+                            "Invalid Write record: missing value data ({} bytes)",
+                            value_len
+                        ),
                     });
                 }
                 let value = bytes[cursor..cursor + value_len].to_vec();
@@ -786,7 +799,8 @@ impl WalRecord {
                     if bytes.len() < cursor + 8 {
                         return Err(WalError::DeserializationError {
                             offset: cursor as u64,
-                            details: "Invalid Checkpoint record: missing transaction ID".to_string(),
+                            details: "Invalid Checkpoint record: missing transaction ID"
+                                .to_string(),
                         });
                     }
                     let txn_id = TransactionId::from(u64::from_le_bytes(

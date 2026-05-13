@@ -94,7 +94,7 @@ thread_local! {
 /// // Correct ordering
 /// assert_lock_order(LockType::Superblock);
 /// let _superblock = self.superblock.write();
-/// 
+///
 /// assert_lock_order(LockType::PageTable);
 /// let _page_lock = self.page_table.write_lock(page_id);
 /// ```

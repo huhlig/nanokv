@@ -69,30 +69,36 @@ where
 pub struct FileMetadata {
     /// SSTable ID
     pub id: SStableId,
-    
+
     /// Level in the LSM tree (0 = L0, 1 = L1, etc.)
     pub level: u32,
-    
+
     /// Smallest key in the SSTable (hex encoded for JSON)
-    #[serde(serialize_with = "serialize_bytes", deserialize_with = "deserialize_bytes")]
+    #[serde(
+        serialize_with = "serialize_bytes",
+        deserialize_with = "deserialize_bytes"
+    )]
     pub min_key: Vec<u8>,
-    
+
     /// Largest key in the SSTable (hex encoded for JSON)
-    #[serde(serialize_with = "serialize_bytes", deserialize_with = "deserialize_bytes")]
+    #[serde(
+        serialize_with = "serialize_bytes",
+        deserialize_with = "deserialize_bytes"
+    )]
     pub max_key: Vec<u8>,
-    
+
     /// Number of key-value pairs
     pub num_entries: u64,
-    
+
     /// Total size in bytes
     pub total_size: u64,
-    
+
     /// LSN when this SSTable was created
     pub created_lsn: LogSequenceNumber,
-    
+
     /// First page ID of this SSTable
     pub first_page_id: PageId,
-    
+
     /// Number of pages used by this SSTable
     pub num_pages: u32,
 }
@@ -110,7 +116,7 @@ impl FileMetadata {
         }
         true
     }
-    
+
     /// Check if this file contains the given key.
     pub fn contains_key(&self, key: &[u8]) -> bool {
         key >= self.min_key.as_slice() && key <= self.max_key.as_slice()
@@ -125,9 +131,15 @@ pub enum VersionEdit {
     AddSStable {
         id: SStableId,
         level: u32,
-        #[serde(serialize_with = "serialize_bytes", deserialize_with = "deserialize_bytes")]
+        #[serde(
+            serialize_with = "serialize_bytes",
+            deserialize_with = "deserialize_bytes"
+        )]
         min_key: Vec<u8>,
-        #[serde(serialize_with = "serialize_bytes", deserialize_with = "deserialize_bytes")]
+        #[serde(
+            serialize_with = "serialize_bytes",
+            deserialize_with = "deserialize_bytes"
+        )]
         max_key: Vec<u8>,
         num_entries: u64,
         total_size: u64,
@@ -135,21 +147,15 @@ pub enum VersionEdit {
         first_page_id: PageId,
         num_pages: u32,
     },
-    
+
     /// Remove an SSTable
-    RemoveSStable {
-        id: SStableId,
-    },
-    
+    RemoveSStable { id: SStableId },
+
     /// Set the next SSTable ID
-    SetNextSStableId {
-        next_id: u64,
-    },
-    
+    SetNextSStableId { next_id: u64 },
+
     /// Set the log number
-    SetLogNumber {
-        log_number: u64,
-    },
+    SetLogNumber { log_number: u64 },
 }
 
 impl VersionEdit {
@@ -167,17 +173,17 @@ impl VersionEdit {
             num_pages: metadata.num_pages,
         }
     }
-    
+
     /// Create an edit to remove an SSTable.
     pub fn remove_sstable(id: SStableId) -> Self {
         Self::RemoveSStable { id }
     }
-    
+
     /// Create an edit to set the next SSTable ID.
     pub fn set_next_sstable_id(next_id: u64) -> Self {
         Self::SetNextSStableId { next_id }
     }
-    
+
     /// Create an edit to set the log number.
     pub fn set_log_number(log_number: u64) -> Self {
         Self::SetLogNumber { log_number }
@@ -191,13 +197,13 @@ pub struct Version {
     /// Level 0 can have overlapping key ranges
     /// Levels 1+ have non-overlapping key ranges (sorted by min_key)
     levels: Vec<Vec<FileMetadata>>,
-    
+
     /// Map from SSTable ID to metadata for fast lookup
     files_by_id: HashMap<SStableId, FileMetadata>,
-    
+
     /// Next SSTable ID to allocate
     next_sstable_id: u64,
-    
+
     /// Current log number
     log_number: u64,
 }
@@ -212,11 +218,11 @@ impl Version {
             log_number: 0,
         }
     }
-    
+
     /// Apply a version edit to create a new version.
     pub fn apply(&self, edit: &VersionEdit) -> TableResult<Self> {
         let mut new_version = self.clone();
-        
+
         match edit {
             VersionEdit::AddSStable {
                 id,
@@ -236,7 +242,7 @@ impl Version {
                         (new_version.levels.len() - 1) as u32,
                     ));
                 }
-                
+
                 let metadata = FileMetadata {
                     id: *id,
                     level: *level,
@@ -248,47 +254,48 @@ impl Version {
                     first_page_id: *first_page_id,
                     num_pages: *num_pages,
                 };
-                
+
                 // Check for duplicate ID
                 if new_version.files_by_id.contains_key(id) {
                     return Err(TableError::sstable_id_exists(id.to_string()));
                 }
-                
+
                 // Add to level
                 new_version.levels[level_idx].push(metadata.clone());
-                
+
                 // For levels > 0, maintain sorted order by min_key
                 if *level > 0 {
                     new_version.levels[level_idx].sort_by(|a, b| a.min_key.cmp(&b.min_key));
                 }
-                
+
                 // Add to ID map
                 new_version.files_by_id.insert(*id, metadata);
             }
-            
+
             VersionEdit::RemoveSStable { id } => {
                 // Remove from ID map
-                let metadata = new_version.files_by_id.remove(id).ok_or_else(|| {
-                    TableError::sstable_id_not_found(id.to_string())
-                })?;
-                
+                let metadata = new_version
+                    .files_by_id
+                    .remove(id)
+                    .ok_or_else(|| TableError::sstable_id_not_found(id.to_string()))?;
+
                 // Remove from level
                 let level_idx = metadata.level as usize;
                 new_version.levels[level_idx].retain(|f| f.id != *id);
             }
-            
+
             VersionEdit::SetNextSStableId { next_id } => {
                 new_version.next_sstable_id = *next_id;
             }
-            
+
             VersionEdit::SetLogNumber { log_number } => {
                 new_version.log_number = *log_number;
             }
         }
-        
+
         Ok(new_version)
     }
-    
+
     /// Get all files at a specific level.
     pub fn level_files(&self, level: u32) -> &[FileMetadata] {
         let level_idx = level as usize;
@@ -298,16 +305,16 @@ impl Version {
             &[]
         }
     }
-    
+
     /// Get file metadata by ID.
     pub fn get_file(&self, id: SStableId) -> Option<&FileMetadata> {
         self.files_by_id.get(&id)
     }
-    
+
     /// Get all files that may contain the given key.
     pub fn get_overlapping_files(&self, key: &[u8]) -> Vec<FileMetadata> {
         let mut files = Vec::new();
-        
+
         for level_files in &self.levels {
             for file in level_files {
                 if file.contains_key(key) {
@@ -315,10 +322,10 @@ impl Version {
                 }
             }
         }
-        
+
         files
     }
-    
+
     /// Get all files in a level that overlap with the given key range.
     pub fn get_overlapping_files_in_level(
         &self,
@@ -330,64 +337,61 @@ impl Version {
         if level_idx >= self.levels.len() {
             return Vec::new();
         }
-        
+
         self.levels[level_idx]
             .iter()
             .filter(|f| f.overlaps(min_key, max_key))
             .cloned()
             .collect()
     }
-    
+
     /// Get the total size of all files at a level.
     pub fn level_size(&self, level: u32) -> u64 {
         let level_idx = level as usize;
         if level_idx >= self.levels.len() {
             return 0;
         }
-        
-        self.levels[level_idx]
-            .iter()
-            .map(|f| f.total_size)
-            .sum()
+
+        self.levels[level_idx].iter().map(|f| f.total_size).sum()
     }
-    
+
     /// Get the number of files at a level.
     pub fn level_file_count(&self, level: u32) -> usize {
         let level_idx = level as usize;
         if level_idx >= self.levels.len() {
             return 0;
         }
-        
+
         self.levels[level_idx].len()
     }
-    
+
     /// Get the total number of files across all levels.
     pub fn total_file_count(&self) -> usize {
         self.files_by_id.len()
     }
-    
+
     /// Allocate a new SSTable ID.
     pub fn allocate_sstable_id(&mut self) -> SStableId {
         let id = SStableId::new(self.next_sstable_id);
         self.next_sstable_id += 1;
         id
     }
-    
+
     /// Get the next SSTable ID that will be allocated.
     pub fn next_sstable_id(&self) -> u64 {
         self.next_sstable_id
     }
-    
+
     /// Get the current log number.
     pub fn log_number(&self) -> u64 {
         self.log_number
     }
-    
+
     /// Get the number of levels.
     pub fn num_levels(&self) -> usize {
         self.levels.len()
     }
-    
+
     /// Get all file IDs that are currently active.
     pub fn active_file_ids(&self) -> HashSet<SStableId> {
         self.files_by_id.keys().copied().collect()
@@ -441,9 +445,7 @@ impl VersionDisk {
                         "wrong_level",
                         format!(
                             "Manifest file {} stored in wrong level: metadata={}, container={}",
-                            metadata.id,
-                            metadata.level,
-                            level_idx
+                            metadata.id, metadata.level, level_idx
                         ),
                     ));
                 }
@@ -486,17 +488,14 @@ impl ManifestPageHeader {
         (first_page_capacity - Self::FIXED_SIZE) / 8
     }
 
-    fn encode(
-        num_levels: usize,
-        payload_len: usize,
-        page_ids: &[PageId],
-    ) -> TableResult<Vec<u8>> {
+    fn encode(num_levels: usize, payload_len: usize, page_ids: &[PageId]) -> TableResult<Vec<u8>> {
         let num_levels = u32::try_from(num_levels)
             .map_err(|_| TableError::manifest_error("serialize", "Too many manifest levels"))?;
         let payload_len = u64::try_from(payload_len)
             .map_err(|_| TableError::manifest_error("serialize", "Manifest payload too large"))?;
-        let page_count = u32::try_from(page_ids.len())
-            .map_err(|_| TableError::manifest_error("serialize", "Manifest page count too large"))?;
+        let page_count = u32::try_from(page_ids.len()).map_err(|_| {
+            TableError::manifest_error("serialize", "Manifest page count too large")
+        })?;
 
         let mut bytes = Vec::with_capacity(Self::size_for_page_count(page_ids.len()));
         bytes.extend_from_slice(&Self::MAGIC);
@@ -510,7 +509,10 @@ impl ManifestPageHeader {
         Ok(bytes)
     }
 
-    fn decode(bytes: &[u8], expected_num_levels: usize) -> TableResult<(usize, Vec<PageId>, usize)> {
+    fn decode(
+        bytes: &[u8],
+        expected_num_levels: usize,
+    ) -> TableResult<(usize, Vec<PageId>, usize)> {
         if bytes.len() < Self::FIXED_SIZE {
             return Err(TableError::corruption(
                 "ManifestPageHeader::decode",
@@ -538,8 +540,7 @@ impl ManifestPageHeader {
                 "num_levels_mismatch",
                 format!(
                     "Manifest num_levels mismatch: expected {}, got {}",
-                    expected_num_levels,
-                    num_levels
+                    expected_num_levels, num_levels
                 ),
             ));
         }
@@ -592,7 +593,11 @@ pub struct Manifest<FS: FileSystem> {
 
 impl<FS: FileSystem> Manifest<FS> {
     /// Create a new empty manifest at the provided root page.
-    pub fn new(pager: Arc<Pager<FS>>, root_page_id: PageId, num_levels: usize) -> TableResult<Self> {
+    pub fn new(
+        pager: Arc<Pager<FS>>,
+        root_page_id: PageId,
+        num_levels: usize,
+    ) -> TableResult<Self> {
         let version = Version::new(num_levels);
         let manifest = Self {
             pager,
@@ -605,7 +610,11 @@ impl<FS: FileSystem> Manifest<FS> {
     }
 
     /// Open an existing manifest from pager pages.
-    pub fn open(pager: Arc<Pager<FS>>, root_page_id: PageId, num_levels: usize) -> TableResult<Self> {
+    pub fn open(
+        pager: Arc<Pager<FS>>,
+        root_page_id: PageId,
+        num_levels: usize,
+    ) -> TableResult<Self> {
         let version = Self::recover_from_pages(&pager, root_page_id, num_levels)?;
         Ok(Self {
             pager,
@@ -662,7 +671,8 @@ impl<FS: FileSystem> Manifest<FS> {
         }
 
         let first_data = first_page.data();
-        let (payload_len, page_ids, header_size) = ManifestPageHeader::decode(first_data, num_levels)?;
+        let (payload_len, page_ids, header_size) =
+            ManifestPageHeader::decode(first_data, num_levels)?;
         let mut payload = Vec::with_capacity(payload_len);
 
         let first_chunk = &first_data[header_size..];
@@ -718,9 +728,8 @@ impl<FS: FileSystem> Manifest<FS> {
         let snapshot = ManifestSnapshot {
             version: VersionDisk::from(version),
         };
-        let payload = bincode::serialize(&snapshot).map_err(|e| {
-            TableError::serialization_error("manifest_snapshot", e.to_string())
-        })?;
+        let payload = bincode::serialize(&snapshot)
+            .map_err(|e| TableError::serialization_error("manifest_snapshot", e.to_string()))?;
 
         let page_capacity = self.pager.page_size().data_size();
         let max_page_count = ManifestPageHeader::max_page_count(page_capacity);
@@ -868,11 +877,9 @@ impl<FS: FileSystem> Manifest<FS> {
 
         for page_num in 0..total_pages {
             let page_id = PageId::from(page_num);
-            
+
             // Skip reserved pages (0=header, 1=superblock, root_page_id=manifest)
-            if page_id == PageId::from(0)
-                || page_id == PageId::from(1)
-                || page_id == root_page_id {
+            if page_id == PageId::from(0) || page_id == PageId::from(1) || page_id == root_page_id {
                 continue;
             }
 
@@ -896,7 +903,7 @@ impl<FS: FileSystem> Manifest<FS> {
             match SStableReader::open(Arc::clone(&pager), first_page_id, config.clone()) {
                 Ok(reader) => {
                     let metadata = reader.metadata().clone();
-                    
+
                     // Verify this is actually the first page (not a continuation page)
                     if metadata.first_page_id == first_page_id {
                         // Avoid duplicates (in case we scanned continuation pages)
@@ -918,14 +925,14 @@ impl<FS: FileSystem> Manifest<FS> {
 
         // Step 4: Build Version from assigned SSTables
         let mut version = Version::new(num_levels);
-        
+
         // Find the maximum SSTable ID to set next_sstable_id
         let mut max_id = 0u64;
-        
+
         for (level, level_sstables) in assigned_sstables.iter().enumerate() {
             for metadata in level_sstables {
                 max_id = max_id.max(metadata.id.as_u64());
-                
+
                 // Convert SStableMetadata to FileMetadata
                 let file_metadata = FileMetadata {
                     id: metadata.id,
@@ -938,13 +945,13 @@ impl<FS: FileSystem> Manifest<FS> {
                     first_page_id: metadata.first_page_id,
                     num_pages: metadata.num_pages,
                 };
-                
+
                 // Apply as an edit to add the SSTable
                 let edit = VersionEdit::add_sstable(file_metadata);
                 version = version.apply(&edit)?;
             }
         }
-        
+
         // Set next SSTable ID to one past the maximum found
         version.next_sstable_id = max_id + 1;
 
@@ -966,14 +973,11 @@ impl<FS: FileSystem> Manifest<FS> {
         mut sstables: Vec<crate::table::lsm::SStableMetadata>,
         num_levels: usize,
     ) -> TableResult<Vec<Vec<crate::table::lsm::SStableMetadata>>> {
-        let mut levels: Vec<Vec<crate::table::lsm::SStableMetadata>> =
-            vec![Vec::new(); num_levels];
+        let mut levels: Vec<Vec<crate::table::lsm::SStableMetadata>> = vec![Vec::new(); num_levels];
 
         // Sort by creation LSN (newest first) for L0
         // This ensures newer data is checked first during reads
-        sstables.sort_by(|a, b| {
-            b.created_lsn.as_u64().cmp(&a.created_lsn.as_u64())
-        });
+        sstables.sort_by(|a, b| b.created_lsn.as_u64().cmp(&a.created_lsn.as_u64()));
 
         // Place all recovered SSTables in L0
         // This is the safest approach for disaster recovery
@@ -1005,35 +1009,35 @@ mod tests {
             num_pages: 1,
         }
     }
-    
+
     #[test]
     fn test_file_metadata_overlaps() {
         let file = create_test_metadata(1, 0);
-        
+
         // Overlaps with range that includes file's range
         assert!(file.overlaps(b"key000", b"key999"));
-        
+
         // Overlaps with range that partially overlaps
         assert!(file.overlaps(b"key005", b"key015"));
-        
+
         // No overlap - range is before file
         assert!(!file.overlaps(b"key000", b"key009"));
-        
+
         // No overlap - range is after file
         assert!(!file.overlaps(b"key020", b"key999"));
     }
-    
+
     #[test]
     fn test_file_metadata_contains_key() {
         let file = create_test_metadata(1, 0);
-        
+
         assert!(file.contains_key(b"key010"));
         assert!(file.contains_key(b"key015"));
         assert!(file.contains_key(b"key019"));
         assert!(!file.contains_key(b"key009"));
         assert!(!file.contains_key(b"key020"));
     }
-    
+
     #[test]
     fn test_version_new() {
         let version = Version::new(7);
@@ -1041,55 +1045,55 @@ mod tests {
         assert_eq!(version.total_file_count(), 0);
         assert_eq!(version.next_sstable_id(), 1);
     }
-    
+
     #[test]
     fn test_version_apply_add_sstable() {
         let version = Version::new(7);
         let metadata = create_test_metadata(1, 0);
         let edit = VersionEdit::add_sstable(metadata.clone());
-        
+
         let new_version = version.apply(&edit).unwrap();
         assert_eq!(new_version.total_file_count(), 1);
         assert_eq!(new_version.level_file_count(0), 1);
         assert!(new_version.get_file(SStableId::new(1)).is_some());
     }
-    
+
     #[test]
     fn test_version_apply_remove_sstable() {
         let mut version = Version::new(7);
         let metadata = create_test_metadata(1, 0);
         let edit = VersionEdit::add_sstable(metadata.clone());
         version = version.apply(&edit).unwrap();
-        
+
         let edit = VersionEdit::remove_sstable(SStableId::new(1));
         let new_version = version.apply(&edit).unwrap();
         assert_eq!(new_version.total_file_count(), 0);
         assert_eq!(new_version.level_file_count(0), 0);
     }
-    
+
     #[test]
     fn test_version_apply_duplicate_id_fails() {
         let version = Version::new(7);
         let metadata = create_test_metadata(1, 0);
         let edit = VersionEdit::add_sstable(metadata.clone());
         let version = version.apply(&edit).unwrap();
-        
+
         // Try to add same ID again
         let result = version.apply(&edit);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_version_level_files_sorted() {
         let mut version = Version::new(7);
-        
+
         // Add files to L1 in non-sorted order
         for id in [3, 1, 2] {
             let metadata = create_test_metadata(id, 1);
             let edit = VersionEdit::add_sstable(metadata);
             version = version.apply(&edit).unwrap();
         }
-        
+
         // Files should be sorted by min_key
         let files = version.level_files(1);
         assert_eq!(files.len(), 3);
@@ -1097,52 +1101,52 @@ mod tests {
         assert_eq!(files[1].id, SStableId::new(2));
         assert_eq!(files[2].id, SStableId::new(3));
     }
-    
+
     #[test]
     fn test_version_get_overlapping_files() {
         let mut version = Version::new(7);
-        
+
         // Add files with different key ranges
         for id in 1..=3 {
             let metadata = create_test_metadata(id, 0);
             let edit = VersionEdit::add_sstable(metadata);
             version = version.apply(&edit).unwrap();
         }
-        
+
         // key015 should be in file 1 (key010-key019)
         let files = version.get_overlapping_files(b"key015");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].id, SStableId::new(1));
     }
-    
+
     #[test]
     fn test_version_level_size() {
         let mut version = Version::new(7);
-        
+
         for id in 1..=3 {
             let metadata = create_test_metadata(id, 0);
             let edit = VersionEdit::add_sstable(metadata);
             version = version.apply(&edit).unwrap();
         }
-        
+
         assert_eq!(version.level_size(0), 3 * 1024);
         assert_eq!(version.level_size(1), 0);
     }
-    
+
     #[test]
     fn test_version_allocate_sstable_id() {
         let mut version = Version::new(7);
-        
+
         let id1 = version.allocate_sstable_id();
         let id2 = version.allocate_sstable_id();
         let id3 = version.allocate_sstable_id();
-        
+
         assert_eq!(id1, SStableId::new(1));
         assert_eq!(id2, SStableId::new(2));
         assert_eq!(id3, SStableId::new(3));
         assert_eq!(version.next_sstable_id(), 4);
     }
-    
+
     fn create_test_manifest() -> (Arc<Pager<MemoryFileSystem>>, Manifest<MemoryFileSystem>) {
         let fs = MemoryFileSystem::new();
         let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
@@ -1249,8 +1253,12 @@ mod tests {
                 manifest.apply_edit(edit).unwrap();
             }
 
-            manifest.apply_edit(VersionEdit::remove_sstable(SStableId::new(2))).unwrap();
-            manifest.apply_edit(VersionEdit::remove_sstable(SStableId::new(4))).unwrap();
+            manifest
+                .apply_edit(VersionEdit::remove_sstable(SStableId::new(2)))
+                .unwrap();
+            manifest
+                .apply_edit(VersionEdit::remove_sstable(SStableId::new(4)))
+                .unwrap();
         }
 
         {
@@ -1281,7 +1289,9 @@ mod tests {
             metadata.min_key = vec![b'a'; 64];
             metadata.max_key = vec![b'z'; 64];
             metadata.total_size = 1024 * id;
-            manifest.apply_edit(VersionEdit::add_sstable(metadata)).unwrap();
+            manifest
+                .apply_edit(VersionEdit::add_sstable(metadata))
+                .unwrap();
         }
 
         let reopened_pager = Arc::new(Pager::open(&fs, "large.db").unwrap());
@@ -1299,12 +1309,8 @@ mod tests {
         let config = SStableConfig::default();
 
         // Recover from empty database (no SSTables)
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         assert_eq!(version.total_file_count(), 0);
         assert_eq!(version.next_sstable_id(), 1);
@@ -1312,7 +1318,7 @@ mod tests {
 
     #[test]
     fn test_manifest_recovery_single_sstable() {
-        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::table::lsm::{SStableConfig, SStableId, SStableWriter};
         use crate::txn::VersionChain;
 
         let fs = MemoryFileSystem::new();
@@ -1321,13 +1327,8 @@ mod tests {
         let config = SStableConfig::default();
 
         // Create a single SSTable
-        let mut writer = SStableWriter::new(
-            Arc::clone(&pager),
-            SStableId::new(1),
-            0,
-            config.clone(),
-            10,
-        );
+        let mut writer =
+            SStableWriter::new(Arc::clone(&pager), SStableId::new(1), 0, config.clone(), 10);
 
         for i in 0..10 {
             let key = format!("key{:03}", i).into_bytes();
@@ -1339,12 +1340,8 @@ mod tests {
         let _metadata = writer.finish(1.into()).unwrap();
 
         // Recover manifest
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         assert_eq!(version.total_file_count(), 1);
         assert_eq!(version.next_sstable_id(), 2);
@@ -1353,7 +1350,7 @@ mod tests {
 
     #[test]
     fn test_manifest_recovery_multiple_sstables_non_overlapping() {
-        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::table::lsm::{SStableConfig, SStableId, SStableWriter};
         use crate::txn::VersionChain;
 
         let fs = MemoryFileSystem::new();
@@ -1383,23 +1380,19 @@ mod tests {
         }
 
         // Recover manifest
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         assert_eq!(version.total_file_count(), 3);
         assert_eq!(version.next_sstable_id(), 4);
-        
+
         // All recovered SSTables are placed in L0 for safety
         assert_eq!(version.level_file_count(0), 3);
     }
 
     #[test]
     fn test_manifest_recovery_overlapping_sstables() {
-        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::table::lsm::{SStableConfig, SStableId, SStableWriter};
         use crate::txn::VersionChain;
 
         let fs = MemoryFileSystem::new();
@@ -1429,23 +1422,19 @@ mod tests {
         }
 
         // Recover manifest
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         assert_eq!(version.total_file_count(), 3);
         assert_eq!(version.next_sstable_id(), 4);
-        
+
         // Overlapping SSTables should be in L0
         assert_eq!(version.level_file_count(0), 3);
     }
 
     #[test]
     fn test_manifest_recovery_mixed_overlapping() {
-        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::table::lsm::{SStableConfig, SStableId, SStableWriter};
         use crate::txn::VersionChain;
 
         let fs = MemoryFileSystem::new();
@@ -1496,23 +1485,19 @@ mod tests {
         }
 
         // Recover manifest
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         assert_eq!(version.total_file_count(), 4);
         assert_eq!(version.next_sstable_id(), 5);
-        
+
         // All recovered SSTables are placed in L0 for safety
         assert_eq!(version.level_file_count(0), 4);
     }
 
     #[test]
     fn test_manifest_recovery_preserves_sstable_ids() {
-        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::table::lsm::{SStableConfig, SStableId, SStableWriter};
         use crate::txn::VersionChain;
 
         let fs = MemoryFileSystem::new();
@@ -1543,18 +1528,14 @@ mod tests {
         }
 
         // Recover manifest
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         assert_eq!(version.total_file_count(), 3);
-        
+
         // Next SSTable ID should be one past the maximum
         assert_eq!(version.next_sstable_id(), 16);
-        
+
         // Verify all IDs are present
         for &id in &ids {
             assert!(version.get_file(SStableId::new(id)).is_some());
@@ -1563,7 +1544,7 @@ mod tests {
 
     #[test]
     fn test_manifest_recovery_with_corrupted_sstable() {
-        use crate::table::lsm::{SStableConfig, SStableWriter, SStableId};
+        use crate::table::lsm::{SStableConfig, SStableId, SStableWriter};
         use crate::txn::VersionChain;
 
         let fs = MemoryFileSystem::new();
@@ -1572,13 +1553,8 @@ mod tests {
         let config = SStableConfig::default();
 
         // Create a valid SSTable
-        let mut writer = SStableWriter::new(
-            Arc::clone(&pager),
-            SStableId::new(1),
-            0,
-            config.clone(),
-            5,
-        );
+        let mut writer =
+            SStableWriter::new(Arc::clone(&pager), SStableId::new(1), 0, config.clone(), 5);
 
         for i in 0..5 {
             let key = format!("key{:03}", i).into_bytes();
@@ -1594,12 +1570,8 @@ mod tests {
         // Don't write valid SSTable data to it
 
         // Recovery should skip corrupted pages and recover valid ones
-        let version = Manifest::recover_from_sstables(
-            Arc::clone(&pager),
-            root_page_id,
-            7,
-            &config,
-        ).unwrap();
+        let version =
+            Manifest::recover_from_sstables(Arc::clone(&pager), root_page_id, 7, &config).unwrap();
 
         // Should recover the valid SSTable, skip the corrupted one
         assert_eq!(version.total_file_count(), 1);

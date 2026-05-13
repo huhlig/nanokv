@@ -25,9 +25,9 @@
 //! 6. Edge cases (empty ranges, negative timestamps, etc.)
 
 use nanokv::pager::{Pager, PagerConfig};
-use nanokv::table::timeseries::{TimeSeriesConfig, TimeSeriesTable};
 use nanokv::table::TimeSeries;
 use nanokv::table::TimeSeriesCursor;
+use nanokv::table::timeseries::{TimeSeriesConfig, TimeSeriesTable};
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use std::sync::Arc;
@@ -134,7 +134,9 @@ fn test_time_range_query_full_range() {
     .unwrap();
 
     for i in 0..10 {
-        table.append_point(b"sensor", i * 100, format!("{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("{}", i).as_bytes())
+            .unwrap();
     }
 
     let cursor = table.scan_series(b"sensor", 0, 1000).unwrap();
@@ -154,7 +156,9 @@ fn test_time_range_query_partial_range() {
     .unwrap();
 
     for i in 0..10 {
-        table.append_point(b"sensor", i * 100, format!("{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("{}", i).as_bytes())
+            .unwrap();
     }
 
     let cursor = table.scan_series(b"sensor", 200, 600).unwrap();
@@ -175,7 +179,8 @@ fn test_time_range_query_partial_range() {
 #[test]
 fn test_time_range_query_no_overlap() {
     let fs = MemoryFileSystem::new();
-    let pager = Arc::new(Pager::create(&fs, "range_no_overlap.db", PagerConfig::default()).unwrap());
+    let pager =
+        Arc::new(Pager::create(&fs, "range_no_overlap.db", PagerConfig::default()).unwrap());
     let mut table = TimeSeriesTable::new(
         TableId::from(6),
         "metrics".to_string(),
@@ -185,7 +190,9 @@ fn test_time_range_query_no_overlap() {
     .unwrap();
 
     for i in 0..5 {
-        table.append_point(b"sensor", i * 100, format!("{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("{}", i).as_bytes())
+            .unwrap();
     }
 
     let cursor = table.scan_series(b"sensor", 1000, 2000).unwrap();
@@ -341,7 +348,8 @@ fn test_latest_before_nonexistent_series() {
 #[test]
 fn test_bucket_creation_across_boundaries() {
     let fs = MemoryFileSystem::new();
-    let pager = Arc::new(Pager::create(&fs, "bucket_boundaries.db", PagerConfig::default()).unwrap());
+    let pager =
+        Arc::new(Pager::create(&fs, "bucket_boundaries.db", PagerConfig::default()).unwrap());
     let mut table = TimeSeriesTable::new(
         TableId::from(14),
         "metrics".to_string(),
@@ -353,10 +361,16 @@ fn test_bucket_creation_across_boundaries() {
     let bucket_size = 3600;
 
     table.append_point(b"sensor", 0, b"bucket0").unwrap();
-    table.append_point(b"sensor", bucket_size as i64, b"bucket1").unwrap();
-    table.append_point(b"sensor", (bucket_size * 2) as i64, b"bucket2").unwrap();
+    table
+        .append_point(b"sensor", bucket_size as i64, b"bucket1")
+        .unwrap();
+    table
+        .append_point(b"sensor", (bucket_size * 2) as i64, b"bucket2")
+        .unwrap();
 
-    let cursor = table.scan_series(b"sensor", 0, (bucket_size * 3) as i64).unwrap();
+    let cursor = table
+        .scan_series(b"sensor", 0, (bucket_size * 3) as i64)
+        .unwrap();
     assert_eq!(cursor.count(), 3);
 }
 
@@ -373,7 +387,9 @@ fn test_bucket_rolling_with_many_inserts() {
     .unwrap();
 
     for i in 0..100 {
-        table.append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes())
+            .unwrap();
     }
 
     let cursor = table.scan_series(b"sensor", 0, 10000).unwrap();
@@ -395,7 +411,9 @@ fn test_table_statistics() {
     assert_eq!(table.stats().unwrap().entry_count, Some(0));
 
     for i in 0..10 {
-        table.append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes())
+            .unwrap();
     }
 
     let stats = table.stats().unwrap();
@@ -417,7 +435,9 @@ fn test_table_verify() {
     .unwrap();
 
     for i in 0..5 {
-        table.append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes())
+            .unwrap();
     }
 
     let report = table.verify().unwrap();
@@ -431,10 +451,11 @@ fn test_table_verify() {
 
 #[test]
 fn test_retention_policy_configuration() {
-    let config = TimeSeriesConfig::default()
-        .with_retention_policy(nanokv::table::timeseries::TimeSeriesRetentionPolicy::max_age(
+    let config = TimeSeriesConfig::default().with_retention_policy(
+        nanokv::table::timeseries::TimeSeriesRetentionPolicy::max_age(
             std::time::Duration::from_secs(3600),
-        ));
+        ),
+    );
 
     assert!(matches!(
         config.retention_policy,
@@ -532,7 +553,9 @@ fn test_cursor_iteration_stops_at_end() {
     .unwrap();
 
     for i in 0..5 {
-        table.append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i * 100, format!("value_{}", i).as_bytes())
+            .unwrap();
     }
 
     let mut cursor = table.scan_series(b"sensor", 0, 500).unwrap();
@@ -609,7 +632,9 @@ fn test_large_number_of_points() {
     .unwrap();
 
     for i in 0..10000 {
-        table.append_point(b"sensor", i, format!("value_{}", i).as_bytes()).unwrap();
+        table
+            .append_point(b"sensor", i, format!("value_{}", i).as_bytes())
+            .unwrap();
     }
 
     let cursor = table.scan_series(b"sensor", 0, 10000).unwrap();
@@ -657,14 +682,18 @@ fn test_value_key_preservation() {
     )
     .unwrap();
 
-    let values = [b"simple".as_slice(),
+    let values = [
+        b"simple".as_slice(),
         b"with:colon".as_slice(),
         b"with spaces".as_slice(),
         b"special!@#$%^&*()".as_slice(),
-        b"unicode:\xe6\xb5\x8b\xe8\xaf\x95".as_slice()];
+        b"unicode:\xe6\xb5\x8b\xe8\xaf\x95".as_slice(),
+    ];
 
     for (i, value) in values.iter().enumerate() {
-        table.append_point(b"sensor", i as i64 * 100, value).unwrap();
+        table
+            .append_point(b"sensor", i as i64 * 100, value)
+            .unwrap();
     }
 
     let mut cursor = table.scan_series(b"sensor", 0, 500).unwrap();

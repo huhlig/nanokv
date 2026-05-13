@@ -139,10 +139,10 @@ impl Snapshot {
             .min()
             .copied()
             .unwrap_or(TransactionId::from(0));
-        
+
         // Convert to HashSet for O(1) lookup
         let active_txns: HashSet<TransactionId> = active_txn_list.into_iter().collect();
-        
+
         Self {
             id,
             name,
@@ -200,13 +200,13 @@ impl Snapshot {
         if version_lsn > self.lsn {
             return false;
         }
-        
+
         // Fast path: transactions below watermark are guaranteed committed/aborted
         // This is O(1) and handles the common case
         if created_by < self.min_active_txn {
             return true;
         }
-        
+
         // Slow path: check if transaction was in the active set
         // This is O(1) with HashSet, but only for transactions >= watermark
         !self.active_txns.contains(&created_by)

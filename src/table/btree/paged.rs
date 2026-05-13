@@ -37,7 +37,7 @@ use crate::table::{
     TableWriter, VerificationReport, WriteBatch,
 };
 use crate::txn::{TransactionId, VersionChain};
-use crate::types::{Bound, TableId, ScanBounds, ValueBuf};
+use crate::types::{Bound, ScanBounds, TableId, ValueBuf};
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
 use metrics::{counter, histogram};
@@ -532,22 +532,24 @@ impl<FS: FileSystem> PagedBTree<FS> {
         let node = self.read_node(leaf_page_id)?;
 
         if let BTreeNode::Leaf { entries, .. } = node
-            && pos < entries.len() && entries[pos].key == key {
-                let snapshot = Snapshot::new(
-                    crate::snap::SnapshotId::from(0),
-                    String::new(),
-                    snapshot_lsn,
-                    0,
-                    0,
-                    Vec::new(),
-                );
-                if let Some(value) = entries[pos].chain.find_visible_version(&snapshot) {
-                    if value.is_empty() {
-                        return Ok(None);
-                    }
-                    return Ok(Some(ValueBuf(value.to_vec())));
+            && pos < entries.len()
+            && entries[pos].key == key
+        {
+            let snapshot = Snapshot::new(
+                crate::snap::SnapshotId::from(0),
+                String::new(),
+                snapshot_lsn,
+                0,
+                0,
+                Vec::new(),
+            );
+            if let Some(value) = entries[pos].chain.find_visible_version(&snapshot) {
+                if value.is_empty() {
+                    return Ok(None);
                 }
+                return Ok(Some(ValueBuf(value.to_vec())));
             }
+        }
 
         Ok(None)
     }
@@ -1353,8 +1355,6 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
         key: &[u8],
         stream: &mut dyn crate::table::ValueStream,
     ) -> TableResult<u64> {
-        
-
         // Check size hint to determine storage strategy
         let size_hint = stream.size_hint();
         let max_inline = self.max_inline_size().unwrap_or(4096);
@@ -1411,22 +1411,22 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
     fn range_delete(&mut self, bounds: ScanBounds) -> TableResult<u64> {
         // Create a cursor to scan the range
         let mut cursor = PagedBTreeCursor::new(self.table, bounds.clone(), self.snapshot_lsn);
-        
+
         let mut deleted_count = 0u64;
-        
+
         loop {
             if !cursor.valid() {
                 break;
             }
-            
+
             if let Some(key) = cursor.key() {
                 self.pending_changes.push((key.to_vec(), None));
                 deleted_count += 1;
             }
-            
+
             cursor.next()?;
         }
-        
+
         Ok(deleted_count)
     }
 
@@ -2048,25 +2048,28 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
         if let BTreeNode::Leaf {
             ref mut entries, ..
         } = leaf_node
-            && pos < entries.len() && entries[pos].key == index_key {
-                // Check if the value matches the expected primary key
-                let snapshot = Snapshot::new(
-                    crate::snap::SnapshotId::from(0),
-                    String::new(),
-                    LogSequenceNumber::from(u64::MAX),
-                    0,
-                    0,
-                    Vec::new(),
-                );
+            && pos < entries.len()
+            && entries[pos].key == index_key
+        {
+            // Check if the value matches the expected primary key
+            let snapshot = Snapshot::new(
+                crate::snap::SnapshotId::from(0),
+                String::new(),
+                LogSequenceNumber::from(u64::MAX),
+                0,
+                0,
+                Vec::new(),
+            );
 
-                if let Some(stored_primary_key) = entries[pos].chain.find_visible_version(&snapshot)
-                    && stored_primary_key == primary_key {
-                        // Remove the entry
-                        entries.remove(pos);
-                        self.write_node(leaf_page_id, &leaf_node)?;
-                        counter!("btree.index_delete").increment(1);
-                    }
+            if let Some(stored_primary_key) = entries[pos].chain.find_visible_version(&snapshot)
+                && stored_primary_key == primary_key
+            {
+                // Remove the entry
+                entries.remove(pos);
+                self.write_node(leaf_page_id, &leaf_node)?;
+                counter!("btree.index_delete").increment(1);
             }
+        }
 
         Ok(())
     }

@@ -18,9 +18,9 @@
 
 use nanokv::pager::{Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
-use nanokv::types::TableId;
 use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable};
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
 use std::sync::Arc;
@@ -238,7 +238,11 @@ fn test_btree_delete_keys() {
     for i in 0..50 {
         let key = format!("key_{:04}", i);
         let result = reader.get(key.as_bytes(), snapshot_lsn).unwrap();
-        assert!(result.is_some(), "Key {} should still be visible at old snapshot", key);
+        assert!(
+            result.is_some(),
+            "Key {} should still be visible at old snapshot",
+            key
+        );
     }
 }
 
@@ -279,14 +283,14 @@ fn test_btree_mixed_operations() {
     // Verify state (read at LSN after all operations)
     let read_lsn = LogSequenceNumber::from(200);
     let reader = table.reader(read_lsn).unwrap();
-    
+
     // Keys 0-29 should exist (but we can't verify exact values due to MVCC)
     for i in 0..30 {
         let key = format!("key_{:04}", i);
         let result = reader.get(key.as_bytes(), read_lsn).unwrap();
         assert!(result.is_some(), "Key {} should exist", key);
     }
-    
+
     // Keys 60-99 should exist
     for i in 60..100 {
         let key = format!("key_{:04}", i);

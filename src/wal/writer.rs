@@ -154,10 +154,10 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Scan the file to find the last LSN and active transactions
         let (last_lsn, active_txns) = Self::scan_wal_file(fs, path, config.encryption_key)?;
-        
+
         // Next LSN is last_lsn + 1
         let current_lsn = LogSequenceNumber::from(last_lsn.as_u64() + 1);
-        
+
         let state = WalWriterState {
             current_lsn,
             current_offset: file_size,
@@ -204,24 +204,24 @@ impl<FS: FileSystem> WalWriter<FS> {
             group_commit,
         })
     }
-    
+
     /// Scan the WAL file to find the last LSN and active transactions.
     fn scan_wal_file(
         fs: &FS,
         path: &str,
         encryption_key: Option<[u8; 32]>,
     ) -> WalResult<(LogSequenceNumber, HashSet<TransactionId>)> {
-        use crate::wal::reader::WalReader;
         use crate::wal::RecordData;
-        
+        use crate::wal::reader::WalReader;
+
         let mut reader = WalReader::open(fs, path, encryption_key)?;
         let mut last_lsn = LogSequenceNumber::from(0);
         let mut active_txns = HashSet::new();
-        
+
         // Read all records to find last LSN and track active transactions
         while let Some(record) = reader.read_next()? {
             last_lsn = record.lsn;
-            
+
             match &record.data {
                 RecordData::Begin { txn_id } => {
                     active_txns.insert(*txn_id);
@@ -229,7 +229,10 @@ impl<FS: FileSystem> WalWriter<FS> {
                 RecordData::Commit { txn_id } | RecordData::Rollback { txn_id } => {
                     active_txns.remove(txn_id);
                 }
-                RecordData::Checkpoint { lsn: _, active_txns: checkpoint_txns } => {
+                RecordData::Checkpoint {
+                    lsn: _,
+                    active_txns: checkpoint_txns,
+                } => {
                     // Checkpoint records contain the definitive list of active transactions
                     // at that point, so we can reset our tracking
                     active_txns.clear();
@@ -240,7 +243,7 @@ impl<FS: FileSystem> WalWriter<FS> {
                 }
             }
         }
-        
+
         Ok((last_lsn, active_txns))
     }
 
@@ -272,7 +275,7 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Track active transaction
         state.active_txns.insert(txn_id);
-        
+
         counter!("wal.write").increment(1);
         histogram!("wal.write_duration").record(start.elapsed().as_secs_f64());
         gauge!("wal.active_transactions").set(state.active_txns.len() as f64);
@@ -319,7 +322,7 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Write record
         self.write_record_internal(&mut state, record)?;
-        
+
         counter!("wal.write").increment(1);
         counter!("wal.bytes_written").increment(bytes_written as u64);
         histogram!("wal.write_duration").record(start.elapsed().as_secs_f64());
@@ -356,7 +359,7 @@ impl<FS: FileSystem> WalWriter<FS> {
 
             // Remove from active transactions
             state.active_txns.remove(&txn_id);
-            
+
             gauge!("wal.active_transactions").set(state.active_txns.len() as f64);
 
             lsn
@@ -371,7 +374,7 @@ impl<FS: FileSystem> WalWriter<FS> {
             self.flush()?;
             histogram!("wal.sync_duration").record(sync_start.elapsed().as_secs_f64());
         }
-        
+
         counter!("wal.write").increment(1);
         histogram!("wal.write_duration").record(start.elapsed().as_secs_f64());
 
@@ -448,7 +451,7 @@ impl<FS: FileSystem> WalWriter<FS> {
         // Flush if buffer is full, or if sync is enabled AND group commit is disabled
         let should_flush = state.buffer.len() >= self.config.buffer_size
             || (self.config.sync_on_write && self.group_commit.is_none());
-        
+
         if should_flush {
             self.flush_internal(state)?;
         }
@@ -488,7 +491,7 @@ impl<FS: FileSystem> WalWriter<FS> {
 
         // Clear buffer
         state.buffer.clear();
-        
+
         gauge!("wal.size_bytes").set(state.current_offset as f64);
 
         Ok(())

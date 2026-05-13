@@ -60,15 +60,16 @@ impl PinTable {
     pub fn unpin(&self, page_id: PageId) -> Option<usize> {
         let mut pins = self.pins.write();
         if let Some(count) = pins.get_mut(&page_id)
-            && *count > 0 {
-                *count -= 1;
-                let new_count = *count;
-                // Remove entry if count reaches 0 to avoid memory leak
-                if new_count == 0 {
-                    pins.remove(&page_id);
-                }
-                return Some(new_count);
+            && *count > 0
+        {
+            *count -= 1;
+            let new_count = *count;
+            // Remove entry if count reaches 0 to avoid memory leak
+            if new_count == 0 {
+                pins.remove(&page_id);
             }
+            return Some(new_count);
+        }
         None
     }
 

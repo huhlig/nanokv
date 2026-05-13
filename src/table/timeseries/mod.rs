@@ -60,7 +60,7 @@ pub use self::config::{TimeSeriesCompression, TimeSeriesConfig, TimeSeriesRetent
 use crate::pager::{PageId, Pager};
 use crate::table::{
     SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableCapabilities, TableEngineKind,
-    TableResult, TableStatistics, TimeSeries as TimeSeriesTrait, TimeSeriesCursor, TimePointRef,
+    TableResult, TableStatistics, TimePointRef, TimeSeries as TimeSeriesTrait, TimeSeriesCursor,
     VerificationReport,
 };
 use crate::types::TableId;
@@ -121,7 +121,9 @@ impl<FS: FileSystem> TimeSeriesTable<FS> {
         // Allocate root page for metadata
         let root_page_id = pager
             .allocate_page(crate::pager::PageType::LsmMeta)
-            .map_err(|e| crate::table::TableError::Other(format!("Failed to allocate root page: {}", e)))?;
+            .map_err(|e| {
+                crate::table::TableError::Other(format!("Failed to allocate root page: {}", e))
+            })?;
 
         let state = TimeSeriesState {
             series: BTreeMap::new(),
@@ -240,7 +242,10 @@ impl<FS: FileSystem> Table for TimeSeriesTable<FS> {
 // =============================================================================
 
 impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
-    type TimeSeriesCursor<'a> = TimeSeriesTableCursor<'a, FS> where FS: 'a;
+    type TimeSeriesCursor<'a>
+        = TimeSeriesTableCursor<'a, FS>
+    where
+        FS: 'a;
 
     fn table_id(&self) -> TableId {
         self.table_id
@@ -265,12 +270,7 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
         }
     }
 
-    fn append_point(
-        &self,
-        series_key: &[u8],
-        timestamp: i64,
-        value_key: &[u8],
-    ) -> TableResult<()> {
+    fn append_point(&self, series_key: &[u8], timestamp: i64, value_key: &[u8]) -> TableResult<()> {
         let mut state = self.state.write().unwrap();
 
         // Get or create the bucket manager for this series
@@ -322,13 +322,14 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
         // Search backwards through buckets
         for (&bid, _) in manager.buckets.range(..=bucket_id).rev() {
             if let Some(bucket) = manager.get_bucket(bid)
-                && let Some((ts, value_key)) = bucket.latest_before(timestamp) {
-                    return Ok(Some(TimePointRef {
-                        series_key: crate::types::KeyBuf(series_key.to_vec()),
-                        timestamp: *ts,
-                        value_key: crate::types::KeyBuf(value_key.clone()),
-                    }));
-                }
+                && let Some((ts, value_key)) = bucket.latest_before(timestamp)
+            {
+                return Ok(Some(TimePointRef {
+                    series_key: crate::types::KeyBuf(series_key.to_vec()),
+                    timestamp: *ts,
+                    value_key: crate::types::KeyBuf(value_key.clone()),
+                }));
+            }
         }
 
         Ok(None)
@@ -454,9 +455,10 @@ fn parse_numeric_value(value_key: &[u8]) -> Option<f64> {
         }
 
         if let Some((_, tail)) = trimmed.rsplit_once(':')
-            && let Ok(value) = tail.trim().parse::<f64>() {
-                return Some(value);
-            }
+            && let Ok(value) = tail.trim().parse::<f64>()
+        {
+            return Some(value);
+        }
 
         if let Ok(json) = serde_json::from_str::<Value>(trimmed) {
             match json {

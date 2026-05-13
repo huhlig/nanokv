@@ -24,8 +24,9 @@ use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
 /// Page identifier inside a single-file database. (0-based)
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct PageId(u64);
 
 impl PageId {
@@ -314,12 +315,13 @@ impl Page {
                 compressed
             }
             CompressionType::Zstd => {
-                let compressed = zstd::encode_all(Cursor::new(&self.data), 3)
-                    .map_err(|e| PagerError::compression_error(
+                let compressed = zstd::encode_all(Cursor::new(&self.data), 3).map_err(|e| {
+                    PagerError::compression_error(
                         header.page_id,
                         CompressionType::Zstd,
                         e.to_string(),
-                    ))?;
+                    )
+                })?;
                 header.compressed_size = compressed.len() as u32;
                 compressed
             }
@@ -343,11 +345,13 @@ impl Page {
                 // Encrypt the data
                 let encrypted = cipher
                     .encrypt(nonce, compressed_data.as_ref())
-                    .map_err(|e| PagerError::encryption_error(
-                        header.page_id,
-                        EncryptionType::Aes256Gcm,
-                        e.to_string(),
-                    ))?;
+                    .map_err(|e| {
+                        PagerError::encryption_error(
+                            header.page_id,
+                            EncryptionType::Aes256Gcm,
+                            e.to_string(),
+                        )
+                    })?;
 
                 // Prepend nonce to encrypted data
                 let mut result = Vec::with_capacity(12 + encrypted.len());
@@ -456,31 +460,37 @@ impl Page {
                 let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
 
                 // Decrypt the data
-                cipher
-                    .decrypt(nonce, ciphertext)
-                    .map_err(|e| PagerError::decryption_error(
+                cipher.decrypt(nonce, ciphertext).map_err(|e| {
+                    PagerError::decryption_error(
                         header.page_id,
                         EncryptionType::Aes256Gcm,
                         e.to_string(),
-                    ))?
+                    )
+                })?
             }
         };
 
         // Decompress data if needed
         let data = match header.compression {
             CompressionType::None => compressed_data,
-            CompressionType::Lz4 => lz4_flex::decompress_size_prepended(&compressed_data)
-                .map_err(|e| PagerError::decompression_error(
-                    header.page_id,
-                    CompressionType::Lz4,
-                    e.to_string(),
-                ))?,
-            CompressionType::Zstd => zstd::decode_all(Cursor::new(&compressed_data))
-                .map_err(|e| PagerError::decompression_error(
-                    header.page_id,
-                    CompressionType::Zstd,
-                    e.to_string(),
-                ))?,
+            CompressionType::Lz4 => {
+                lz4_flex::decompress_size_prepended(&compressed_data).map_err(|e| {
+                    PagerError::decompression_error(
+                        header.page_id,
+                        CompressionType::Lz4,
+                        e.to_string(),
+                    )
+                })?
+            }
+            CompressionType::Zstd => {
+                zstd::decode_all(Cursor::new(&compressed_data)).map_err(|e| {
+                    PagerError::decompression_error(
+                        header.page_id,
+                        CompressionType::Zstd,
+                        e.to_string(),
+                    )
+                })?
+            }
         };
 
         // Verify decompressed size matches header
@@ -543,10 +553,10 @@ pub struct OverflowPageHeader {
 impl OverflowPageHeader {
     /// Size of the overflow page header in bytes
     pub const SIZE: usize = 32;
-    
+
     /// Magic number for overflow pages ("OVLF")
     pub const MAGIC: u32 = 0x4F564C46;
-    
+
     /// Create a new overflow page header
     pub fn new(next_page_id: u32, data_length: u32, checksum: u32) -> Self {
         Self {
@@ -556,28 +566,28 @@ impl OverflowPageHeader {
             checksum,
         }
     }
-    
+
     /// Serialize the header to bytes
     pub fn to_bytes(&self) -> [u8; Self::SIZE] {
         let mut bytes = [0u8; Self::SIZE];
-        
+
         // Magic (4 bytes)
         bytes[0..4].copy_from_slice(&self.magic.to_le_bytes());
-        
+
         // Next page ID (4 bytes)
         bytes[4..8].copy_from_slice(&self.next_page_id.to_le_bytes());
-        
+
         // Data length (4 bytes)
         bytes[8..12].copy_from_slice(&self.data_length.to_le_bytes());
-        
+
         // Checksum (4 bytes)
         bytes[12..16].copy_from_slice(&self.checksum.to_le_bytes());
-        
+
         // Reserved bytes remain 0
-        
+
         bytes
     }
-    
+
     /// Deserialize the header from bytes
     pub fn from_bytes(bytes: &[u8]) -> PagerResult<Self> {
         if bytes.len() < Self::SIZE {
@@ -585,7 +595,7 @@ impl OverflowPageHeader {
                 "Insufficient bytes for overflow page header".to_string(),
             ));
         }
-        
+
         let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
         if magic != Self::MAGIC {
             return Err(PagerError::InternalError(format!(
@@ -594,11 +604,11 @@ impl OverflowPageHeader {
                 magic
             )));
         }
-        
+
         let next_page_id = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let data_length = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let checksum = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-        
+
         Ok(Self {
             magic,
             next_page_id,
@@ -606,7 +616,7 @@ impl OverflowPageHeader {
             checksum,
         })
     }
-    
+
     /// Check if this is the last page in the chain
     pub fn is_last(&self) -> bool {
         self.next_page_id == 0

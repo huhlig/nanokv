@@ -91,11 +91,7 @@ pub struct TimeBucket<FS: FileSystem> {
 
 impl<FS: FileSystem> TimeBucket<FS> {
     /// Create a new time bucket.
-    pub fn new(
-        id: BucketId,
-        bucket_size: u64,
-        pager: std::sync::Arc<Pager<FS>>,
-    ) -> Self {
+    pub fn new(id: BucketId, bucket_size: u64, pager: std::sync::Arc<Pager<FS>>) -> Self {
         let start_ts = id.start_timestamp(bucket_size);
         let end_ts = id.end_timestamp(bucket_size);
 
@@ -237,9 +233,7 @@ impl<FS: FileSystem> TimeBucket<FS> {
                 "Insufficient data for bucket ID".to_string(),
             ));
         }
-        let bucket_id = BucketId(u64::from_le_bytes(
-            data[pos..pos + 8].try_into().unwrap(),
-        ));
+        let bucket_id = BucketId(u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()));
         pos += 8;
 
         // Read start timestamp
@@ -334,10 +328,9 @@ impl<FS: FileSystem> TimeBucket<FS> {
             existing_page_id
         } else {
             // Allocate a new page
-            let new_page_id = self
-                .pager
-                .allocate_page(PageType::BTreeLeaf)
-                .map_err(|e| crate::table::TableError::Other(format!("Failed to allocate page: {}", e)))?;
+            let new_page_id = self.pager.allocate_page(PageType::BTreeLeaf).map_err(|e| {
+                crate::table::TableError::Other(format!("Failed to allocate page: {}", e))
+            })?;
             self.page_id = Some(new_page_id);
             new_page_id
         };
@@ -494,17 +487,18 @@ impl<FS: FileSystem> BucketManager<FS> {
             .map(|(id, _)| *id);
 
         if let Some(bucket_id) = lru_bucket_id
-            && let Some(mut bucket) = self.buckets.remove(&bucket_id) {
-                // Flush if dirty
-                if bucket.is_dirty() {
-                    bucket.flush()?;
-                }
-                
-                // Store the page ID mapping for lazy loading
-                if let Some(page_id) = bucket.page_id() {
-                    self.bucket_page_map.insert(bucket_id, page_id);
-                }
+            && let Some(mut bucket) = self.buckets.remove(&bucket_id)
+        {
+            // Flush if dirty
+            if bucket.is_dirty() {
+                bucket.flush()?;
             }
+
+            // Store the page ID mapping for lazy loading
+            if let Some(page_id) = bucket.page_id() {
+                self.bucket_page_map.insert(bucket_id, page_id);
+            }
+        }
         Ok(())
     }
 
@@ -583,12 +577,7 @@ mod tests {
         let bucket_size = 3600;
         let fs = crate::vfs::MemoryFileSystem::new();
         let pager = std::sync::Arc::new(
-            Pager::create(
-                &fs,
-                "test.db",
-                crate::pager::PagerConfig::default(),
-            )
-            .unwrap(),
+            Pager::create(&fs, "test.db", crate::pager::PagerConfig::default()).unwrap(),
         );
 
         let bucket = TimeBucket::new(BucketId(0), bucket_size, pager);

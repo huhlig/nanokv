@@ -20,8 +20,8 @@
 //! concurrent operations without data races, panics, or corruption.
 
 use nanokv::pager::CompressionType;
-use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalReader, WalRecovery, WalWriter, WalWriterConfig, WriteOpType};
 use std::sync::Arc;

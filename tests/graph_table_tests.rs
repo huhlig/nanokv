@@ -84,8 +84,7 @@ fn test_graph_directed() {
 #[test]
 fn test_graph_undirected() {
     let config = GraphConfig::new().with_directed(false);
-    let mut graph =
-        MemoryGraphTable::new(TableId::from(1), "undirected_graph".to_string(), config);
+    let mut graph = MemoryGraphTable::new(TableId::from(1), "undirected_graph".to_string(), config);
 
     // Add undirected edge
     graph
@@ -105,7 +104,8 @@ fn test_graph_undirected() {
 #[test]
 fn test_graph_multiple_labels() {
     let config = GraphConfig::new();
-    let mut graph = MemoryGraphTable::new(TableId::from(1), "multi_label_graph".to_string(), config);
+    let mut graph =
+        MemoryGraphTable::new(TableId::from(1), "multi_label_graph".to_string(), config);
 
     // Add edges with different labels
     graph
@@ -227,7 +227,11 @@ fn test_graph_has_edge() {
 
     assert!(graph.has_edge(b"alice", b"bob", Some(b"follows")).unwrap());
     assert!(!graph.has_edge(b"bob", b"alice", Some(b"follows")).unwrap());
-    assert!(!graph.has_edge(b"alice", b"charlie", Some(b"follows")).unwrap());
+    assert!(
+        !graph
+            .has_edge(b"alice", b"charlie", Some(b"follows"))
+            .unwrap()
+    );
 }
 
 #[test]

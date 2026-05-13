@@ -39,7 +39,9 @@ pub enum WalError {
     },
 
     /// Checksum mismatch
-    #[error("Checksum mismatch at LSN {lsn}, offset {offset}: expected {expected:x}, found {found:x}")]
+    #[error(
+        "Checksum mismatch at LSN {lsn}, offset {offset}: expected {expected:x}, found {found:x}"
+    )]
     ChecksumMismatch {
         lsn: LogSequenceNumber,
         offset: u64,

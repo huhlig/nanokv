@@ -18,8 +18,8 @@ pub mod art;
 pub mod blob;
 pub mod bloom;
 pub mod btree;
-pub mod fulltext;
 mod error;
+pub mod fulltext;
 pub mod graph;
 pub mod hash;
 pub mod hnsw;
@@ -28,49 +28,123 @@ pub mod rtree;
 pub mod timeseries;
 mod traits;
 
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::{Arc, RwLock};
-use crate::pager::{PageId, Pager};
-use crate::table::lsm::LsmTree;
-use crate::types::TableId;
-use crate::vfs::FileSystem;
 pub use self::appendlog::{AppendLog, AppendLogConfig, CompressionType, RetentionPolicy};
 pub use self::art::{MemoryART, MemoryARTReader, MemoryARTWriter};
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
 pub use self::error::{TableError, TableResult};
-pub use self::fulltext::{FullTextConfig, PagedFullTextIndex, Tokenizer, TokenizerConfig, TokenizerKind};
+pub use self::fulltext::{
+    FullTextConfig, PagedFullTextIndex, Tokenizer, TokenizerConfig, TokenizerKind,
+};
 pub use self::graph::{GraphConfig, GraphStorageBackend, MemoryGraphTable};
 pub use self::hash::{MemoryHashTable, MemoryHashTableReader, MemoryHashTableWriter};
 pub use self::hnsw::{HnswConfig, PagedHnswVector};
 pub use self::lsm::{
-    CompactionConfig, CompactionStrategy, LevelConfig,
-    LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
+    CompactionConfig, CompactionStrategy, LevelConfig, LsmConfig, Memtable, MemtableConfig,
+    MemtableType, SStableConfig,
 };
 pub use self::rtree::{PagedRTree, SpatialConfig, SplitStrategy};
-pub use self::timeseries::{TimeSeriesTable, TimeSeriesConfig, TimeSeriesCompression, TimeSeriesRetentionPolicy};
-pub use self::traits::{
-    // Core table traits
-    BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
-    ConsistencyErrorType, ConsistencyVerifier, ConsistencyWarning, EvictableCache, Flushable,
-    Histogram, HistogramBucket, KeyStatistics,
-    Maintainable, MemoryAware, Migratable, MutableTable, Mutation, OrderedKvTable, OrderedScan,
-    PointLookup, PrefixScan, RepairAction, RepairPlan, RepairReport, SearchableTable, Severity, SliceValueStream,
-    StatisticsProvider, Table, TableCapabilities, TableCursor, TableEngine, TableEngineKind, TableInfo,
-    TableOptions, TableReader, TableStatistics, TableWriter, VacuumOptions,
-    VacuumReport, ValueStatistics, ValueStream, VerificationReport, VerifyScope, WorkBudget, WriteBatch,
-    // Specialty table traits (formerly index traits)
-    ApproximateMembership, CandidateSet, CostEstimate, DenseOrdered, EdgeCursor, EdgeRef,
-    FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef, GraphAdjacency, HnswVector,
-    IvfVector, PhysicalRange, Predicate, QueryBudget, QueryablePredicate, Rebuildable,
-    RebuildBudget, RebuildProgress, ScoredDocument, SparseOrdered, SparseQuery,
-    SpecialtyTableCapabilities, SpecialtyTableCursor, SpecialtyTableSource,
-    SpecialtyTableSourceError, SpecialtyTableStats, TextField, TextQuery, TimePointRef,
-    TimeSeries, TimeSeriesCursor, VectorHit, VectorMetric, VectorSearch, VectorSearchOptions,
+pub use self::timeseries::{
+    TimeSeriesCompression, TimeSeriesConfig, TimeSeriesRetentionPolicy, TimeSeriesTable,
 };
-
+pub use self::traits::{
+    // Specialty table traits (formerly index traits)
+    ApproximateMembership,
+    // Core table traits
+    BatchOps,
+    BatchReport,
+    CandidateSet,
+    CheckpointInfo,
+    CompactionOptions,
+    CompactionReport,
+    ConsistencyError,
+    ConsistencyErrorType,
+    ConsistencyVerifier,
+    ConsistencyWarning,
+    CostEstimate,
+    DenseOrdered,
+    EdgeCursor,
+    EdgeRef,
+    EvictableCache,
+    Flushable,
+    FullTextSearch,
+    GeoHit,
+    GeoPoint,
+    GeoSpatial,
+    GeometryRef,
+    GraphAdjacency,
+    Histogram,
+    HistogramBucket,
+    HnswVector,
+    IvfVector,
+    KeyStatistics,
+    Maintainable,
+    MemoryAware,
+    Migratable,
+    MutableTable,
+    Mutation,
+    OrderedKvTable,
+    OrderedScan,
+    PhysicalRange,
+    PointLookup,
+    Predicate,
+    PrefixScan,
+    QueryBudget,
+    QueryablePredicate,
+    RebuildBudget,
+    RebuildProgress,
+    Rebuildable,
+    RepairAction,
+    RepairPlan,
+    RepairReport,
+    ScoredDocument,
+    SearchableTable,
+    Severity,
+    SliceValueStream,
+    SparseOrdered,
+    SparseQuery,
+    SpecialtyTableCapabilities,
+    SpecialtyTableCursor,
+    SpecialtyTableSource,
+    SpecialtyTableSourceError,
+    SpecialtyTableStats,
+    StatisticsProvider,
+    Table,
+    TableCapabilities,
+    TableCursor,
+    TableEngine,
+    TableEngineKind,
+    TableInfo,
+    TableOptions,
+    TableReader,
+    TableStatistics,
+    TableWriter,
+    TextField,
+    TextQuery,
+    TimePointRef,
+    TimeSeries,
+    TimeSeriesCursor,
+    VacuumOptions,
+    VacuumReport,
+    ValueStatistics,
+    ValueStream,
+    VectorHit,
+    VectorMetric,
+    VectorSearch,
+    VectorSearchOptions,
+    VerificationReport,
+    VerifyScope,
+    WorkBudget,
+    WriteBatch,
+};
+use crate::pager::{PageId, Pager};
+use crate::table::lsm::LsmTree;
+use crate::types::TableId;
+use crate::vfs::FileSystem;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::{Arc, RwLock};
 
 // =============================================================================
 // Table Engine Wrapper
@@ -160,7 +234,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
         match self {
             Self::AppendLog(engine) => Some(engine.root_page_id()),
             Self::PagedBTree(_) => None, // TODO: Make get_root_page_id public or add accessor
-            Self::LsmTree(_) => None, // LSM has manifest, not single root
+            Self::LsmTree(_) => None,    // LSM has manifest, not single root
             Self::PagedBloomFilter(engine) => Some(engine.root_page_id()),
             Self::PagedHnswVector(_) => None, // TODO: Add root_page_id accessor
             Self::PagedRTree(engine) => Some(engine.root_page_id()),
@@ -234,19 +308,17 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 // Create AppendLog with default config
                 // TODO: Extract config from options
                 let config = AppendLogConfig::default();
-                
-                let appendlog = AppendLog::new(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    config,
-                )
-                .map_err(|e| RegistryError::EngineCreationFailed {
-                    engine: options.engine,
-                    details: format!("Failed to create AppendLog: {}", e),
-                })?;
+
+                let appendlog = AppendLog::new(table_id, name, self.pager.clone(), config)
+                    .map_err(|e| RegistryError::EngineCreationFailed {
+                        engine: options.engine,
+                        details: format!("Failed to create AppendLog: {}", e),
+                    })?;
                 let root_page_id = appendlog.root_page_id();
-                Ok((TableEngineInstance::AppendLog(Arc::new(appendlog)), Some(root_page_id)))
+                Ok((
+                    TableEngineInstance::AppendLog(Arc::new(appendlog)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::BTree => {
                 // Create new BTree with allocated root page
@@ -257,16 +329,20 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     }
                 })?;
                 let root_page_id = btree.get_root_page_id();
-                Ok((TableEngineInstance::PagedBTree(Arc::new(btree)), Some(root_page_id)))
+                Ok((
+                    TableEngineInstance::PagedBTree(Arc::new(btree)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::LsmTree => {
                 // Allocate root page for LSM manifest
-                let root_page_id = self.pager.allocate_page(crate::pager::PageType::LsmMeta).map_err(|e| {
-                    RegistryError::EngineCreationFailed {
+                let root_page_id = self
+                    .pager
+                    .allocate_page(crate::pager::PageType::LsmMeta)
+                    .map_err(|e| RegistryError::EngineCreationFailed {
                         engine: options.engine,
                         details: format!("Failed to allocate manifest page: {}", e),
-                    }
-                })?;
+                    })?;
 
                 // Create LSM config from table options
                 let lsm_config = LsmConfig::default(); // TODO: Extract from options
@@ -278,18 +354,21 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     root_page_id,
                     lsm_config,
                 )
-                    .map_err(|e| RegistryError::EngineCreationFailed {
-                        engine: options.engine,
-                        details: format!("Failed to create LSM tree: {}", e),
-                    })?;
-                Ok((TableEngineInstance::LsmTree(Arc::new(lsm)), Some(root_page_id)))
+                .map_err(|e| RegistryError::EngineCreationFailed {
+                    engine: options.engine,
+                    details: format!("Failed to create LSM tree: {}", e),
+                })?;
+                Ok((
+                    TableEngineInstance::LsmTree(Arc::new(lsm)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::Bloom => {
                 // Create Bloom filter with default parameters
                 // TODO: Extract parameters from options
                 let num_items = 10000; // Default expected items
                 let bits_per_key = 10; // ~1% false positive rate
-                
+
                 let bloom = PagedBloomFilter::new(
                     table_id,
                     name,
@@ -298,22 +377,31 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     bits_per_key,
                     None,
                 )
-                    .map_err(|e| RegistryError::EngineCreationFailed {
-                        engine: options.engine,
-                        details: format!("Failed to create Bloom filter: {}", e),
-                    })?;
+                .map_err(|e| RegistryError::EngineCreationFailed {
+                    engine: options.engine,
+                    details: format!("Failed to create Bloom filter: {}", e),
+                })?;
                 let root_page_id = bloom.root_page_id();
-                Ok((TableEngineInstance::PagedBloomFilter(Arc::new(bloom)), Some(root_page_id)))
+                Ok((
+                    TableEngineInstance::PagedBloomFilter(Arc::new(bloom)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::Memory => {
                 // Create in-memory BTree - no root page
                 let memory_btree = MemoryBTree::new(table_id, name);
-                Ok((TableEngineInstance::MemoryBTree(Arc::new(memory_btree)), None))
+                Ok((
+                    TableEngineInstance::MemoryBTree(Arc::new(memory_btree)),
+                    None,
+                ))
             }
             TableEngineKind::Hash => {
                 // Create in-memory hash table - no root page
                 let hash_table = MemoryHashTable::new(table_id, name);
-                Ok((TableEngineInstance::MemoryHashTable(Arc::new(hash_table)), None))
+                Ok((
+                    TableEngineInstance::MemoryHashTable(Arc::new(hash_table)),
+                    None,
+                ))
             }
             TableEngineKind::Art => {
                 // Create in-memory ART - no root page
@@ -325,54 +413,48 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 // TODO: Extract config from options
                 let spatial_config = SpatialConfig::default();
 
-                let rtree = PagedRTree::new(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    spatial_config,
-                )
-                .map_err(|e| RegistryError::EngineCreationFailed {
-                    engine: options.engine,
-                    details: format!("Failed to create R-Tree: {}", e),
-                })?;
+                let rtree = PagedRTree::new(table_id, name, self.pager.clone(), spatial_config)
+                    .map_err(|e| RegistryError::EngineCreationFailed {
+                        engine: options.engine,
+                        details: format!("Failed to create R-Tree: {}", e),
+                    })?;
                 let root_page_id = rtree.root_page_id();
-                Ok((TableEngineInstance::PagedRTree(Arc::new(rtree)), Some(root_page_id)))
+                Ok((
+                    TableEngineInstance::PagedRTree(Arc::new(rtree)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::TimeSeries => {
                 // Create TimeSeries with default config
                 // TODO: Extract config from options
                 let config = TimeSeriesConfig::default();
 
-                let timeseries = TimeSeriesTable::new(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    config,
-                )
-                .map_err(|e| RegistryError::EngineCreationFailed {
+                let timeseries = TimeSeriesTable::new(table_id, name, self.pager.clone(), config)
+                    .map_err(|e| RegistryError::EngineCreationFailed {
                     engine: options.engine,
                     details: format!("Failed to create TimeSeries: {}", e),
                 })?;
                 let root_page_id = timeseries.root_page_id();
-                Ok((TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)), Some(root_page_id)))
+                Ok((
+                    TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::FullText => {
                 // Create FullText index with default config
                 // TODO: Extract config from options
                 let config = FullTextConfig::default();
 
-                let fulltext = PagedFullTextIndex::new(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    config,
-                )
-                .map_err(|e| RegistryError::EngineCreationFailed {
-                    engine: options.engine,
-                    details: format!("Failed to create FullText index: {}", e),
-                })?;
+                let fulltext = PagedFullTextIndex::new(table_id, name, self.pager.clone(), config)
+                    .map_err(|e| RegistryError::EngineCreationFailed {
+                        engine: options.engine,
+                        details: format!("Failed to create FullText index: {}", e),
+                    })?;
                 let root_page_id = fulltext.root_page_id();
-                Ok((TableEngineInstance::PagedFullTextIndex(Arc::new(fulltext)), Some(root_page_id)))
+                Ok((
+                    TableEngineInstance::PagedFullTextIndex(Arc::new(fulltext)),
+                    Some(root_page_id),
+                ))
             }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry (doesn't take FS generic)
@@ -394,17 +476,12 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
         match options.engine {
             TableEngineKind::AppendLog => {
                 let config = AppendLogConfig::default(); // TODO: Extract from options
-                let appendlog = AppendLog::open(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    root_page_id,
-                    config,
-                )
-                .map_err(|e| RegistryError::EngineOpenFailed {
-                    engine: options.engine,
-                    details: format!("Failed to open AppendLog: {}", e),
-                })?;
+                let appendlog =
+                    AppendLog::open(table_id, name, self.pager.clone(), root_page_id, config)
+                        .map_err(|e| RegistryError::EngineOpenFailed {
+                            engine: options.engine,
+                            details: format!("Failed to open AppendLog: {}", e),
+                        })?;
                 Ok(TableEngineInstance::AppendLog(Arc::new(appendlog)))
             }
             TableEngineKind::BTree => {
@@ -420,23 +497,19 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                     root_page_id,
                     lsm_config,
                 )
-                    .map_err(|e| RegistryError::EngineOpenFailed {
-                        engine: options.engine,
-                        details: format!("Failed to open LSM tree: {}", e),
-                    })?;
+                .map_err(|e| RegistryError::EngineOpenFailed {
+                    engine: options.engine,
+                    details: format!("Failed to open LSM tree: {}", e),
+                })?;
                 Ok(TableEngineInstance::LsmTree(Arc::new(lsm)))
             }
             TableEngineKind::Bloom => {
-                let bloom = PagedBloomFilter::open(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    root_page_id,
-                )
-                    .map_err(|e| RegistryError::EngineOpenFailed {
-                        engine: options.engine,
-                        details: format!("Failed to open Bloom filter: {}", e),
-                    })?;
+                let bloom =
+                    PagedBloomFilter::open(table_id, name, self.pager.clone(), root_page_id)
+                        .map_err(|e| RegistryError::EngineOpenFailed {
+                            engine: options.engine,
+                            details: format!("Failed to open Bloom filter: {}", e),
+                        })?;
                 Ok(TableEngineInstance::PagedBloomFilter(Arc::new(bloom)))
             }
             TableEngineKind::GeoSpatial => {
@@ -456,30 +529,21 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
             }
             TableEngineKind::TimeSeries => {
                 let config = TimeSeriesConfig::default(); // TODO: Extract from options
-                let timeseries = TimeSeriesTable::open(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    root_page_id,
-                    config,
-                )
-                .map_err(|e| RegistryError::EngineOpenFailed {
-                    engine: options.engine,
-                    details: format!("Failed to open TimeSeries: {}", e),
-                })?;
+                let timeseries =
+                    TimeSeriesTable::open(table_id, name, self.pager.clone(), root_page_id, config)
+                        .map_err(|e| RegistryError::EngineOpenFailed {
+                            engine: options.engine,
+                            details: format!("Failed to open TimeSeries: {}", e),
+                        })?;
                 Ok(TableEngineInstance::TimeSeriesTable(Arc::new(timeseries)))
             }
             TableEngineKind::FullText => {
-                let fulltext = PagedFullTextIndex::open(
-                    table_id,
-                    name,
-                    self.pager.clone(),
-                    root_page_id,
-                )
-                .map_err(|e| RegistryError::EngineOpenFailed {
-                    engine: options.engine,
-                    details: format!("Failed to open FullText index: {}", e),
-                })?;
+                let fulltext =
+                    PagedFullTextIndex::open(table_id, name, self.pager.clone(), root_page_id)
+                        .map_err(|e| RegistryError::EngineOpenFailed {
+                            engine: options.engine,
+                            details: format!("Failed to open FullText index: {}", e),
+                        })?;
                 Ok(TableEngineInstance::PagedFullTextIndex(Arc::new(fulltext)))
             }
             TableEngineKind::Blob => {
@@ -506,10 +570,7 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
     }
 
     /// Register a table engine instance.
-    pub fn register(
-        &self,
-        engine: TableEngineInstance<FS>,
-    ) -> Result<(), RegistryError> {
+    pub fn register(&self, engine: TableEngineInstance<FS>) -> Result<(), RegistryError> {
         let mut engines = self.engines.write().unwrap();
         let table_id = engine.table_id();
 

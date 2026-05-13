@@ -325,11 +325,13 @@ fn test_transaction_multiple_tables() {
 #[test]
 fn test_transaction_isolation_levels() {
     // Test each isolation level can be created
-    let levels = [IsolationLevel::ReadUncommitted,
+    let levels = [
+        IsolationLevel::ReadUncommitted,
         IsolationLevel::ReadCommitted,
         IsolationLevel::RepeatableRead,
         IsolationLevel::Serializable,
-        IsolationLevel::SnapshotIsolation];
+        IsolationLevel::SnapshotIsolation,
+    ];
 
     for (i, level) in levels.iter().enumerate() {
         let tx = create_test_transaction(

@@ -46,8 +46,8 @@ use crate::vfs::FileSystem;
 use crate::wal::{LogSequenceNumber, WalWriter, WalWriterConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Top-level embedded database.
 ///
@@ -167,7 +167,6 @@ impl<FS: FileSystem> Database<FS> {
     }
 
     fn current_snapshot_lsn(&self) -> LogSequenceNumber {
-        
         *self.current_lsn.read().unwrap()
     }
 
@@ -765,7 +764,7 @@ impl<FS: FileSystem> Database<FS> {
             table_id: table,
         })
     }
-    
+
     /// Explicitly close the database with controlled shutdown.
     ///
     /// This method provides a controlled shutdown sequence:
@@ -787,19 +786,21 @@ impl<FS: FileSystem> Database<FS> {
         // Note: The Drop implementations for LsmTree will automatically
         // flush memtables when the engine registry is dropped.
         // We just need to ensure WAL and pager are flushed.
-        
+
         // Step 1: Flush WAL buffer
-        self.wal.flush()
-            .map_err(|e| DatabaseError::wal_failed(format!("Failed to flush WAL during close: {}", e)))?;
-        
+        self.wal.flush().map_err(|e| {
+            DatabaseError::wal_failed(format!("Failed to flush WAL during close: {}", e))
+        })?;
+
         // Step 2: Sync pager (flushes cache and syncs file)
-        self.pager.sync()
-            .map_err(|e| DatabaseError::pager_failed(format!("Failed to sync pager during close: {}", e)))?;
-        
+        self.pager.sync().map_err(|e| {
+            DatabaseError::pager_failed(format!("Failed to sync pager during close: {}", e))
+        })?;
+
         // Step 3: Drop self, which will trigger Drop implementations for all engines
         // The LsmTree Drop implementation will flush memtables
         drop(self);
-        
+
         Ok(())
     }
 }
@@ -817,12 +818,18 @@ impl<FS: FileSystem> Drop for Database<FS> {
     fn drop(&mut self) {
         // Step 1: Flush WAL buffer
         if let Err(e) = self.wal.flush() {
-            eprintln!("Warning: Failed to flush WAL during database shutdown: {}", e);
+            eprintln!(
+                "Warning: Failed to flush WAL during database shutdown: {}",
+                e
+            );
         }
 
         // Step 2: Sync pager (flushes cache and syncs file)
         if let Err(e) = self.pager.sync() {
-            eprintln!("Warning: Failed to sync pager during database shutdown: {}", e);
+            eprintln!(
+                "Warning: Failed to sync pager during database shutdown: {}",
+                e
+            );
         }
 
         // Note: WAL sync is handled by flush() if sync_on_write is enabled,

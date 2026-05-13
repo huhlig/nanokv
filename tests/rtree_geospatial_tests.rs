@@ -33,15 +33,10 @@ fn create_test_pager(fs: &MemoryFileSystem, path: &str) -> Arc<Pager<MemoryFileS
 fn test_rtree_create_and_insert_points() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_create_and_insert_points.db");
-    
+
     let config = SpatialConfig::default();
-    let mut rtree = PagedRTree::new(
-        TableId::from(1),
-        "test_rtree".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let mut rtree =
+        PagedRTree::new(TableId::from(1), "test_rtree".to_string(), pager, config).unwrap();
 
     // Insert some points
     let points = vec![
@@ -66,15 +61,10 @@ fn test_rtree_create_and_insert_points() {
 fn test_rtree_intersects_query() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_intersects_query.db");
-    
+
     let config = SpatialConfig::default().with_max_entries(64);
-    let mut rtree = PagedRTree::new(
-        TableId::from(1),
-        "test_rtree".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let mut rtree =
+        PagedRTree::new(TableId::from(1), "test_rtree".to_string(), pager, config).unwrap();
 
     // Insert points in a grid
     for x in 0..10 {
@@ -97,25 +87,24 @@ fn test_rtree_intersects_query() {
     };
 
     let results = rtree.intersects(query, 100).unwrap();
-    
+
     // Should find points in the range [2,5] x [2,5]
     // That's 4x4 = 16 points
-    assert!(results.len() >= 16, "Expected at least 16 results, got {}", results.len());
+    assert!(
+        results.len() >= 16,
+        "Expected at least 16 results, got {}",
+        results.len()
+    );
 }
 
 #[test]
 fn test_rtree_nearest_query() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_nearest_query.db");
-    
+
     let config = SpatialConfig::default();
-    let mut rtree = PagedRTree::new(
-        TableId::from(1),
-        "test_rtree".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let mut rtree =
+        PagedRTree::new(TableId::from(1), "test_rtree".to_string(), pager, config).unwrap();
 
     // Insert some scattered points
     let points = vec![
@@ -137,7 +126,7 @@ fn test_rtree_nearest_query() {
     let results = rtree.nearest(query_point, 3).unwrap();
 
     assert_eq!(results.len(), 3);
-    
+
     // Verify they are sorted by distance
     for i in 1..results.len() {
         assert!(
@@ -161,7 +150,7 @@ fn test_rtree_split_strategies() {
     for strategy in strategies {
         let fs = MemoryFileSystem::new();
         let pager = create_test_pager(&fs, &format!("/test_rtree_split_{:?}.db", strategy));
-        
+
         let config = SpatialConfig::default()
             .with_max_entries(64)
             .with_split_strategy(strategy);
@@ -200,15 +189,10 @@ fn test_rtree_split_strategies() {
 fn test_rtree_bounding_box_insert() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_bounding_box_insert.db");
-    
+
     let config = SpatialConfig::default().with_max_entries(64);
-    let mut rtree = PagedRTree::new(
-        TableId::from(1),
-        "test_rtree".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let mut rtree =
+        PagedRTree::new(TableId::from(1), "test_rtree".to_string(), pager, config).unwrap();
 
     // Insert bounding boxes
     let boxes = vec![
@@ -231,7 +215,13 @@ fn test_rtree_bounding_box_insert() {
 
     for (id, min, max) in &boxes {
         rtree
-            .insert_geometry(id, GeometryRef::BoundingBox { min: *min, max: *max })
+            .insert_geometry(
+                id,
+                GeometryRef::BoundingBox {
+                    min: *min,
+                    max: *max,
+                },
+            )
             .unwrap();
     }
 
@@ -242,7 +232,7 @@ fn test_rtree_bounding_box_insert() {
     };
 
     let results = rtree.intersects(query, 10).unwrap();
-    
+
     // Should find box2 and box3
     assert!(results.len() >= 2, "Expected at least 2 intersecting boxes");
 }
@@ -251,15 +241,10 @@ fn test_rtree_bounding_box_insert() {
 fn test_rtree_3d_support() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_3d_support.db");
-    
+
     let config = SpatialConfig::new(3); // 3D
-    let mut rtree = PagedRTree::new(
-        TableId::from(1),
-        "test_rtree_3d".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let mut rtree =
+        PagedRTree::new(TableId::from(1), "test_rtree_3d".to_string(), pager, config).unwrap();
 
     // Insert 3D points (using 2D interface for now, z=0)
     for i in 0..10 {
@@ -281,7 +266,7 @@ fn test_rtree_3d_support() {
 fn test_rtree_large_dataset() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_large_dataset.db");
-    
+
     let config = SpatialConfig::default().with_max_entries(50);
     let mut rtree = PagedRTree::new(
         TableId::from(1),
@@ -317,15 +302,10 @@ fn test_rtree_large_dataset() {
 fn test_rtree_empty_queries() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_empty_queries.db");
-    
+
     let config = SpatialConfig::default();
-    let mut rtree = PagedRTree::new(
-        TableId::from(1),
-        "test_rtree".to_string(),
-        pager,
-        config,
-    )
-    .unwrap();
+    let mut rtree =
+        PagedRTree::new(TableId::from(1), "test_rtree".to_string(), pager, config).unwrap();
 
     // Insert points in one area
     for i in 0..10 {
@@ -352,22 +332,22 @@ fn test_rtree_empty_queries() {
 #[test]
 fn test_rtree_config_validation() {
     let mut config = SpatialConfig::default();
-    
+
     // Valid config
     assert!(config.validate().is_ok());
-    
+
     // Invalid dimensions
     config.dimensions = 1;
     assert!(config.validate().is_err());
-    
+
     config.dimensions = 4;
     assert!(config.validate().is_err());
-    
+
     // Invalid entries
     config.dimensions = 2;
     config.max_entries_per_node = 2;
     assert!(config.validate().is_err());
-    
+
     config.max_entries_per_node = 10;
     config.min_entries_per_node = 10;
     assert!(config.validate().is_err());
@@ -377,10 +357,10 @@ fn test_rtree_config_validation() {
 fn test_rtree_persistence() {
     let fs = MemoryFileSystem::new();
     let pager = create_test_pager(&fs, "/test_rtree_persistence.db");
-    
+
     let config = SpatialConfig::default();
     let root_page_id;
-    
+
     // Create and populate tree
     {
         let mut rtree = PagedRTree::new(
@@ -441,9 +421,7 @@ fn test_rtree_delete_geometry_removes_entry() {
     rtree
         .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 2.0, y: 2.0 }))
         .unwrap();
-    rtree
-        .delete_geometry(b"point1")
-        .unwrap();
+    rtree.delete_geometry(b"point1").unwrap();
 
     let stats = rtree.stats().unwrap();
     assert_eq!(stats.entry_count, Some(1));
@@ -510,7 +488,11 @@ fn test_rtree_delete_triggers_underflow_reinsertion() {
             .unwrap();
     }
 
-    for id in [b"point_0".as_slice(), b"point_1".as_slice(), b"point_2".as_slice()] {
+    for id in [
+        b"point_0".as_slice(),
+        b"point_1".as_slice(),
+        b"point_2".as_slice(),
+    ] {
         rtree.delete_geometry(id).unwrap();
     }
 

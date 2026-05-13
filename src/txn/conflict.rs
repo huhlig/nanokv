@@ -65,14 +65,15 @@ impl ConflictDetector {
     ) -> TransactionResult<()> {
         let lock_key = (object_id, key.to_vec());
         if let Some(&other_txn) = self.write_locks.get(&lock_key)
-            && other_txn != txn_id {
-                return Err(TransactionError::write_write_conflict(
-                    object_id,
-                    key.to_vec(),
-                    other_txn,
-                    txn_id,
-                ));
-            }
+            && other_txn != txn_id
+        {
+            return Err(TransactionError::write_write_conflict(
+                object_id,
+                key.to_vec(),
+                other_txn,
+                txn_id,
+            ));
+        }
         Ok(())
     }
 
@@ -101,14 +102,15 @@ impl ConflictDetector {
     ) -> TransactionResult<()> {
         for (object_id, key) in read_set {
             if let Some(&other_txn) = self.write_locks.get(&(*object_id, key.clone()))
-                && other_txn != txn_id {
-                    return Err(TransactionError::read_write_conflict(
-                        *object_id,
-                        key.clone(),
-                        txn_id,
-                        other_txn,
-                    ));
-                }
+                && other_txn != txn_id
+            {
+                return Err(TransactionError::read_write_conflict(
+                    *object_id,
+                    key.clone(),
+                    txn_id,
+                    other_txn,
+                ));
+            }
         }
         Ok(())
     }
@@ -145,10 +147,7 @@ impl DeadlockDetector {
     ///
     /// This records that `waiter` is blocked waiting for a lock held by `holder`.
     pub fn add_wait(&mut self, waiter: TransactionId, holder: TransactionId) {
-        self.wait_for_graph
-            .entry(waiter)
-            .or_default()
-            .push(holder);
+        self.wait_for_graph.entry(waiter).or_default().push(holder);
     }
 
     /// Remove all wait-for edges originating from the given transaction.
@@ -171,14 +170,11 @@ impl DeadlockDetector {
         // Try DFS from each unvisited node
         for &txn_id in self.wait_for_graph.keys() {
             if !visited.contains(&txn_id)
-                && let Some(cycle) = self.dfs_detect_cycle(
-                    txn_id,
-                    &mut visited,
-                    &mut rec_stack,
-                    &mut path,
-                ) {
-                    return Some(cycle);
-                }
+                && let Some(cycle) =
+                    self.dfs_detect_cycle(txn_id, &mut visited, &mut rec_stack, &mut path)
+            {
+                return Some(cycle);
+            }
         }
 
         None
@@ -201,8 +197,7 @@ impl DeadlockDetector {
             for &neighbor in neighbors {
                 if !visited.contains(&neighbor) {
                     // Recurse on unvisited neighbor
-                    if let Some(cycle) = self.dfs_detect_cycle(neighbor, visited, rec_stack, path)
-                    {
+                    if let Some(cycle) = self.dfs_detect_cycle(neighbor, visited, rec_stack, path) {
                         return Some(cycle);
                     }
                 } else if rec_stack.contains(&neighbor) {
@@ -242,10 +237,10 @@ mod tests {
         let mut detector = DeadlockDetector::new();
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
-        
+
         // txn1 waits for txn2
         detector.add_wait(txn1, txn2);
-        
+
         // No cycle - just a simple wait
         assert!(detector.detect_cycle().is_none());
     }
@@ -256,11 +251,11 @@ mod tests {
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
         let txn3 = TransactionId::from(3);
-        
+
         // txn1 -> txn2 -> txn3 (chain, no cycle)
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn2, txn3);
-        
+
         assert!(detector.detect_cycle().is_none());
     }
 
@@ -269,11 +264,11 @@ mod tests {
         let mut detector = DeadlockDetector::new();
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
-        
+
         // Create a cycle: txn1 -> txn2 -> txn1
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn2, txn1);
-        
+
         let cycle = detector.detect_cycle();
         assert!(cycle.is_some());
         let cycle = cycle.unwrap();
@@ -288,12 +283,12 @@ mod tests {
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
         let txn3 = TransactionId::from(3);
-        
+
         // Create a cycle: txn1 -> txn2 -> txn3 -> txn1
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn2, txn3);
         detector.add_wait(txn3, txn1);
-        
+
         let cycle = detector.detect_cycle();
         assert!(cycle.is_some());
         let cycle = cycle.unwrap();
@@ -310,17 +305,17 @@ mod tests {
         let txn2 = TransactionId::from(2);
         let txn3 = TransactionId::from(3);
         let txn4 = TransactionId::from(4);
-        
+
         // txn1 waits for both txn2 and txn3
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn1, txn3);
-        
+
         // txn2 waits for txn4
         detector.add_wait(txn2, txn4);
-        
+
         // txn3 waits for txn1 (creates cycle: txn1 -> txn3 -> txn1)
         detector.add_wait(txn3, txn1);
-        
+
         let cycle = detector.detect_cycle();
         assert!(cycle.is_some());
         let cycle = cycle.unwrap();
@@ -334,15 +329,15 @@ mod tests {
         let mut detector = DeadlockDetector::new();
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
-        
+
         // Create a cycle
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn2, txn1);
         assert!(detector.detect_cycle().is_some());
-        
+
         // Remove one wait edge
         detector.remove_wait(txn1);
-        
+
         // Cycle should be broken
         assert!(detector.detect_cycle().is_none());
     }
@@ -353,14 +348,14 @@ mod tests {
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
         let txn3 = TransactionId::from(3);
-        
+
         // Create chain: txn1 -> txn2 -> txn3
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn2, txn3);
-        
+
         // Remove middle transaction
         detector.remove_wait(txn2);
-        
+
         // Should still have txn1 -> txn2 edge
         assert!(detector.detect_cycle().is_none());
     }
@@ -369,10 +364,10 @@ mod tests {
     fn test_self_cycle() {
         let mut detector = DeadlockDetector::new();
         let txn1 = TransactionId::from(1);
-        
+
         // Transaction waiting for itself (shouldn't happen in practice, but test it)
         detector.add_wait(txn1, txn1);
-        
+
         let cycle = detector.detect_cycle();
         assert!(cycle.is_some());
         let cycle = cycle.unwrap();
@@ -388,7 +383,7 @@ mod tests {
         let txn3 = TransactionId::from(3);
         let txn4 = TransactionId::from(4);
         let txn5 = TransactionId::from(5);
-        
+
         // Create a complex graph:
         // txn1 -> txn2
         // txn2 -> txn3
@@ -400,7 +395,7 @@ mod tests {
         detector.add_wait(txn3, txn4);
         detector.add_wait(txn4, txn2);
         detector.add_wait(txn5, txn1);
-        
+
         let cycle = detector.detect_cycle();
         assert!(cycle.is_some());
         let cycle = cycle.unwrap();
@@ -415,15 +410,15 @@ mod tests {
         let mut detector = DeadlockDetector::new();
         let txn1 = TransactionId::from(1);
         let txn2 = TransactionId::from(2);
-        
+
         // Add same edge multiple times
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn1, txn2);
         detector.add_wait(txn1, txn2);
-        
+
         // Should still work correctly
         assert!(detector.detect_cycle().is_none());
-        
+
         // Add reverse edge to create cycle
         detector.add_wait(txn2, txn1);
         assert!(detector.detect_cycle().is_some());

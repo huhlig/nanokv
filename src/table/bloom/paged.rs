@@ -23,8 +23,8 @@
 
 use crate::pager::{Page, PageId, PageType, Pager};
 use crate::table::{
-    ApproximateMembership, SpecialtyTableCapabilities, SpecialtyTableStats, Table,
-    TableEngineKind, TableError, TableResult, VerificationReport,
+    ApproximateMembership, SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableEngineKind,
+    TableError, TableResult, VerificationReport,
 };
 use crate::types::TableId;
 use crate::vfs::FileSystem;
@@ -112,8 +112,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         });
 
         // Allocate root page
-        let root_page_id = pager
-            .allocate_page(PageType::BloomMeta)?;
+        let root_page_id = pager.allocate_page(PageType::BloomMeta)?;
 
         // Calculate bits per page (page size - header overhead)
         let bits_per_page = pager.page_size().data_size() * 8;
@@ -124,8 +123,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         // Allocate bitmap pages
         let mut bitmap_pages = Vec::with_capacity(num_pages);
         for _ in 0..num_pages {
-            let page_id = pager
-                .allocate_page(PageType::BloomData)?;
+            let page_id = pager.allocate_page(PageType::BloomData)?;
             bitmap_pages.push(page_id);
 
             // Initialize page with zeros
@@ -160,8 +158,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         root_page_id: PageId,
     ) -> TableResult<Self> {
         // Read metadata from root page
-        let page = pager
-            .read_page(root_page_id)?;
+        let page = pager.read_page(root_page_id)?;
 
         let metadata = unsafe { &*(page.data().as_ptr() as *const BloomFilterMetadata) };
 
@@ -262,8 +259,13 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
     /// Clear all bits in the filter.
     pub fn clear(&self) -> TableResult<()> {
         for &page_id in &self.bitmap_pages {
-            let mut page = Page::new(page_id, PageType::BloomData, self.pager.page_size().data_size());
-            page.data_mut().resize(self.pager.page_size().data_size(), 0);
+            let mut page = Page::new(
+                page_id,
+                PageType::BloomData,
+                self.pager.page_size().data_size(),
+            );
+            page.data_mut()
+                .resize(self.pager.page_size().data_size(), 0);
             self.pager.write_page(&page)?;
         }
 
@@ -280,7 +282,8 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
             PageType::BloomMeta,
             self.pager.page_size().data_size(),
         );
-        page.data_mut().resize(self.pager.page_size().data_size(), 0);
+        page.data_mut()
+            .resize(self.pager.page_size().data_size(), 0);
 
         let metadata = BloomFilterMetadata {
             magic: BLOOM_MAGIC,
@@ -293,8 +296,12 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         };
 
         // Write metadata
-        let metadata_bytes =
-            unsafe { std::slice::from_raw_parts(&metadata as *const _ as *const u8, std::mem::size_of::<BloomFilterMetadata>()) };
+        let metadata_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &metadata as *const _ as *const u8,
+                std::mem::size_of::<BloomFilterMetadata>(),
+            )
+        };
         page.data_mut()[..metadata_bytes.len()].copy_from_slice(metadata_bytes);
 
         // Write bitmap page IDs
@@ -343,7 +350,8 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         let page_id = self.bitmap_pages[page_idx];
         let mut page = self.pager.read_page(page_id)?;
         if page.data().len() <= byte_in_page {
-            page.data_mut().resize(self.pager.page_size().data_size(), 0);
+            page.data_mut()
+                .resize(self.pager.page_size().data_size(), 0);
         }
 
         page.data_mut()[byte_in_page] |= 1 << bit_in_byte;
@@ -360,9 +368,7 @@ impl<FS: FileSystem> PagedBloomFilter<FS> {
         let bit_in_byte = bit_in_page % 8;
 
         let page_id = self.bitmap_pages[page_idx];
-        let page = self
-            .pager
-            .read_page(page_id)?;
+        let page = self.pager.read_page(page_id)?;
 
         Ok((page.data()[byte_in_page] & (1 << bit_in_byte)) != 0)
     }
@@ -514,7 +520,7 @@ impl<FS: FileSystem> ApproximateMembership for PagedBloomFilter<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pager::{PagerConfig, PageSize};
+    use crate::pager::{PageSize, PagerConfig};
     use crate::vfs::MemoryFileSystem;
 
     fn create_test_pager() -> Arc<Pager<MemoryFileSystem>> {

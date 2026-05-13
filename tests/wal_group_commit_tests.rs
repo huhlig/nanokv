@@ -16,8 +16,8 @@
 
 //! Tests for WAL group commit functionality
 
-use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{GroupCommitConfig, WalWriter, WalWriterConfig, WriteOpType};
 use std::sync::Arc;

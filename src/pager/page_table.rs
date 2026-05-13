@@ -90,15 +90,13 @@ impl PageTable {
     pub fn with_shard_count(shard_count: usize) -> Self {
         // Ensure at least 1 shard
         let shard_count = shard_count.max(1);
-        
+
         // Round up to next power of 2
         let shard_count = shard_count.next_power_of_two();
-        
+
         // Create the shards
-        let shards = (0..shard_count)
-            .map(|_| RwLock::new(()))
-            .collect();
-        
+        let shards = (0..shard_count).map(|_| RwLock::new(())).collect();
+
         Self {
             shards,
             shard_count,
@@ -324,7 +322,7 @@ mod tests {
         // Find two pages in different shards
         let page1 = PageId::from(0);
         let mut page2 = PageId::from(1);
-        
+
         for i in 0..1000 {
             page2 = PageId::from(i);
             if !table.same_shard(page1, page2) {
@@ -332,7 +330,10 @@ mod tests {
             }
         }
 
-        assert!(!table.same_shard(page1, page2), "Could not find pages in different shards");
+        assert!(
+            !table.same_shard(page1, page2),
+            "Could not find pages in different shards"
+        );
 
         // These should be able to acquire write locks concurrently
         let table_clone = Arc::clone(&table);
@@ -373,7 +374,7 @@ mod tests {
     #[test]
     fn test_same_shard() {
         let table = PageTable::with_shard_count(16);
-        
+
         // Pages with same modulo should be in same shard
         let page1 = PageId::from(0);
         let page2 = PageId::from(16);

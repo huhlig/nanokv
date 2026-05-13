@@ -18,8 +18,8 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nanokv::pager::{CompressionType, EncryptionType};
-use nanokv::types::TableId;
 use nanokv::txn::TransactionId;
+use nanokv::types::TableId;
 use nanokv::vfs::{LocalFileSystem, MemoryFileSystem};
 use nanokv::wal::{
     GroupCommitConfig, WalReader, WalRecordIterator, WalRecovery, WalWriter, WalWriterConfig,

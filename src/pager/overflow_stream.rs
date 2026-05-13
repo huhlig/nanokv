@@ -16,7 +16,7 @@
 
 //! Streaming interface for reading overflow page chains
 
-use crate::pager::{calculate_crc32, OverflowPageHeader, PageId, PageType, Pager, PagerResult};
+use crate::pager::{OverflowPageHeader, PageId, PageType, Pager, PagerResult, calculate_crc32};
 use crate::table::{TableResult, ValueStream};
 use crate::vfs::FileSystem;
 

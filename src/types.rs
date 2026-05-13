@@ -167,7 +167,7 @@ impl AsRef<[u8]> for ValueBuf {
 pub enum ValueRef {
     /// Value is stored inline in the table structure (no external reference)
     Inline,
-    
+
     /// Value is stored in a single overflow page
     SinglePage {
         /// Page ID containing the value
@@ -177,7 +177,7 @@ pub enum ValueRef {
         /// Length of the value in bytes
         length: u32,
     },
-    
+
     /// Value is stored across multiple linked overflow pages
     OverflowChain {
         /// First page ID in the chain
@@ -196,12 +196,12 @@ impl ValueRef {
     const TYPE_SINGLE_PAGE: u8 = 0x01;
     /// Type byte for OverflowChain variant
     const TYPE_OVERFLOW_CHAIN: u8 = 0x02;
-    
+
     /// Check if this is an inline value reference.
     pub fn is_inline(&self) -> bool {
         matches!(self, ValueRef::Inline)
     }
-    
+
     /// Get a size hint for the value, if known.
     ///
     /// Returns None for Inline (size depends on actual value),
@@ -213,12 +213,12 @@ impl ValueRef {
             ValueRef::OverflowChain { total_length, .. } => Some(*total_length),
         }
     }
-    
+
     /// Check if this value requires overflow pages.
     pub fn requires_overflow(&self) -> bool {
         !matches!(self, ValueRef::Inline)
     }
-    
+
     /// Encode the ValueRef to bytes for storage in tables.
     ///
     /// Format:
@@ -230,7 +230,11 @@ impl ValueRef {
             ValueRef::Inline => {
                 vec![Self::TYPE_INLINE]
             }
-            ValueRef::SinglePage { page_id, offset, length } => {
+            ValueRef::SinglePage {
+                page_id,
+                offset,
+                length,
+            } => {
                 let mut buf = Vec::with_capacity(11);
                 buf.push(Self::TYPE_SINGLE_PAGE);
                 buf.extend_from_slice(&page_id.to_le_bytes());
@@ -238,7 +242,11 @@ impl ValueRef {
                 buf.extend_from_slice(&length.to_le_bytes());
                 buf
             }
-            ValueRef::OverflowChain { first_page_id, total_length, page_count } => {
+            ValueRef::OverflowChain {
+                first_page_id,
+                total_length,
+                page_count,
+            } => {
                 let mut buf = Vec::with_capacity(17);
                 buf.push(Self::TYPE_OVERFLOW_CHAIN);
                 buf.extend_from_slice(&first_page_id.to_le_bytes());
@@ -248,7 +256,7 @@ impl ValueRef {
             }
         }
     }
-    
+
     /// Decode a ValueRef from bytes.
     ///
     /// Returns an error if the bytes are invalid or the type byte is unknown.
@@ -259,7 +267,7 @@ impl ValueRef {
                 actual: 0,
             });
         }
-        
+
         match bytes[0] {
             Self::TYPE_INLINE => {
                 if bytes.len() != 1 {
@@ -282,7 +290,11 @@ impl ValueRef {
                 let page_id = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
                 let offset = u16::from_le_bytes(bytes[5..7].try_into().unwrap());
                 let length = u32::from_le_bytes(bytes[7..11].try_into().unwrap());
-                Ok(ValueRef::SinglePage { page_id, offset, length })
+                Ok(ValueRef::SinglePage {
+                    page_id,
+                    offset,
+                    length,
+                })
             }
             Self::TYPE_OVERFLOW_CHAIN => {
                 if bytes.len() != 17 {
@@ -295,7 +307,11 @@ impl ValueRef {
                 let first_page_id = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
                 let total_length = u64::from_le_bytes(bytes[5..13].try_into().unwrap());
                 let page_count = u32::from_le_bytes(bytes[13..17].try_into().unwrap());
-                Ok(ValueRef::OverflowChain { first_page_id, total_length, page_count })
+                Ok(ValueRef::OverflowChain {
+                    first_page_id,
+                    total_length,
+                    page_count,
+                })
             }
             unknown => Err(ValueRefDecodeError::UnknownType(unknown)),
         }
@@ -306,10 +322,7 @@ impl ValueRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueRefDecodeError {
     /// Insufficient bytes to decode
-    InsufficientBytes {
-        expected: usize,
-        actual: usize,
-    },
+    InsufficientBytes { expected: usize, actual: usize },
     /// Invalid length for variant
     InvalidLength {
         variant: &'static str,
@@ -324,10 +337,22 @@ impl std::fmt::Display for ValueRefDecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InsufficientBytes { expected, actual } => {
-                write!(f, "Insufficient bytes: expected at least {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "Insufficient bytes: expected at least {}, got {}",
+                    expected, actual
+                )
             }
-            Self::InvalidLength { variant, expected, actual } => {
-                write!(f, "Invalid length for {}: expected {}, got {}", variant, expected, actual)
+            Self::InvalidLength {
+                variant,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Invalid length for {}: expected {}, got {}",
+                    variant, expected, actual
+                )
             }
             Self::UnknownType(type_byte) => {
                 write!(f, "Unknown ValueRef type byte: 0x{:02X}", type_byte)
@@ -378,8 +403,9 @@ pub enum EncryptionKind {
 /// Unified object identifier for tables and indexes at the transaction/storage layer.
 /// Provides type-safe conversion from TableId and IndexId while maintaining a unified
 /// representation for transaction operations.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct TableId(u64);
 
 impl TableId {
@@ -403,7 +429,6 @@ impl From<u64> for TableId {
         Self(value)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -487,7 +512,10 @@ mod tests {
         let result = ValueRef::decode(&[]);
         assert!(matches!(
             result,
-            Err(ValueRefDecodeError::InsufficientBytes { expected: 1, actual: 0 })
+            Err(ValueRefDecodeError::InsufficientBytes {
+                expected: 1,
+                actual: 0
+            })
         ));
     }
 
