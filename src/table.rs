@@ -18,6 +18,7 @@ pub mod art;
 pub mod blob;
 pub mod bloom;
 pub mod btree;
+mod composite;
 mod error;
 pub mod fulltext;
 pub mod graph;
@@ -33,6 +34,10 @@ pub use self::art::{MemoryART, MemoryARTReader, MemoryARTWriter};
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
+pub use self::composite::{
+    CompositeIndexBuilder, CompositeIndexConfig, CompositeQueryExecutor, CompositeQueryResult,
+    CompositionStrategy, SecondaryRole, SecondaryTableConfig, TableConsulted,
+};
 pub use self::error::{TableError, TableResult};
 pub use self::fulltext::{
     FullTextConfig, PagedFullTextIndex, Tokenizer, TokenizerConfig, TokenizerKind,

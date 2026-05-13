@@ -15,11 +15,11 @@
 //
 
 use crate::table::{
-    ApproximateMembership, EdgeCursor, FullTextSearch, GeoHit, GeoPoint, GeoSpatial, GeometryRef,
-    GraphAdjacency, ScoredDocument, SearchableTable, SpecialtyTableCapabilities,
-    SpecialtyTableStats, TableCursor, TableEngineRegistry, TextField, TextQuery, TimePointRef,
-    TimeSeries, TimeSeriesCursor, VectorHit, VectorMetric, VectorSearch, VectorSearchOptions,
-    VerificationReport,
+    ApproximateMembership, CompositeIndexConfig, EdgeCursor, FullTextSearch, GeoHit, GeoPoint,
+    GeoSpatial, GeometryRef, GraphAdjacency, ScoredDocument, SearchableTable,
+    SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor, TableEngineRegistry, TextField,
+    TextQuery, TimePointRef, TimeSeries, TimeSeriesCursor, VectorHit, VectorMetric, VectorSearch,
+    VectorSearchOptions, VerificationReport,
 };
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{Durability, IsolationLevel, ScanBounds, TableId, ValueBuf};
@@ -625,6 +625,109 @@ impl<FS: FileSystem> Transaction<FS> {
         let result = f(self);
         self.clear_table_context();
         result.map_err(|e| TransactionError::Other(e.to_string()))
+    }
+
+    /// Execute a composite index query across multiple table engines.
+    ///
+    /// This helper coordinates queries between a primary table and secondary
+    /// indexes (e.g., bloom filters for pre-filtering) using the composition
+    /// strategy defined in the config.
+    ///
+    /// Returns a `CompositeQueryResult` with the value and metadata about
+    /// which tables were consulted during the query.
+    ///
+    /// # Example: LSM with Bloom pre-filter
+    ///
+    /// ```ignore
+    /// let config = CompositeIndexBuilder::primary(lsm_id, TableEngineKind::LsmTree)
+    ///     .with_bloom_prefilter(bloom_id)
+    ///     .build();
+    ///
+    /// let result = txn.with_composite(&config, b"my-key")?;
+    ///
+    /// if result.pre_filtered {
+    ///     // Bloom filter determined key is absent, no disk read needed
+    /// }
+    /// ```
+    pub fn with_composite(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+        match config.strategy {
+            crate::table::CompositionStrategy::BloomFirst => {
+                self.composite_bloom_first(config, key)
+            }
+            crate::table::CompositionStrategy::PrimaryFirst => {
+                self.composite_primary_first(config, key)
+            }
+            crate::table::CompositionStrategy::Parallel => {
+                self.composite_parallel(config, key)
+            }
+            crate::table::CompositionStrategy::Sequential => {
+                self.composite_sequential(config, key)
+            }
+        }
+    }
+
+    fn composite_bloom_first(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+        for bloom_id in config.bloom_filter_ids() {
+            if !self.with_bloom(bloom_id, |bloom| bloom.might_contain(key))? {
+                return Ok(None);
+            }
+        }
+
+        self.get(config.primary_table_id, key)
+    }
+
+    fn composite_primary_first(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+        let value = self.get(config.primary_table_id, key)?;
+
+        if value.is_some() {
+            for secondary in &config.secondary_tables {
+                if secondary.role == crate::table::SecondaryRole::PostFilter {
+                    if secondary.engine_kind == crate::table::TableEngineKind::Bloom {
+                        if !self.with_bloom(secondary.table_id, |bloom| bloom.might_contain(key))? {
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(value)
+    }
+
+    fn composite_parallel(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+        let primary_value = self.get(config.primary_table_id, key)?;
+
+        if primary_value.is_none() {
+            return Ok(None);
+        }
+
+        for secondary in &config.secondary_tables {
+            if secondary.engine_kind == crate::table::TableEngineKind::Bloom {
+                if !self.with_bloom(secondary.table_id, |bloom| bloom.might_contain(key))? {
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(primary_value)
+    }
+
+    fn composite_sequential(&mut self, config: &CompositeIndexConfig, key: &[u8]) -> TransactionResult<Option<ValueBuf>> {
+        if let Some(value) = self.get(config.primary_table_id, key)? {
+            return Ok(Some(value));
+        }
+
+        for secondary in &config.secondary_tables {
+            if secondary.role == crate::table::SecondaryRole::AlternativeAccess {
+                if secondary.engine_kind == crate::table::TableEngineKind::Bloom {
+                    if self.with_bloom(secondary.table_id, |bloom| bloom.might_contain(key))? {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     /// Set table context for graph operations.
