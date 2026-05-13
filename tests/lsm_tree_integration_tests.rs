@@ -242,12 +242,140 @@ fn test_compaction() {
     assert_eq!(job.estimated_output_size, expected_size);
 }
 
-/// Test LSM tree MVCC (requires full implementation)
+/// Test LSM tree MVCC snapshot isolation
 #[test]
-#[ignore = "MVCC testing requires full LSM tree setup"]
 fn test_lsm_mvcc() {
-    // This would test MVCC snapshot isolation
-    // Requires full LSM tree with version chains
+    use nanokv::pager::{PageType, Pager, PagerConfig};
+    use nanokv::table::lsm::LsmTree;
+    use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable};
+    use nanokv::txn::TransactionId;
+    use nanokv::types::TableId;
+    use nanokv::vfs::MemoryFileSystem;
+    use nanokv::wal::LogSequenceNumber;
+    use std::sync::Arc;
+
+    // Create pager with MemoryFileSystem
+    let fs = MemoryFileSystem::new();
+    let pager_config = PagerConfig::default();
+    let pager =
+        Arc::new(Pager::create(&fs, "test.db", pager_config).expect("Failed to create pager"));
+
+    // Allocate a root page for the LSM tree
+    let root_page_id = pager.allocate_page(PageType::LsmMeta).expect("Failed to allocate page");
+
+    let lsm_config = LsmConfig::default();
+    let lsm: LsmTree<MemoryFileSystem> = LsmTree::new(
+        TableId::from(1),
+        "test_lsm".to_string(),
+        pager,
+        root_page_id,
+        lsm_config,
+    )
+    .expect("Failed to create LSM tree");
+
+    // Transaction 1: Insert initial value at LSN 10
+    let tx1 = TransactionId::from(1);
+    let lsn1 = LogSequenceNumber::from(10);
+    let mut writer1 = lsm.writer(tx1, lsn1).expect("Failed to create writer");
+    writer1.put(b"mvcc_key", b"value_v1").expect("Failed to put");
+    writer1.flush().expect("Failed to flush");
+
+    // Transaction 2: Update value at LSN 20
+    let tx2 = TransactionId::from(2);
+    let lsn2 = LogSequenceNumber::from(20);
+    let mut writer2 = lsm.writer(tx2, lsn2).expect("Failed to create writer");
+    writer2.put(b"mvcc_key", b"value_v2").expect("Failed to put");
+    writer2.flush().expect("Failed to flush");
+
+    // Transaction 3: Delete key at LSN 30
+    let tx3 = TransactionId::from(3);
+    let lsn3 = LogSequenceNumber::from(30);
+    let mut writer3 = lsm.writer(tx3, lsn3).expect("Failed to create writer");
+    writer3.delete(b"mvcc_key").expect("Failed to delete");
+    writer3.flush().expect("Failed to flush");
+
+    // Read at LSN 5: key should not exist (before any writes)
+    let reader_before = lsm.reader(LogSequenceNumber::from(5)).expect("Failed to create reader");
+    let result_before = reader_before
+        .get(b"mvcc_key", LogSequenceNumber::from(5))
+        .expect("Failed to get");
+    assert!(
+        result_before.is_none(),
+        "Key should not exist before any writes"
+    );
+
+    // Read at LSN 15: should see v1 (after tx1, before tx2)
+    let reader_v1 = lsm.reader(LogSequenceNumber::from(15)).expect("Failed to create reader");
+    let result_v1 = reader_v1
+        .get(b"mvcc_key", LogSequenceNumber::from(15))
+        .expect("Failed to get");
+    assert!(result_v1.is_some(), "Key should exist at LSN 15");
+    assert_eq!(
+        result_v1.unwrap().0.as_slice(),
+        b"value_v1",
+        "Should see v1 at LSN 15"
+    );
+
+    // Read at LSN 25: should see v2 (after tx2, before tx3)
+    let reader_v2 = lsm.reader(LogSequenceNumber::from(25)).expect("Failed to create reader");
+    let result_v2 = reader_v2
+        .get(b"mvcc_key", LogSequenceNumber::from(25))
+        .expect("Failed to get");
+    assert!(result_v2.is_some(), "Key should exist at LSN 25");
+    assert_eq!(
+        result_v2.unwrap().0.as_slice(),
+        b"value_v2",
+        "Should see v2 at LSN 25"
+    );
+
+    // Read at LSN 35: key should be deleted (after tx3)
+    let reader_after = lsm
+        .reader(LogSequenceNumber::from(35))
+        .expect("Failed to create reader");
+    let result_after = reader_after
+        .get(b"mvcc_key", LogSequenceNumber::from(35))
+        .expect("Failed to get");
+    assert!(
+        result_after.is_none(),
+        "Key should be deleted at LSN 35"
+    );
+
+    // Test multiple keys with different versions
+    let tx4 = TransactionId::from(4);
+    let lsn4 = LogSequenceNumber::from(40);
+    let mut writer4 = lsm.writer(tx4, lsn4).expect("Failed to create writer");
+    writer4.put(b"key_a", b"a_v1").expect("Failed to put");
+    writer4.put(b"key_b", b"b_v1").expect("Failed to put");
+    writer4.flush().expect("Failed to flush");
+
+    let tx5 = TransactionId::from(5);
+    let lsn5 = LogSequenceNumber::from(50);
+    let mut writer5 = lsm.writer(tx5, lsn5).expect("Failed to create writer");
+    writer5.put(b"key_a", b"a_v2").expect("Failed to put");
+    // key_b stays at v1
+    writer5.flush().expect("Failed to flush");
+
+    // Read at LSN 45: both keys at v1
+    let reader_45 = lsm.reader(LogSequenceNumber::from(45)).expect("Failed to create reader");
+    let key_a_45 = reader_45
+        .get(b"key_a", LogSequenceNumber::from(45))
+        .expect("Failed to get");
+    let key_b_45 = reader_45
+        .get(b"key_b", LogSequenceNumber::from(45))
+        .expect("Failed to get");
+    assert_eq!(key_a_45.unwrap().0.as_slice(), b"a_v1");
+    assert_eq!(key_b_45.unwrap().0.as_slice(), b"b_v1");
+
+    // Read at LSN 55: key_a at v2, key_b still at v1
+    let reader_55 = lsm.reader(LogSequenceNumber::from(55)).expect("Failed to create reader");
+    let key_a_55 = reader_55
+        .get(b"key_a", LogSequenceNumber::from(55))
+        .expect("Failed to get");
+    let key_b_55 = reader_55
+        .get(b"key_b", LogSequenceNumber::from(55))
+        .expect("Failed to get");
+    assert_eq!(key_a_55.unwrap().0.as_slice(), b"a_v2");
+    assert_eq!(key_b_55.unwrap().0.as_slice(), b"b_v1");
 }
 
 // Made with Bob
