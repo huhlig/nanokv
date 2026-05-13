@@ -112,10 +112,77 @@ fn test_bloom_filter_operations() {
 
 /// Test SSTable operations (requires full implementation)
 #[test]
-#[ignore = "SSTable requires pager and VFS setup"]
 fn test_sstable_operations() {
-    // This would test SSTable read/write operations
-    // Requires complex pager and VFS initialization
+    use nanokv::pager::{Pager, PagerConfig};
+    use nanokv::table::lsm::{SStableConfig, SStableReader, SStableWriter, SStableId};
+    use nanokv::txn::VersionChain;
+    use nanokv::vfs::MemoryFileSystem;
+    use nanokv::wal::LogSequenceNumber;
+    use std::sync::Arc;
+
+    // Create pager with MemoryFileSystem
+    let fs = MemoryFileSystem::new();
+    let config = PagerConfig::default();
+    let pager = Arc::new(Pager::create(&fs, "test.db", config).expect("Failed to create pager"));
+
+    // Create SSTable writer
+    let sstable_id = SStableId::new(1);
+    let sstable_config = SStableConfig::default();
+    let mut writer = SStableWriter::new(
+        pager.clone(),
+        sstable_id,
+        0, // Level 0
+        sstable_config.clone(),
+        3, // estimated entries
+    );
+
+    // Add sorted key-value pairs
+    let keys = vec!["alpha", "beta", "gamma"];
+    for key in &keys {
+        let mut chain = VersionChain::new(
+            key.as_bytes().to_vec(),
+            1.into(),
+        );
+        chain.commit(LogSequenceNumber::from(1));
+        writer.add(key.as_bytes().to_vec(), chain).expect("Failed to add entry");
+    }
+
+    // Finish writing SSTable
+    let created_lsn = LogSequenceNumber::from(1);
+    let metadata = writer.finish(created_lsn).expect("Failed to finish SSTable");
+
+    // Verify metadata
+    assert_eq!(metadata.id.as_u64(), 1);
+    assert_eq!(metadata.level, 0);
+    assert_eq!(metadata.num_entries, 3);
+    assert_eq!(metadata.min_key, b"alpha");
+    assert_eq!(metadata.max_key, b"gamma");
+
+    // Open SSTable for reading
+    let reader = SStableReader::open(
+        pager.clone(),
+        metadata.first_page_id,
+        sstable_config,
+    ).expect("Failed to open SSTable");
+
+    // Verify bloom filter (note: bloom filters can have false positives)
+    assert!(reader.may_contain(b"alpha"));
+    assert!(reader.may_contain(b"beta"));
+    assert!(reader.may_contain(b"gamma"));
+    // "nonexistent" might be a false positive, so we don't assert it's definitely not present
+
+    // Read back the keys
+    let snapshot_lsn = LogSequenceNumber::from(1);
+    for key in &keys {
+        let value = reader.get(key.as_bytes(), snapshot_lsn)
+            .expect("Failed to get key");
+        assert!(value.is_some(), "Key {} should exist", key);
+        assert_eq!(value.unwrap(), key.as_bytes(), "Value should match key for {}", key);
+    }
+
+    // Verify non-existent key
+    let result = reader.get(b"nonexistent", snapshot_lsn).expect("Failed to get key");
+    assert!(result.is_none(), "Non-existent key should not be found");
 }
 
 /// Test compaction (requires full implementation)
