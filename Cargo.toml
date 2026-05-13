@@ -73,3 +73,7 @@ harness = false
 [[bench]]
 name = "timeseries_benchmarks"
 harness = false
+
+[[bench]]
+name = "rtree_benchmarks"
+harness = false
