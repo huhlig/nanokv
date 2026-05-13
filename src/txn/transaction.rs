@@ -17,7 +17,8 @@
 use crate::table::{
     ApproximateMembership, EdgeCursor, GraphAdjacency, PointLookup, SearchableTable,
     SpecialtyTableCapabilities, SpecialtyTableStats, TableCursor, TableEngineRegistry,
-    TimeSeries, TimeSeriesCursor, TimePointRef, VerificationReport,
+    TimeSeries, TimeSeriesCursor, TimePointRef, VectorSearch, VectorSearchOptions, VectorHit,
+    VectorMetric, VerificationReport,
 };
 use crate::txn::{ConflictDetector, TransactionError, TransactionResult};
 use crate::types::{Durability, IsolationLevel, TableId, ScanBounds, ValueBuf};
@@ -102,6 +103,18 @@ enum TimeSeriesOp {
         series_key: Vec<u8>,
         timestamp: i64,
         value_key: Vec<u8>,
+    },
+}
+
+/// Vector operation for tracking in transaction write set
+#[derive(Clone, Debug, PartialEq)]
+enum VectorOp {
+    InsertVector {
+        id: Vec<u8>,
+        vector: Vec<f32>,
+    },
+    DeleteVector {
+        id: Vec<u8>,
     },
 }
 
@@ -270,6 +283,10 @@ pub struct Transaction<FS: FileSystem> {
     // Each entry is (table_id, time_series_operation)
     timeseries_write_set: Vec<(TableId, TimeSeriesOp)>,
 
+    // Track specialty-table vector operations for commit/rollback
+    // Each entry is (table_id, vector_operation)
+    vector_write_set: Vec<(TableId, VectorOp)>,
+
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
 
@@ -309,6 +326,7 @@ impl<FS: FileSystem> Transaction<FS> {
             bloom_write_set: HashSet::new(),
             graph_write_set: Vec::new(),
             timeseries_write_set: Vec::new(),
+            vector_write_set: Vec::new(),
             conflict_detector,
             wal,
             engine_registry,
@@ -405,6 +423,11 @@ impl<FS: FileSystem> Transaction<FS> {
         self.timeseries_write_set.push((object_id, op));
     }
 
+    /// Record a vector operation for commit/rollback.
+    pub fn record_vector_operation(&mut self, object_id: TableId, op: VectorOp) {
+        self.vector_write_set.push((object_id, op));
+    }
+
     /// Prepare the transaction for commit (two-phase commit).
     ///
     /// Transitions from Active to Preparing state.
@@ -471,6 +494,18 @@ impl<FS: FileSystem> Transaction<FS> {
     pub fn with_bloom<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
     where
         F: FnOnce(&mut dyn ApproximateMembership) -> crate::table::TableResult<R>,
+    {
+        self.with_table(table_id);
+        let result = f(self);
+        self.clear_table_context();
+        result.map_err(|e| TransactionError::Other(e.to_string()))
+    }
+
+    /// Execute a scoped set of vector search operations using the transaction as
+    /// a `VectorSearch` implementation.
+    pub fn with_vector<F, R>(&mut self, table_id: TableId, f: F) -> TransactionResult<R>
+    where
+        F: FnOnce(&mut dyn VectorSearch) -> crate::table::TableResult<R>,
     {
         self.with_table(table_id);
         let result = f(self);
@@ -1211,6 +1246,36 @@ impl<FS: FileSystem> Transaction<FS> {
             // }
         }
 
+        // Apply vector operations after time series operations.
+        // Note: PagedHnswVector methods require &mut self, but the engine is stored in Arc.
+        // The HNSW implementation needs to be updated to use interior mutability (RwLock)
+        // for its mutable state before vector operations can be applied in transactions.
+        // Operations are logged to WAL for durability.
+        for (_object_id, _op) in &self.vector_write_set {
+            // TODO: Apply vector operations when PagedHnswVector is updated to use interior mutability
+            // if let Some(engine) = self.engine_registry.get(*object_id) {
+            //     match &engine {
+            //         crate::table::TableEngineInstance::PagedHnswVector(hnsw) => {
+            //             match op {
+            //                 VectorOp::InsertVector { id, vector } => {
+            //                     hnsw.insert_vector(id, vector)
+            //                         .map_err(|e| TransactionError::Other(format!("Vector insert_vector failed: {}", e)))?;
+            //                 }
+            //                 VectorOp::DeleteVector { id } => {
+            //                     hnsw.delete_vector(id)
+            //                         .map_err(|e| TransactionError::Other(format!("Vector delete_vector failed: {}", e)))?;
+            //                 }
+            //             }
+            //         }
+            //         _ => {
+            //             return Err(TransactionError::Other(
+            //                 "table is not a vector search table".to_string(),
+            //             ))
+            //         }
+            //     }
+            // }
+        }
+
         // Update current LSN
         {
             let mut current_lsn = self.current_lsn.write().unwrap();
@@ -1771,5 +1836,196 @@ impl<FS: FileSystem> TimeSeries for Transaction<FS> {
         Err(crate::table::TableError::Other(
             "TimeSeries table engine not yet implemented".to_string(),
         ))
+    }
+}
+
+impl<FS: FileSystem> VectorSearch for Transaction<FS> {
+    fn table_id(&self) -> TableId {
+        self.current_table_id.unwrap_or(TableId::from(0))
+    }
+
+    fn name(&self) -> &str {
+        self.current_table_name.as_deref().unwrap_or("unknown")
+    }
+
+    fn capabilities(&self) -> SpecialtyTableCapabilities {
+        let Some(table_id) = self.current_table_id else {
+            return SpecialtyTableCapabilities::default();
+        };
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => {
+                VectorSearch::capabilities(hnsw.as_ref())
+            }
+            _ => SpecialtyTableCapabilities::default(),
+        }
+    }
+
+    fn dimensions(&self) -> usize {
+        let Some(table_id) = self.current_table_id else {
+            return 0;
+        };
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => {
+                hnsw.dimensions()
+            }
+            _ => 0,
+        }
+    }
+
+    fn metric(&self) -> VectorMetric {
+        let Some(table_id) = self.current_table_id else {
+            return VectorMetric::Cosine;
+        };
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => {
+                hnsw.metric()
+            }
+            _ => VectorMetric::Cosine,
+        }
+    }
+
+    fn insert_vector(&mut self, id: &[u8], vector: &[f32]) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for insert_vector",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for vector operation".to_string(),
+            )
+        })?;
+
+        // Serialize vector to bytes for WAL
+        let vector_bytes: Vec<u8> = vector
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::VectorInsert,
+                id.to_vec(),
+                vector_bytes,
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_vector_operation(
+            table_id,
+            VectorOp::InsertVector {
+                id: id.to_vec(),
+                vector: vector.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    fn delete_vector(&mut self, id: &[u8]) -> crate::table::TableResult<()> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for delete_vector",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for vector operation".to_string(),
+            )
+        })?;
+
+        self.wal
+            .write_operation(
+                self.txn_id,
+                table_id,
+                WriteOpType::VectorDelete,
+                id.to_vec(),
+                vec![],
+            )
+            .map_err(|e| crate::table::TableError::Other(format!("WAL write failed: {}", e)))?;
+
+        self.record_vector_operation(
+            table_id,
+            VectorOp::DeleteVector {
+                id: id.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    fn search_vector<'a>(
+        &self,
+        query: &[f32],
+        options: VectorSearchOptions<'a>,
+    ) -> crate::table::TableResult<Vec<VectorHit>> {
+        if !self.is_active() {
+            return Err(crate::table::TableError::Other(format!(
+                "transaction {} is not active for search_vector",
+                self.txn_id
+            )));
+        }
+
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for vector operation".to_string(),
+            )
+        })?;
+
+        // Vector search reads from the underlying table
+        // Pending inserts in vector_write_set are not yet visible to searches
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => {
+                hnsw.search_vector(query, options)
+            }
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a vector search table".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+
+    fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for vector operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => hnsw.stats(),
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a vector search table".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
+    }
+
+    fn verify(&self) -> crate::table::TableResult<VerificationReport> {
+        let table_id = self.current_table_id.ok_or_else(|| {
+            crate::table::TableError::Other(
+                "no table context set for vector operation".to_string(),
+            )
+        })?;
+
+        match self.engine_registry.get(table_id) {
+            Some(crate::table::TableEngineInstance::PagedHnswVector(hnsw)) => hnsw.verify(),
+            Some(_) => Err(crate::table::TableError::Other(
+                "table is not a vector search table".to_string(),
+            )),
+            None => Err(crate::table::TableError::Other(
+                "table not found".to_string(),
+            )),
+        }
     }
 }

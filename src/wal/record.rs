@@ -112,6 +112,10 @@ pub enum WriteOpType {
     TimeSeriesInsert = 6,
     /// Delete a point from a time series
     TimeSeriesDelete = 7,
+    /// Insert a vector
+    VectorInsert = 8,
+    /// Delete a vector
+    VectorDelete = 9,
 }
 
 impl WriteOpType {
@@ -125,6 +129,8 @@ impl WriteOpType {
             5 => Ok(WriteOpType::GraphRemoveEdge),
             6 => Ok(WriteOpType::TimeSeriesInsert),
             7 => Ok(WriteOpType::TimeSeriesDelete),
+            8 => Ok(WriteOpType::VectorInsert),
+            9 => Ok(WriteOpType::VectorDelete),
             _ => Err(WalError::InvalidRecord {
                 lsn: LogSequenceNumber::from(0),
                 details: format!("Invalid write op type: {}", value),
