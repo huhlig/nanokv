@@ -505,4 +505,364 @@ fn test_timeseries_cursor_downsampling_count_and_invalid_interval() {
    assert!(err.to_string().contains("greater than zero"));
 }
 
+#[test]
+fn test_aggregation_with_empty_series() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "empty.db", PagerConfig::default()).unwrap());
+   let table = TimeSeriesTable::new(
+       TableId::from(5),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"empty-series";
+   let cursor = table.scan_series(series_key, 0, 1000).unwrap();
+
+   // All aggregations should return None for empty series
+   assert_eq!(cursor.sum(), None);
+   assert_eq!(cursor.avg(), None);
+   assert_eq!(cursor.min(), None);
+   assert_eq!(cursor.max(), None);
+   assert_eq!(cursor.count(), 0);
+   assert_eq!(cursor.aggregate(TimeSeriesAggregation::Count), Some(nanokv::table::timeseries::AggregationResult::Count(0)));
+}
+
+#[test]
+fn test_aggregation_with_single_value() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "single.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(6),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"single-value";
+   table.append_point(series_key, 100, b"42.5").unwrap();
+
+   let cursor = table.scan_series(series_key, 0, 200).unwrap();
+
+   assert_eq!(cursor.sum(), Some(42.5));
+   assert_eq!(cursor.avg(), Some(42.5));
+   assert_eq!(cursor.min(), Some(42.5));
+   assert_eq!(cursor.max(), Some(42.5));
+   assert_eq!(cursor.count(), 1);
+}
+
+#[test]
+fn test_aggregation_with_negative_values() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "negative.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(7),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"negative-values";
+   let samples = [
+       (100i64, b"-10.5".as_slice()),
+       (200i64, b"-20.0".as_slice()),
+       (300i64, b"5.5".as_slice()),
+       (400i64, b"-15.0".as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 500).unwrap();
+
+   assert_eq!(cursor.sum(), Some(-40.0));
+   assert_eq!(cursor.avg(), Some(-10.0));
+   assert_eq!(cursor.min(), Some(-20.0));
+   assert_eq!(cursor.max(), Some(5.5));
+   assert_eq!(cursor.count(), 4);
+}
+
+#[test]
+fn test_aggregation_with_zero_values() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "zeros.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(8),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"zero-values";
+   for i in 0..5 {
+       table.append_point(series_key, i * 100, b"0").unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 500).unwrap();
+
+   assert_eq!(cursor.sum(), Some(0.0));
+   assert_eq!(cursor.avg(), Some(0.0));
+   assert_eq!(cursor.min(), Some(0.0));
+   assert_eq!(cursor.max(), Some(0.0));
+   assert_eq!(cursor.count(), 5);
+}
+
+#[test]
+fn test_aggregation_with_very_large_values() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "large.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(9),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"large-values";
+   let samples = [
+       (100i64, b"1e308".as_slice()),
+       (200i64, b"1e307".as_slice()),
+       (300i64, b"1e306".as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 400).unwrap();
+
+   assert!(cursor.sum().is_some());
+   assert!(cursor.avg().is_some());
+   assert_eq!(cursor.min(), Some(1e306));
+   assert_eq!(cursor.max(), Some(1e308));
+}
+
+#[test]
+fn test_aggregation_with_very_small_values() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "small.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(10),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"small-values";
+   let samples = [
+       (100i64, b"1e-308".as_slice()),
+       (200i64, b"1e-307".as_slice()),
+       (300i64, b"1e-306".as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 400).unwrap();
+
+   assert!(cursor.sum().is_some());
+   assert!(cursor.avg().is_some());
+   assert_eq!(cursor.min(), Some(1e-308));
+   assert_eq!(cursor.max(), Some(1e-306));
+}
+
+#[test]
+fn test_downsampling_with_uneven_windows() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "uneven.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(11),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"uneven-windows";
+   // Add points that don't align perfectly with window boundaries
+   let samples = [
+       (5i64, b"10".as_slice()),
+       (15i64, b"20".as_slice()),
+       (55i64, b"30".as_slice()),
+       (95i64, b"40".as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 100).unwrap();
+   let windows = cursor.downsample(50, TimeSeriesAggregation::Sum).unwrap();
+
+   // Should have 2 windows: [0-50) and [50-100)
+   assert_eq!(windows.len(), 2);
+   assert_eq!(windows[0].aggregation, nanokv::table::timeseries::AggregationResult::Sum(30.0)); // 10 + 20
+   assert_eq!(windows[1].aggregation, nanokv::table::timeseries::AggregationResult::Sum(70.0)); // 30 + 40
+}
+
+#[test]
+fn test_downsampling_with_min_max() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "minmax.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(12),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"minmax-downsample";
+   let samples = [
+       (10i64, b"100".as_slice()),
+       (20i64, b"50".as_slice()),
+       (30i64, b"75".as_slice()),
+       (70i64, b"200".as_slice()),
+       (80i64, b"150".as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 100).unwrap();
+   
+   // Test min downsampling
+   let min_windows = cursor.downsample(50, TimeSeriesAggregation::Min).unwrap();
+   assert_eq!(min_windows.len(), 2);
+   assert_eq!(min_windows[0].aggregation, nanokv::table::timeseries::AggregationResult::Min(50.0));
+   assert_eq!(min_windows[1].aggregation, nanokv::table::timeseries::AggregationResult::Min(150.0));
+
+   // Test max downsampling
+   let max_windows = cursor.downsample(50, TimeSeriesAggregation::Max).unwrap();
+   assert_eq!(max_windows.len(), 2);
+   assert_eq!(max_windows[0].aggregation, nanokv::table::timeseries::AggregationResult::Max(100.0));
+   assert_eq!(max_windows[1].aggregation, nanokv::table::timeseries::AggregationResult::Max(200.0));
+}
+
+#[test]
+fn test_aggregation_with_json_nested_values() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "json_nested.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(13),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"json-nested";
+   let samples = [
+       (100i64, br#"{"value": 10.5}"#.as_slice()),
+       (200i64, br#"{"avg": 20.0}"#.as_slice()),
+       (300i64, br#"{"sum": 30.5}"#.as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 400).unwrap();
+
+   // Should extract values from JSON objects
+   assert_eq!(cursor.sum(), Some(61.0));
+   assert_eq!(cursor.count(), 3);
+}
+
+#[test]
+fn test_aggregation_with_all_non_numeric() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "all_non_numeric.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(14),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"all-non-numeric";
+   for i in 0..5 {
+       table.append_point(series_key, i * 100, b"not-a-number").unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 500).unwrap();
+
+   // Numeric aggregations should return None
+   assert_eq!(cursor.sum(), None);
+   assert_eq!(cursor.avg(), None);
+   assert_eq!(cursor.min(), None);
+   assert_eq!(cursor.max(), None);
+   
+   // Count should still work
+   assert_eq!(cursor.count(), 5);
+}
+
+#[test]
+fn test_downsampling_with_large_interval() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "large_interval.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(15),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"large-interval";
+   for i in 0..10 {
+       table.append_point(series_key, i * 10, format!("{}", i * 10).as_bytes()).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 100).unwrap();
+   
+   // Interval larger than entire range - should produce single window
+   let windows = cursor.downsample(1000, TimeSeriesAggregation::Avg).unwrap();
+   assert_eq!(windows.len(), 1);
+   assert_eq!(windows[0].start_ts, 0);
+}
+
+#[test]
+fn test_multiple_aggregations_consistency() {
+   let fs = MemoryFileSystem::new();
+   let pager = Arc::new(Pager::create(&fs, "consistency.db", PagerConfig::default()).unwrap());
+   let mut table = TimeSeriesTable::new(
+       TableId::from(16),
+       "metrics".to_string(),
+       pager,
+       TimeSeriesConfig::default(),
+   )
+   .unwrap();
+
+   let series_key = b"consistency-check";
+   let samples = [
+       (100i64, b"10".as_slice()),
+       (200i64, b"20".as_slice()),
+       (300i64, b"30".as_slice()),
+   ];
+
+   for (ts, value) in samples {
+       table.append_point(series_key, ts, value).unwrap();
+   }
+
+   let cursor = table.scan_series(series_key, 0, 400).unwrap();
+
+   // Call aggregations multiple times - should be consistent
+   assert_eq!(cursor.sum(), cursor.sum());
+   assert_eq!(cursor.avg(), cursor.avg());
+   assert_eq!(cursor.min(), cursor.min());
+   assert_eq!(cursor.max(), cursor.max());
+   assert_eq!(cursor.count(), cursor.count());
+}
+
 // Made with Bob
