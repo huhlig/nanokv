@@ -20,6 +20,7 @@ mod error;
 pub mod hash;
 pub mod hnsw;
 pub mod lsm;
+pub mod rtree;
 mod traits;
 
 use std::collections::HashMap;
@@ -39,6 +40,7 @@ pub use self::lsm::{
     CompactionConfig, CompactionStrategy, LevelConfig,
     LsmConfig, Memtable, MemtableConfig, MemtableType, SStableConfig,
 };
+pub use self::rtree::{PagedRTree, SpatialConfig, SplitStrategy};
 pub use self::traits::{
     // Core table traits
     BatchOps, BatchReport, CheckpointInfo, CompactionOptions, CompactionReport, ConsistencyError,
@@ -71,6 +73,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     LsmTree(Arc<LsmTree<FS>>),
     PagedBloomFilter(Arc<PagedBloomFilter<FS>>),
     PagedHnswVector(Arc<PagedHnswVector<FS>>),
+    PagedRTree(Arc<PagedRTree<FS>>),
     MemoryBTree(Arc<MemoryBTree>),
     MemoryHashTable(Arc<MemoryHashTable>),
     MemoryBlob(Arc<MemoryBlob>),
@@ -86,6 +89,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::LsmTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedBloomFilter(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedHnswVector(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::PagedRTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -99,6 +103,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::LsmTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedBloomFilter(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedHnswVector(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::PagedRTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
@@ -112,6 +117,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::LsmTree(engine) => engine.kind(),
             Self::PagedBloomFilter(engine) => engine.kind(),
             Self::PagedHnswVector(engine) => engine.kind(),
+            Self::PagedRTree(engine) => engine.kind(),
             Self::MemoryBTree(engine) => engine.kind(),
             Self::MemoryHashTable(engine) => engine.kind(),
             Self::MemoryBlob(engine) => engine.kind(),
@@ -126,6 +132,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::LsmTree(_) => None, // LSM has manifest, not single root
             Self::PagedBloomFilter(engine) => Some(engine.root_page_id()),
             Self::PagedHnswVector(_) => None, // TODO: Add root_page_id accessor
+            Self::PagedRTree(engine) => Some(engine.root_page_id()),
             Self::MemoryBTree(_) => None,
             Self::MemoryHashTable(_) => None,
             Self::MemoryBlob(_) => None,
@@ -140,6 +147,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::LsmTree(engine) => Self::LsmTree(Arc::clone(engine)),
             Self::PagedBloomFilter(engine) => Self::PagedBloomFilter(Arc::clone(engine)),
             Self::PagedHnswVector(engine) => Self::PagedHnswVector(Arc::clone(engine)),
+            Self::PagedRTree(engine) => Self::PagedRTree(Arc::clone(engine)),
             Self::MemoryBTree(engine) => Self::MemoryBTree(Arc::clone(engine)),
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),
@@ -249,6 +257,24 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 let hash_table = MemoryHashTable::new(table_id, name);
                 Ok((TableEngineInstance::MemoryHashTable(Arc::new(hash_table)), None))
             }
+            TableEngineKind::GeoSpatial => {
+                // Create R-Tree with default spatial config
+                // TODO: Extract config from options
+                let spatial_config = SpatialConfig::default();
+
+                let rtree = PagedRTree::new(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    spatial_config,
+                )
+                .map_err(|e| RegistryError::EngineCreationFailed {
+                    engine: options.engine,
+                    details: format!("Failed to create R-Tree: {}", e),
+                })?;
+                let root_page_id = rtree.root_page_id();
+                Ok((TableEngineInstance::PagedRTree(Arc::new(rtree)), Some(root_page_id)))
+            }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry (doesn't take FS generic)
                 // TODO: Refactor PagedBlob to work with registry
@@ -298,6 +324,21 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                         details: format!("Failed to open Bloom filter: {}", e),
                     })?;
                 Ok(TableEngineInstance::PagedBloomFilter(Arc::new(bloom)))
+            }
+            TableEngineKind::GeoSpatial => {
+                let spatial_config = SpatialConfig::default(); // TODO: Extract from options
+                let rtree = PagedRTree::open(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    root_page_id,
+                    spatial_config,
+                )
+                .map_err(|e| RegistryError::EngineOpenFailed {
+                    engine: options.engine,
+                    details: format!("Failed to open R-Tree: {}", e),
+                })?;
+                Ok(TableEngineInstance::PagedRTree(Arc::new(rtree)))
             }
             TableEngineKind::Blob => {
                 // PagedBlob not yet supported in registry
