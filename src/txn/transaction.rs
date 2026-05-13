@@ -305,7 +305,7 @@ pub struct Transaction<FS: FileSystem> {
 
     // Track specialty-table vector operations for commit/rollback
     // Each entry is (table_id, vector_operation)
-    vector_write_set: Vec<(TableId, VectorOp)>,
+    vector_write_set: RwLock<Vec<(TableId, VectorOp)>>,
 
     // Track specialty-table geospatial operations for commit/rollback
     // Each entry is (table_id, geospatial_operation)
@@ -350,7 +350,7 @@ impl<FS: FileSystem> Transaction<FS> {
             bloom_write_set: HashSet::new(),
             graph_write_set: Vec::new(),
             timeseries_write_set: Vec::new(),
-            vector_write_set: Vec::new(),
+            vector_write_set: RwLock::new(Vec::new()),
             geospatial_write_set: Vec::new(),
             conflict_detector,
             wal,
@@ -449,8 +449,8 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 
     /// Record a vector operation for commit/rollback.
-    pub fn record_vector_operation(&mut self, object_id: TableId, op: VectorOp) {
-        self.vector_write_set.push((object_id, op));
+    pub fn record_vector_operation(&self, object_id: TableId, op: VectorOp) {
+        self.vector_write_set.write().unwrap().push((object_id, op));
     }
 
     /// Record a geospatial operation for commit/rollback.
@@ -1361,34 +1361,31 @@ impl<FS: FileSystem> Transaction<FS> {
         }
 
         // Apply vector operations after time series operations.
-        // Note: PagedHnswVector methods require &mut self, but the engine is stored in Arc.
-        // The HNSW implementation needs to be updated to use interior mutability (RwLock)
-        // for its mutable state before vector operations can be applied in transactions.
-        // Operations are logged to WAL for durability.
-        for (_object_id, _op) in &self.vector_write_set {
-            // TODO: Apply vector operations when PagedHnswVector is updated to use interior mutability
-            // if let Some(engine) = self.engine_registry.get(*object_id) {
-            //     match &engine {
-            //         crate::table::TableEngineInstance::PagedHnswVector(hnsw) => {
-            //             match op {
-            //                 VectorOp::InsertVector { id, vector } => {
-            //                     hnsw.insert_vector(id, vector)
-            //                         .map_err(|e| TransactionError::Other(format!("Vector insert_vector failed: {}", e)))?;
-            //                 }
-            //                 VectorOp::DeleteVector { id } => {
-            //                     hnsw.delete_vector(id)
-            //                         .map_err(|e| TransactionError::Other(format!("Vector delete_vector failed: {}", e)))?;
-            //                 }
-            //             }
-            //         }
-            //         _ => {
-            //             return Err(TransactionError::Other(
-            //                 "table is not a vector search table".to_string(),
-            //             ))
-            //         }
-            //     }
-            // }
+        let vector_ops = self.vector_write_set.read().unwrap();
+        for (object_id, op) in vector_ops.iter() {
+            if let Some(engine) = self.engine_registry.get(*object_id) {
+                match &engine {
+                    crate::table::TableEngineInstance::PagedHnswVector(hnsw) => {
+                        match op {
+                            VectorOp::InsertVector { id, vector } => {
+                                hnsw.insert_vector(id, vector)
+                                    .map_err(|e| TransactionError::Other(format!("Vector insert_vector failed: {}", e)))?;
+                            }
+                            VectorOp::DeleteVector { id } => {
+                                hnsw.delete_vector(id)
+                                    .map_err(|e| TransactionError::Other(format!("Vector delete_vector failed: {}", e)))?;
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(TransactionError::Other(
+                            "table is not a vector search table".to_string(),
+                        ))
+                    }
+                }
+            }
         }
+        drop(vector_ops);
 
         // Apply geospatial operations after vector operations.
         // Note: PagedRTree methods require &mut self, but the engine is stored in Arc.
@@ -2043,7 +2040,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         }
     }
 
-    fn insert_vector(&mut self, id: &[u8], vector: &[f32]) -> crate::table::TableResult<()> {
+    fn insert_vector(&self, id: &[u8], vector: &[f32]) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
                 "transaction {} is not active for insert_vector",
@@ -2083,7 +2080,7 @@ impl<FS: FileSystem> VectorSearch for Transaction<FS> {
         Ok(())
     }
 
-    fn delete_vector(&mut self, id: &[u8]) -> crate::table::TableResult<()> {
+    fn delete_vector(&self, id: &[u8]) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
                 "transaction {} is not active for delete_vector",

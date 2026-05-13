@@ -989,9 +989,9 @@ pub trait VectorSearch {
 
     fn metric(&self) -> VectorMetric;
 
-    fn insert_vector(&mut self, id: &[u8], vector: &[f32]) -> TableResult<()>;
+    fn insert_vector(&self, id: &[u8], vector: &[f32]) -> TableResult<()>;
 
-    fn delete_vector(&mut self, id: &[u8]) -> TableResult<()>;
+    fn delete_vector(&self, id: &[u8]) -> TableResult<()>;
 
     fn search_vector<'a>(
         &self,
@@ -1006,9 +1006,9 @@ pub trait VectorSearch {
 
 /// HNSW-specific controls.
 pub trait HnswVector: VectorSearch {
-    fn set_ef_construction(&mut self, ef: usize);
+    fn set_ef_construction(&self, ef: usize);
 
-    fn set_max_connections(&mut self, m: usize);
+    fn set_max_connections(&self, m: usize);
 }
 
 /// IVF-specific controls.

@@ -55,7 +55,7 @@ pub struct PagedHnswVector<FS: FileSystem> {
     root_page_id: PageId,
 
     /// Configuration
-    config: HnswConfig,
+    config: RwLock<HnswConfig>,
 
     /// Current entry point (top-level node)
     entry_point: RwLock<Option<NodeId>>,
@@ -248,7 +248,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
             name,
             pager,
             root_page_id,
-            config,
+            config: RwLock::new(config),
             entry_point: RwLock::new(None),
             max_layer: RwLock::new(0),
             num_vectors: RwLock::new(0),
@@ -316,7 +316,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
             name,
             pager,
             root_page_id,
-            config,
+            config: RwLock::new(config),
             entry_point: RwLock::new(entry_point),
             max_layer: RwLock::new(metadata.max_layer as usize),
             num_vectors: RwLock::new(metadata.num_vectors as usize),
@@ -371,7 +371,8 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
 
     /// Calculate distance between two vectors
     fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        match self.config.metric {
+        let config = self.config.read().unwrap();
+        match config.metric {
             VectorMetric::Cosine => {
                 // Cosine distance = 1 - cosine_similarity
                 let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
@@ -407,7 +408,7 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
         let uniform = (*rng_state as f64) / (u64::MAX as f64);
         
         // Use exponential distribution for layer selection
-        let layer = (-uniform.ln() * self.config.ml).floor() as usize;
+        let layer = (-uniform.ln() * self.config.read().unwrap().ml).floor() as usize;
         layer
     }
 
@@ -601,19 +602,19 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
     }
 
     fn dimensions(&self) -> usize {
-        self.config.dimensions
+        self.config.read().unwrap().dimensions
     }
 
     fn metric(&self) -> VectorMetric {
-        self.config.metric
+        self.config.read().unwrap().metric
     }
 
-    fn insert_vector(&mut self, id: &[u8], vector: &[f32]) -> TableResult<()> {
+    fn insert_vector(&self, id: &[u8], vector: &[f32]) -> TableResult<()> {
         // Validate vector dimensions
-        if vector.len() != self.config.dimensions {
+        if vector.len() != self.config.read().unwrap().dimensions {
             return Err(TableError::invalid_value(
                 "vector",
-                format!("dimension mismatch: expected {}, got {}", self.config.dimensions, vector.len())
+                format!("dimension mismatch: expected {}, got {}", self.config.read().unwrap().dimensions, vector.len())
             ));
         }
 
@@ -658,15 +659,15 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
             // Insert at layers 0..=layer
             for lc in 0..=layer {
                 let m = if lc == 0 {
-                    self.config.max_connections_layer0
+                    self.config.read().unwrap().max_connections_layer0
                 } else {
-                    self.config.max_connections
+                    self.config.read().unwrap().max_connections
                 };
 
                 let candidates = self.search_layer(
                     vector,
                     current_nearest.clone(),
-                    self.config.ef_construction,
+                    self.config.read().unwrap().ef_construction,
                     lc,
                 )?;
 
@@ -707,7 +708,7 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         Ok(())
     }
 
-    fn delete_vector(&mut self, id: &[u8]) -> TableResult<()> {
+    fn delete_vector(&self, id: &[u8]) -> TableResult<()> {
         let id_buf = KeyBuf(id.to_vec());
 
         // Find node
@@ -736,10 +737,10 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
         options: VectorSearchOptions<'a>,
     ) -> TableResult<Vec<VectorHit>> {
         // Validate query dimensions
-        if query.len() != self.config.dimensions {
+        if query.len() != self.config.read().unwrap().dimensions {
             return Err(TableError::invalid_value(
                 "query",
-                format!("dimension mismatch: expected {}, got {}", self.config.dimensions, query.len())
+                format!("dimension mismatch: expected {}, got {}", self.config.read().unwrap().dimensions, query.len())
             ));
         }
 
@@ -750,7 +751,7 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
 
         let ep = entry_point.unwrap();
         let max_layer = *self.max_layer.read().unwrap();
-        let ef = options.ef_search.unwrap_or(self.config.ef_construction);
+        let ef = options.ef_search.unwrap_or(self.config.read().unwrap().ef_construction);
 
         // Search from top layer down to layer 0
         let mut current_nearest = vec![ep];
@@ -799,13 +800,13 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
 }
 
 impl<FS: FileSystem> HnswVector for PagedHnswVector<FS> {
-    fn set_ef_construction(&mut self, ef: usize) {
-        self.config.ef_construction = ef;
+    fn set_ef_construction(&self, ef: usize) {
+        self.config.write().unwrap().ef_construction = ef;
     }
 
-    fn set_max_connections(&mut self, m: usize) {
-        self.config.max_connections = m;
-        self.config.max_connections_layer0 = m * 2;
+    fn set_max_connections(&self, m: usize) {
+        self.config.write().unwrap().max_connections = m;
+        self.config.write().unwrap().max_connections_layer0 = m * 2;
     }
 }
 

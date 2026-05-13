@@ -25,7 +25,7 @@
 
 use nanokv::pager::{OverflowChainStream, Pager, PagerConfig};
 use nanokv::table::btree::PagedBTree;
-use nanokv::table::{Flushable, MutableTable, PointLookup, Table, ValueStream};
+use nanokv::table::{Flushable, MutableTable, PointLookup, SearchableTable, Table, ValueStream};
 use nanokv::txn::TransactionId;
 use nanokv::types::{TableId, ValueRef};
 use nanokv::vfs::MemoryFileSystem;
