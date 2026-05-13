@@ -271,14 +271,25 @@ impl GraphAdjacency for MemoryGraphTable {
         target: &[u8],
         edge_id: &[u8],
     ) -> TableResult<()> {
+        self.add_edge_with_weight(source, label, target, edge_id, None)
+    }
+
+    fn add_edge_with_weight(
+        &mut self,
+        source: &[u8],
+        label: &[u8],
+        target: &[u8],
+        edge_id: &[u8],
+        weight: Option<f64>,
+    ) -> TableResult<()> {
         let (tx_id, lsn) = self.next_tx();
 
-        // Create edge data
+        // Create edge data with optional weight
         let edge_data = EdgeData {
             source: source.to_vec(),
             label: label.to_vec(),
             target: target.to_vec(),
-            weight: None, // TODO: Support weights
+            weight,
         };
 
         // Store edge data
@@ -326,11 +337,12 @@ impl GraphAdjacency for MemoryGraphTable {
             index.vertices.insert(source.to_vec());
             index.vertices.insert(target.to_vec());
 
-            let edge = Edge::unweighted(
+            let edge = Edge::new(
                 KeyBuf(edge_id.to_vec()),
                 KeyBuf(source.to_vec()),
                 KeyBuf(label.to_vec()),
                 KeyBuf(target.to_vec()),
+                weight,
             );
 
             index

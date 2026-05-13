@@ -193,10 +193,95 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
     }
 
     /// Persist the inverted index to disk.
+    ///
+    /// Writes the inverted index and document store to pages, updating
+    /// the metadata in the root page.
     fn persist_index(&self) -> TableResult<()> {
-        // TODO: Implement proper persistence to disk
-        // For now, just update metadata
+        let inverted_index = self.inverted_index.read().unwrap();
+        let document_store = self.document_store.read().unwrap();
+        
+        // Serialize inverted index: term -> posting list
+        let mut index_data = Vec::new();
+        let term_count = inverted_index.len() as u32;
+        index_data.extend_from_slice(&term_count.to_le_bytes());
+        
+        for (term, posting_list) in inverted_index.iter() {
+            // Encode term length and term
+            index_data.extend_from_slice(&(term.len() as u32).to_le_bytes());
+            index_data.extend_from_slice(term.as_bytes());
+            
+            // Encode posting list using bincode
+            let posting_bytes = posting_list.to_bytes().map_err(|e| {
+                TableError::Other(format!("Failed to serialize posting list: {}", e))
+            })?;
+            index_data.extend_from_slice(&(posting_bytes.len() as u32).to_le_bytes());
+            index_data.extend_from_slice(&posting_bytes);
+        }
+        
+        // Serialize document store
+        let mut doc_data = Vec::new();
+        let doc_count = document_store.len() as u32;
+        doc_data.extend_from_slice(&doc_count.to_le_bytes());
+        
+        for (doc_id, doc_entry) in document_store.iter() {
+            // Encode doc_id length and doc_id
+            doc_data.extend_from_slice(&(doc_id.len() as u32).to_le_bytes());
+            doc_data.extend_from_slice(doc_id);
+            
+            // Encode document entry using bincode
+            let entry_bytes = doc_entry.to_bytes().map_err(|e| {
+                TableError::Other(format!("Failed to serialize document entry: {}", e))
+            })?;
+            doc_data.extend_from_slice(&(entry_bytes.len() as u32).to_le_bytes());
+            doc_data.extend_from_slice(&entry_bytes);
+        }
+        
+        // Write index data to pages
+        self.write_data_to_pages(&index_data, PageType::InvertedIndex)?;
+        
+        // Write document store to pages
+        self.write_data_to_pages(&doc_data, PageType::InvertedIndex)?;
+        
+        // Update metadata
         self.update_metadata()?;
+        
+        Ok(())
+    }
+    
+    /// Write data to pages, allocating as needed.
+    fn write_data_to_pages(&self, data: &[u8], page_type: PageType) -> TableResult<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        
+        let data_size = self.pager.page_size().data_size();
+        let mut offset = 0;
+        let mut prev_page_id: Option<PageId> = None;
+        
+        while offset < data.len() {
+            let chunk_size = std::cmp::min(data_size - 8, data.len() - offset);
+            let page_id = self.pager.allocate_page(page_type)?;
+            
+            let mut page_data = vec![0u8; data_size];
+            let next_page_id = if offset + chunk_size >= data.len() { 0u64 } else { 0u64 };
+            page_data[..8].copy_from_slice(&next_page_id.to_le_bytes());
+            page_data[8..8 + chunk_size].copy_from_slice(&data[offset..offset + chunk_size]);
+            
+            let mut page = Page::new(page_id, page_type, data_size);
+            *page.data_mut() = page_data;
+            self.pager.write_page(&page)?;
+            
+            // Update previous page's next pointer
+            if let Some(prev_id) = prev_page_id {
+                let mut prev_page = self.pager.read_page(prev_id)?;
+                prev_page.data_mut()[..8].copy_from_slice(&page_id.as_u64().to_le_bytes());
+                self.pager.write_page(&prev_page)?;
+            }
+            
+            prev_page_id = Some(page_id);
+            offset += chunk_size;
+        }
+        
         Ok(())
     }
 
@@ -224,7 +309,7 @@ impl<FS: FileSystem> PagedFullTextIndex<FS> {
     }
 
     /// Calculate TF-IDF score for a term in a document.
-    fn tf_idf(&self, term: &str, doc_id: &[u8], posting_list: &PostingList) -> f32 {
+    fn tf_idf(&self, _term: &str, doc_id: &[u8], posting_list: &PostingList) -> f32 {
         // Term frequency: count positions in this document
         let mut tf = 0.0f32;
         let mut doc_boost = 1.0f32;

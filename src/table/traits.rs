@@ -130,13 +130,12 @@ impl TableEngineKind {
             Self::BTree
             | Self::BPlusTree
             | Self::LsmTree
-            | Self::Art
             | Self::AppendLog
             | Self::ColumnarSegment
             | Self::TimeSeries => true,
 
             // In-memory engines - ephemeral
-            Self::Hash | Self::Memory => false,
+            Self::Hash | Self::Memory | Self::Art => false,
 
             // Specialty indexes - typically ephemeral, rebuilt from base table
             Self::SparseOrdered
@@ -1038,6 +1037,19 @@ pub trait GraphAdjacency {
         target: &[u8],
         edge_id: &[u8],
     ) -> TableResult<()>;
+
+    /// Add an edge with an optional weight.
+    fn add_edge_with_weight(
+        &mut self,
+        source: &[u8],
+        label: &[u8],
+        target: &[u8],
+        edge_id: &[u8],
+        _weight: Option<f64>,
+    ) -> TableResult<()> {
+        // Default implementation ignores weight
+        self.add_edge(source, label, target, edge_id)
+    }
 
     fn remove_edge(
         &mut self,

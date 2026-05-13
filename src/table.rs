@@ -14,6 +14,7 @@
 // limitations under the License.
 //
 pub mod appendlog;
+pub mod art;
 pub mod blob;
 pub mod bloom;
 pub mod btree;
@@ -35,6 +36,7 @@ use crate::table::lsm::LsmTree;
 use crate::types::TableId;
 use crate::vfs::FileSystem;
 pub use self::appendlog::{AppendLog, AppendLogConfig, CompressionType, RetentionPolicy};
+pub use self::art::{MemoryART, MemoryARTReader, MemoryARTWriter};
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
@@ -89,6 +91,7 @@ pub enum TableEngineInstance<FS: FileSystem> {
     MemoryHashTable(Arc<MemoryHashTable>),
     MemoryGraphTable(Arc<MemoryGraphTable>),
     MemoryBlob(Arc<MemoryBlob>),
+    MemoryART(Arc<MemoryART>),
     // Note: PagedBlob is not included as it doesn't take FS generic parameter
     // TODO: Refactor PagedBlob to take Pager parameter
 }
@@ -109,6 +112,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::MemoryHashTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryGraphTable(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::table_id(engine.as_ref()),
+            Self::MemoryART(engine) => crate::table::Table::table_id(engine.as_ref()),
         }
     }
 
@@ -127,6 +131,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::MemoryHashTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryGraphTable(engine) => crate::table::Table::name(engine.as_ref()),
             Self::MemoryBlob(engine) => crate::table::Table::name(engine.as_ref()),
+            Self::MemoryART(engine) => crate::table::Table::name(engine.as_ref()),
         }
     }
 
@@ -145,6 +150,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::MemoryHashTable(engine) => engine.kind(),
             Self::MemoryGraphTable(engine) => engine.kind(),
             Self::MemoryBlob(engine) => engine.kind(),
+            Self::MemoryART(engine) => engine.kind(),
         }
     }
 
@@ -164,6 +170,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
             Self::MemoryHashTable(_) => None,
             Self::MemoryGraphTable(_) => None,
             Self::MemoryBlob(_) => None,
+            Self::MemoryART(_) => None,
         }
     }
 }
@@ -183,6 +190,7 @@ impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
             Self::MemoryHashTable(engine) => Self::MemoryHashTable(Arc::clone(engine)),
             Self::MemoryGraphTable(engine) => Self::MemoryGraphTable(Arc::clone(engine)),
             Self::MemoryBlob(engine) => Self::MemoryBlob(Arc::clone(engine)),
+            Self::MemoryART(engine) => Self::MemoryART(Arc::clone(engine)),
         }
     }
 }
@@ -306,6 +314,11 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 // Create in-memory hash table - no root page
                 let hash_table = MemoryHashTable::new(table_id, name);
                 Ok((TableEngineInstance::MemoryHashTable(Arc::new(hash_table)), None))
+            }
+            TableEngineKind::Art => {
+                // Create in-memory ART - no root page
+                let art = MemoryART::new(table_id, name);
+                Ok((TableEngineInstance::MemoryART(Arc::new(art)), None))
             }
             TableEngineKind::GeoSpatial => {
                 // Create R-Tree with default spatial config
@@ -482,6 +495,11 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
                 // Hash tables don't persist, create new
                 let hash_table = MemoryHashTable::new(table_id, name);
                 Ok(TableEngineInstance::MemoryHashTable(Arc::new(hash_table)))
+            }
+            TableEngineKind::Art => {
+                // ART tables don't persist, create new
+                let art = MemoryART::new(table_id, name);
+                Ok(TableEngineInstance::MemoryART(Arc::new(art)))
             }
             _ => Err(RegistryError::UnsupportedEngine(options.engine)),
         }

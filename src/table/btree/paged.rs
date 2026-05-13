@@ -1408,9 +1408,26 @@ impl<'a, FS: FileSystem> MutableTable for PagedBTreeWriter<'a, FS> {
         Ok(exists)
     }
 
-    fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
-        // TODO: Implement range delete
-        todo!("Range delete not yet implemented for paged B-Tree")
+    fn range_delete(&mut self, bounds: ScanBounds) -> TableResult<u64> {
+        // Create a cursor to scan the range
+        let mut cursor = PagedBTreeCursor::new(self.table, bounds.clone(), self.snapshot_lsn);
+        
+        let mut deleted_count = 0u64;
+        
+        loop {
+            if !cursor.valid() {
+                break;
+            }
+            
+            if let Some(key) = cursor.key() {
+                self.pending_changes.push((key.to_vec(), None));
+                deleted_count += 1;
+            }
+            
+            cursor.next()?;
+        }
+        
+        Ok(deleted_count)
     }
 
     fn max_inline_size(&self) -> Option<usize> {

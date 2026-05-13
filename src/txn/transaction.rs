@@ -653,6 +653,18 @@ impl<FS: FileSystem> Transaction<FS> {
                         TransactionError::Other(format!("Hash table get failed: {}", e))
                     })?
                 }
+                TableEngineInstance::MemoryART(art) => {
+                    let reader =
+                        SearchableTable::reader(art.as_ref(), self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Failed to get Memory ART reader: {}",
+                                e
+                            ))
+                        })?;
+                    PointLookup::get(&reader, key, self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Memory ART get failed: {}", e))
+                    })?
+                }
                 TableEngineInstance::MemoryBlob(blob) => {
                     // Blob tables don't use reader/writer pattern, access directly
                     blob.get(key).map_err(|e| {
@@ -830,6 +842,18 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("Hash table contains failed: {}", e))
                         })?
                     }
+                    TableEngineInstance::MemoryART(art) => {
+                        let reader = SearchableTable::reader(art.as_ref(), self.snapshot_lsn)
+                            .map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get Memory ART reader: {}",
+                                    e
+                                ))
+                            })?;
+                        PointLookup::contains(&reader, key, self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!("Memory ART contains failed: {}", e))
+                        })?
+                    }
                     TableEngineInstance::MemoryBlob(blob) => {
                         // Blob tables don't use reader pattern, check directly
                         blob.get(key)
@@ -972,6 +996,26 @@ impl<FS: FileSystem> Transaction<FS> {
                         cursor.next().map_err(|e| {
                             TransactionError::Other(format!(
                                 "Memory BTree cursor next failed: {}",
+                                e
+                            ))
+                        })?;
+                    }
+                }
+                TableEngineInstance::MemoryART(art) => {
+                    let reader = SearchableTable::reader(art.as_ref(), self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Failed to get Memory ART reader: {}", e))
+                    })?;
+                    let mut cursor = OrderedScan::scan(&reader, bounds, self.snapshot_lsn).map_err(|e| {
+                        TransactionError::Other(format!("Memory ART scan failed: {}", e))
+                    })?;
+
+                    while cursor.valid() {
+                        if let Some(key) = cursor.key() {
+                            keys_to_delete.push(key.to_vec());
+                        }
+                        cursor.next().map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Memory ART cursor next failed: {}",
                                 e
                             ))
                         })?;
@@ -1209,6 +1253,39 @@ impl<FS: FileSystem> Transaction<FS> {
                                 "Memory BTree commit_versions failed: {}",
                                 e
                             ))
+                        })?;
+                    }
+                    TableEngineInstance::MemoryART(art) => {
+                        let mut writer =
+                            SearchableTable::writer(art.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get Memory ART writer: {}",
+                                    e
+                                ))
+                            })?;
+
+                        match value_opt {
+                            Some(value) => {
+                                MutableTable::put(&mut writer, key, value).map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "Memory ART put failed: {}",
+                                        e
+                                    ))
+                                })?;
+                            }
+                            None => {
+                                MutableTable::delete(&mut writer, key).map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "Memory ART delete failed: {}",
+                                        e
+                                    ))
+                                })?;
+                            }
+                        }
+
+                        Flushable::flush(&mut writer).map_err(|e| {
+                            TransactionError::Other(format!("Memory ART flush failed: {}", e))
                         })?;
                     }
                     TableEngineInstance::MemoryHashTable(hash) => {

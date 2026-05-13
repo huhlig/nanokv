@@ -29,51 +29,115 @@ use crate::table::{
     Table, TableCapabilities, TableEngineKind, TableResult, TableStatistics,
 };
 use crate::types::{TableId, ValueBuf};
+use crate::vfs::{FileSystem, File};
+use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 /// File-based blob storage table.
 ///
 /// Stores each blob as a separate file in a directory. This is suitable for
 /// very large blobs that benefit from direct file system access.
-pub struct FileBlob {
+pub struct FileBlob<FS: FileSystem> {
     id: TableId,
     name: String,
     base_path: PathBuf,
+    fs: Arc<FS>,
+    /// Index mapping keys to their file paths
+    index: Arc<RwLock<HashMap<Vec<u8>, PathBuf>>>,
 }
 
-impl FileBlob {
+impl<FS: FileSystem> FileBlob<FS> {
     /// Create a new file-based blob storage table.
-    pub fn new(id: TableId, name: String, base_path: PathBuf) -> Self {
+    pub fn new(id: TableId, name: String, base_path: PathBuf, fs: Arc<FS>) -> Self {
         Self {
             id,
             name,
             base_path,
+            fs,
+            index: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Get a value by key (stub implementation).
-    pub fn get(&self, _key: &[u8]) -> TableResult<Option<ValueBuf>> {
-        Err(crate::table::TableError::Other(
-            "FileBlob get not yet implemented".to_string(),
-        ))
+    /// Generate a file path for a given key.
+    fn key_to_path(&self, key: &[u8]) -> PathBuf {
+        // Use hex encoding of the key as the filename
+        let hex_key: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+        self.base_path.join(hex_key)
     }
 
-    /// Put a key-value pair (stub implementation).
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> TableResult<u64> {
-        Err(crate::table::TableError::Other(
-            "FileBlob put not yet implemented".to_string(),
-        ))
+    /// Get a value by key.
+    ///
+    /// Reads the blob data from the file system.
+    pub fn get(&self, key: &[u8]) -> TableResult<Option<ValueBuf>> {
+        let path = self.key_to_path(key);
+        
+        // Check if file exists by trying to open it
+        match self.fs.open_file(path.to_str().unwrap_or("")) {
+            Ok(mut file) => {
+                // Get file size
+                let size = file.get_size().map_err(|e| {
+                    crate::table::TableError::Other(format!("Failed to get file size: {}", e))
+                })?;
+                
+                // Read file contents
+                let mut buffer = vec![0u8; size as usize];
+                file.read_at_offset(0, &mut buffer).map_err(|e| {
+                    crate::table::TableError::Other(format!("Failed to read file: {}", e))
+                })?;
+                
+                Ok(Some(ValueBuf(buffer)))
+            }
+            Err(_) => Ok(None),
+        }
     }
 
-    /// Delete a key (stub implementation).
-    pub fn delete(&self, _key: &[u8]) -> TableResult<bool> {
-        Err(crate::table::TableError::Other(
-            "FileBlob delete not yet implemented".to_string(),
-        ))
+    /// Put a key-value pair.
+    ///
+    /// Stores the blob data as a file on the file system.
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
+        let path = self.key_to_path(key);
+        let path_str = path.to_str().unwrap_or("");
+        
+        // Create or overwrite the file
+        let mut file = self.fs.create_file(path_str).map_err(|e| {
+            crate::table::TableError::Other(format!("Failed to create file: {}", e))
+        })?;
+        
+        file.write_all(value).map_err(|e| {
+            crate::table::TableError::Other(format!("Failed to write file: {}", e))
+        })?;
+        
+        // Update index
+        self.index.write().unwrap().insert(key.to_vec(), path);
+        
+        Ok(value.len() as u64)
+    }
+
+    /// Delete a key.
+    ///
+    /// Removes the blob file from the file system and the key from the index.
+    pub fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
+        let path = self.key_to_path(key);
+        let path_str = path.to_str().unwrap_or("");
+        
+        // Try to delete the file
+        let deleted = match self.fs.remove_file(path_str) {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+        
+        // Remove from index
+        if deleted {
+            self.index.write().unwrap().remove(key);
+        }
+        
+        Ok(deleted)
     }
 }
 
-impl Table for FileBlob {
+impl<FS: FileSystem> Table for FileBlob<FS> {
     fn table_id(&self) -> TableId {
         self.id
     }
@@ -98,14 +162,21 @@ impl Table for FileBlob {
             append_optimized: false,
             memory_resident: false,
             disk_resident: true,
-            supports_compression: false, // Relies on filesystem compression
-            supports_encryption: false,  // Relies on filesystem encryption
+            supports_compression: false,
+            supports_encryption: false,
         }
     }
 
     fn stats(&self) -> TableResult<TableStatistics> {
-        // TODO: Implement actual statistics gathering
-        Ok(TableStatistics::default())
+        let index = self.index.read().unwrap();
+        Ok(TableStatistics {
+            row_count: Some(index.len() as u64),
+            total_size_bytes: None,
+            key_stats: None,
+            value_stats: None,
+            histogram: None,
+            last_updated_lsn: None,
+        })
     }
 }
 

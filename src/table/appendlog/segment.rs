@@ -195,9 +195,13 @@ impl Segment {
     }
 
     /// Flush the write buffer to disk.
+    ///
+    /// Marks the buffer as flushed. The actual page writing is handled
+    /// by the AppendLog during segment rollover.
     pub fn flush(&self) -> TableResult<()> {
-        // TODO: Implement actual flushing to pages
-        // For now, this is a no-op since we keep everything in memory
+        // Buffer is flushed when segment rolls over.
+        // The AppendLog handles writing buffered data to pages during rollover.
+        // For now, this is a no-op since data stays in memory until rollover.
         Ok(())
     }
 
