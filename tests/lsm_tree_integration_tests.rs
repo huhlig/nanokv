@@ -77,12 +77,37 @@ fn test_memtable_operations() {
     // Requires Memtable to be fully testable without pager
 }
 
-/// Test bloom filter operations (requires API changes)
+/// Test bloom filter operations
 #[test]
-#[ignore = "BloomFilter API needs add/query methods"]
 fn test_bloom_filter_operations() {
-    // This would test add_key and may_contain operations
-    // Requires BloomFilterBuilder to expose add method
+    use nanokv::table::lsm::BloomFilterBuilder;
+
+    // Create a bloom filter using the builder
+    let mut filter = BloomFilterBuilder::new(1000)
+        .bits_per_key(10)
+        .build();
+
+    // Add keys to the bloom filter
+    filter.insert(b"key1");
+    filter.insert(b"key2");
+    filter.insert(b"key3");
+
+    // Test that inserted keys are found
+    assert!(filter.contains(b"key1"));
+    assert!(filter.contains(b"key2"));
+    assert!(filter.contains(b"key3"));
+
+    // Test that non-inserted keys are likely not present
+    // (Bloom filters can have false positives but never false negatives)
+    assert!(!filter.contains(b"nonexistent_key"));
+
+    // Test filter statistics
+    assert_eq!(filter.num_items(), 3);
+    assert_eq!(filter.num_bits(), 1000 * 10);
+
+    // Test false positive rate is reasonable
+    let fpr = filter.false_positive_rate();
+    assert!(fpr > 0.0 && fpr < 1.0);
 }
 
 /// Test SSTable operations (requires full implementation)
