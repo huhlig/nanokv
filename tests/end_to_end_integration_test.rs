@@ -281,13 +281,7 @@ fn test_data_persistence_btree_table() {
 }
 
 /// Test LSM table data persistence.
-///
-/// **CURRENTLY IGNORED**: LSM memtable flush is implemented, but SSTable writer
-/// has a bug where the footer is not being written correctly. The flush_memtable()
-/// method works, but the SStableWriter::finish() needs debugging.
-/// Track separately: SSTable writer footer issue.
 #[test]
-#[ignore = "SSTable writer footer bug - flush implementation is complete"]
 fn test_data_persistence_lsm_table() {
     let fs = MemoryFileSystem::new();
 
@@ -332,10 +326,7 @@ fn test_data_persistence_lsm_table() {
 }
 
 /// Test mixed operations across multiple tables with persistence.
-///
-/// **CURRENTLY IGNORED**: LSM portion blocked by SSTable writer footer bug.
 #[test]
-#[ignore = "SSTable writer footer bug - flush implementation is complete"]
 fn test_mixed_operations_with_persistence() {
     let fs = MemoryFileSystem::new();
 
