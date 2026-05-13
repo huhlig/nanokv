@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+pub mod appendlog;
 pub mod blob;
 pub mod bloom;
 pub mod btree;
@@ -30,6 +31,7 @@ use crate::pager::{PageId, Pager};
 use crate::table::lsm::LsmTree;
 use crate::types::TableId;
 use crate::vfs::FileSystem;
+pub use self::appendlog::{AppendLog, AppendLogConfig, CompressionType, RetentionPolicy};
 pub use self::blob::{FileBlob, MemoryBlob, PagedBlob};
 pub use self::bloom::{BloomFilter, BloomFilterBuilder, PagedBloomFilter};
 pub use self::btree::{MemoryBTree, PagedBTree};
@@ -69,6 +71,7 @@ pub use self::traits::{
 /// Wrapper for table engine instances that allows storing different engine
 /// types in the same collection.
 pub enum TableEngineInstance<FS: FileSystem> {
+    AppendLog(Arc<AppendLog<FS>>),
     PagedBTree(Arc<PagedBTree<FS>>),
     LsmTree(Arc<LsmTree<FS>>),
     PagedBloomFilter(Arc<PagedBloomFilter<FS>>),
@@ -85,6 +88,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
     /// Get the table ID.
     pub fn table_id(&self) -> TableId {
         match self {
+            Self::AppendLog(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedBTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::table_id(engine.as_ref()),
             Self::PagedBloomFilter(engine) => crate::table::Table::table_id(engine.as_ref()),
@@ -99,6 +103,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
     /// Get the table name.
     pub fn name(&self) -> &str {
         match self {
+            Self::AppendLog(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedBTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::LsmTree(engine) => crate::table::Table::name(engine.as_ref()),
             Self::PagedBloomFilter(engine) => crate::table::Table::name(engine.as_ref()),
@@ -113,6 +118,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
     /// Get the engine kind.
     pub fn kind(&self) -> TableEngineKind {
         match self {
+            Self::AppendLog(engine) => engine.kind(),
             Self::PagedBTree(engine) => engine.kind(),
             Self::LsmTree(engine) => engine.kind(),
             Self::PagedBloomFilter(engine) => engine.kind(),
@@ -128,6 +134,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
     /// Note: This is a placeholder - proper root page tracking needs to be added
     pub fn root_page_id(&self) -> Option<PageId> {
         match self {
+            Self::AppendLog(engine) => Some(engine.root_page_id()),
             Self::PagedBTree(_) => None, // TODO: Make get_root_page_id public or add accessor
             Self::LsmTree(_) => None, // LSM has manifest, not single root
             Self::PagedBloomFilter(engine) => Some(engine.root_page_id()),
@@ -143,6 +150,7 @@ impl<FS: FileSystem> TableEngineInstance<FS> {
 impl<FS: FileSystem> Clone for TableEngineInstance<FS> {
     fn clone(&self) -> Self {
         match self {
+            Self::AppendLog(engine) => Self::AppendLog(Arc::clone(engine)),
             Self::PagedBTree(engine) => Self::PagedBTree(Arc::clone(engine)),
             Self::LsmTree(engine) => Self::LsmTree(Arc::clone(engine)),
             Self::PagedBloomFilter(engine) => Self::PagedBloomFilter(Arc::clone(engine)),
@@ -190,6 +198,24 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
         options: &TableOptions,
     ) -> Result<(TableEngineInstance<FS>, Option<PageId>), RegistryError> {
         match options.engine {
+            TableEngineKind::AppendLog => {
+                // Create AppendLog with default config
+                // TODO: Extract config from options
+                let config = AppendLogConfig::default();
+                
+                let appendlog = AppendLog::new(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    config,
+                )
+                .map_err(|e| RegistryError::EngineCreationFailed {
+                    engine: options.engine,
+                    details: format!("Failed to create AppendLog: {}", e),
+                })?;
+                let root_page_id = appendlog.root_page_id();
+                Ok((TableEngineInstance::AppendLog(Arc::new(appendlog)), Some(root_page_id)))
+            }
             TableEngineKind::BTree => {
                 // Create new BTree with allocated root page
                 let btree = PagedBTree::new(table_id, name, self.pager.clone()).map_err(|e| {
@@ -293,6 +319,21 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
         root_page_id: PageId,
     ) -> Result<TableEngineInstance<FS>, RegistryError> {
         match options.engine {
+            TableEngineKind::AppendLog => {
+                let config = AppendLogConfig::default(); // TODO: Extract from options
+                let appendlog = AppendLog::open(
+                    table_id,
+                    name,
+                    self.pager.clone(),
+                    root_page_id,
+                    config,
+                )
+                .map_err(|e| RegistryError::EngineOpenFailed {
+                    engine: options.engine,
+                    details: format!("Failed to open AppendLog: {}", e),
+                })?;
+                Ok(TableEngineInstance::AppendLog(Arc::new(appendlog)))
+            }
             TableEngineKind::BTree => {
                 let btree = PagedBTree::open(table_id, name, self.pager.clone(), root_page_id);
                 Ok(TableEngineInstance::PagedBTree(Arc::new(btree)))
