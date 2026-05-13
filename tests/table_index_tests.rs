@@ -18,23 +18,24 @@
 
 use nanokv::kvdb::{Database, DatabaseErrorKind};
 use nanokv::pager::{Pager, PagerConfig};
-use nanokv::table::{
-    ApproximateMembership, BatchOps, EdgeCursor, Flushable, FullTextSearch, GeoSpatial, GeoPoint,
-    GeometryRef, GraphAdjacency, MutableTable, OrderedScan, PointLookup, PagedBTree,
-    PagedBloomFilter, PagedFullTextIndex, PagedHnswVector, PagedRTree, SearchableTable, Table,
-    TableCursor, TableEngineKind, TableOptions, TableReader, TableWriter, TimeSeries,
-    TimeSeriesTable, VectorSearch,
-};
+use nanokv::table::TimeSeriesCursor;
+use nanokv::table::fulltext::FullTextConfig;
+use nanokv::table::graph::{GraphConfig, MemoryGraphTable};
 use nanokv::table::hnsw::HnswConfig;
 use nanokv::table::rtree::SpatialConfig;
 use nanokv::table::timeseries::TimeSeriesConfig;
-use nanokv::table::fulltext::FullTextConfig;
-use nanokv::table::graph::{GraphConfig, MemoryGraphTable};
-use nanokv::table::TimeSeriesCursor;
+use nanokv::table::{
+    ApproximateMembership, BatchOps, EdgeCursor, Flushable, FullTextSearch, GeoPoint, GeoSpatial,
+    GeometryRef, GraphAdjacency, MutableTable, OrderedScan, PagedBTree, PagedBloomFilter,
+    PagedFullTextIndex, PagedHnswVector, PagedRTree, PointLookup, SearchableTable, Table,
+    TableCursor, TableEngineKind, TableOptions, TableReader, TableWriter, TimeSeries,
+    TimeSeriesTable, VectorSearch,
+};
 use nanokv::txn::TransactionId;
 use nanokv::types::{Bound, KeyBuf, ScanBounds, TableId};
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::LogSequenceNumber;
+use rand::Rng;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -146,7 +147,8 @@ fn test_table_crud_multiple_keys() {
     for i in 0..100 {
         let key = format!("user{:04}", i);
         let value = format!("User {}", i);
-        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
     for i in 0..100 {
         let key = format!("user{:04}", i);
@@ -323,7 +325,10 @@ fn test_table_batch_operations() {
     for i in 0..10 {
         let key = format!("key{:03}", i);
         let expected = format!("value{}", i);
-        let value = reader.get(key.as_bytes(), LogSequenceNumber::from(100)).unwrap().unwrap();
+        let value = reader
+            .get(key.as_bytes(), LogSequenceNumber::from(100))
+            .unwrap()
+            .unwrap();
         assert_eq!(value.as_ref(), expected.as_bytes());
     }
 }
@@ -336,8 +341,14 @@ fn test_table_batch_operations() {
 fn test_bloom_filter_insert_and_lookup() {
     let pager = create_test_pager();
     let mut bloom = PagedBloomFilter::new(
-        TableId::from(1), "test_bloom".to_string(), pager.clone(), 1000, 10, None,
-    ).unwrap();
+        TableId::from(1),
+        "test_bloom".to_string(),
+        pager.clone(),
+        1000,
+        10,
+        None,
+    )
+    .unwrap();
     bloom.insert_key(b"key1").unwrap();
     bloom.insert_key(b"key2").unwrap();
     bloom.insert_key(b"key3").unwrap();
@@ -353,8 +364,14 @@ fn test_bloom_filter_false_positive_rate() {
     let num_items = 10000;
     let bits_per_key = 10;
     let mut bloom = PagedBloomFilter::new(
-        TableId::from(1), "test_bloom_fpr".to_string(), pager.clone(), num_items, bits_per_key, None,
-    ).unwrap();
+        TableId::from(1),
+        "test_bloom_fpr".to_string(),
+        pager.clone(),
+        num_items,
+        bits_per_key,
+        None,
+    )
+    .unwrap();
     for i in 0..num_items {
         let key = format!("key{}", i);
         bloom.insert_key(key.as_bytes()).unwrap();
@@ -375,12 +392,23 @@ fn test_hnsw_vector_insert_and_search() {
         ef_construction: 200,
         ml: 1.0,
     };
-    let hnsw = PagedHnswVector::new(TableId::from(1), "test_hnsw".to_string(), pager.clone(), config).unwrap();
+    let hnsw = PagedHnswVector::new(
+        TableId::from(1),
+        "test_hnsw".to_string(),
+        pager.clone(),
+        config,
+    )
+    .unwrap();
     hnsw.insert_vector(b"id1", &[1.0, 0.0, 0.0, 0.0]).unwrap();
     hnsw.insert_vector(b"id2", &[0.0, 1.0, 0.0, 0.0]).unwrap();
     hnsw.insert_vector(b"id3", &[0.0, 0.0, 1.0, 0.0]).unwrap();
 
-    let options = nanokv::table::VectorSearchOptions { limit: 2, ef_search: Some(50), probes: None, filter: None };
+    let options = nanokv::table::VectorSearchOptions {
+        limit: 2,
+        ef_search: Some(50),
+        probes: None,
+        filter: None,
+    };
     let hits = hnsw.search_vector(&[1.0, 0.0, 0.0, 0.0], options).unwrap();
     assert!(!hits.is_empty());
     assert!(hits.len() <= 2);
@@ -390,10 +418,22 @@ fn test_hnsw_vector_insert_and_search() {
 fn test_rtree_insert_and_query() {
     let pager = create_test_pager();
     let config = SpatialConfig::default();
-    let mut rtree = PagedRTree::new(TableId::from(1), "test_rtree".to_string(), pager.clone(), config).unwrap();
-    rtree.insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 1.0, y: 2.0 })).unwrap();
-    rtree.insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 5.0, y: 5.0 })).unwrap();
-    rtree.insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 })).unwrap();
+    let mut rtree = PagedRTree::new(
+        TableId::from(1),
+        "test_rtree".to_string(),
+        pager.clone(),
+        config,
+    )
+    .unwrap();
+    rtree
+        .insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 1.0, y: 2.0 }))
+        .unwrap();
+    rtree
+        .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 5.0, y: 5.0 }))
+        .unwrap();
+    rtree
+        .insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 }))
+        .unwrap();
 
     let query_box = GeometryRef::BoundingBox {
         min: GeoPoint { x: 0.0, y: 0.0 },
@@ -408,10 +448,22 @@ fn test_rtree_insert_and_query() {
 fn test_rtree_nearest_neighbor() {
     let pager = create_test_pager();
     let config = SpatialConfig::default();
-    let mut rtree = PagedRTree::new(TableId::from(1), "test_rtree_nn".to_string(), pager.clone(), config).unwrap();
-    rtree.insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 0.0, y: 0.0 })).unwrap();
-    rtree.insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 })).unwrap();
-    rtree.insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 20.0, y: 20.0 })).unwrap();
+    let mut rtree = PagedRTree::new(
+        TableId::from(1),
+        "test_rtree_nn".to_string(),
+        pager.clone(),
+        config,
+    )
+    .unwrap();
+    rtree
+        .insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 0.0, y: 0.0 }))
+        .unwrap();
+    rtree
+        .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 }))
+        .unwrap();
+    rtree
+        .insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 20.0, y: 20.0 }))
+        .unwrap();
 
     let nearest = rtree.nearest(GeoPoint { x: 1.0, y: 1.0 }, 1).unwrap();
     assert_eq!(nearest.len(), 1);
@@ -422,7 +474,13 @@ fn test_rtree_nearest_neighbor() {
 fn test_timeseries_append_and_scan() {
     let pager = create_test_pager();
     let config = TimeSeriesConfig::default();
-    let table = TimeSeriesTable::new(TableId::from(1), "test_timeseries".to_string(), pager.clone(), config).unwrap();
+    let table = TimeSeriesTable::new(
+        TableId::from(1),
+        "test_timeseries".to_string(),
+        pager.clone(),
+        config,
+    )
+    .unwrap();
     table.append_point(b"cpu.usage", 1000, b"value1").unwrap();
     table.append_point(b"cpu.usage", 2000, b"value2").unwrap();
     table.append_point(b"cpu.usage", 3000, b"value3").unwrap();
@@ -444,15 +502,33 @@ fn test_timeseries_append_and_scan() {
 fn test_fulltext_index_and_search() {
     let pager = create_test_pager();
     let config = FullTextConfig::default();
-    let mut fulltext = PagedFullTextIndex::new(TableId::from(1), "test_fulltext".to_string(), pager.clone(), config).unwrap();
+    let mut fulltext = PagedFullTextIndex::new(
+        TableId::from(1),
+        "test_fulltext".to_string(),
+        pager.clone(),
+        config,
+    )
+    .unwrap();
 
-    let fields = vec![nanokv::table::TextField { name: "content", text: "The quick brown fox jumps over the lazy dog", boost: 1.0 }];
+    let fields = vec![nanokv::table::TextField {
+        name: "content",
+        text: "The quick brown fox jumps over the lazy dog",
+        boost: 1.0,
+    }];
     fulltext.index_document(b"doc1", &fields).unwrap();
 
-    let fields2 = vec![nanokv::table::TextField { name: "content", text: "The lazy cat sleeps on the warm mat", boost: 1.0 }];
+    let fields2 = vec![nanokv::table::TextField {
+        name: "content",
+        text: "The lazy cat sleeps on the warm mat",
+        boost: 1.0,
+    }];
     fulltext.index_document(b"doc2", &fields2).unwrap();
 
-    let query = nanokv::table::TextQuery { query: "lazy", default_field: Some("content"), require_positions: false };
+    let query = nanokv::table::TextQuery {
+        query: "lazy",
+        default_field: Some("content"),
+        require_positions: false,
+    };
     let results = fulltext.search(query, 10).unwrap();
     assert!(!results.is_empty());
     assert_eq!(results.len(), 2);
@@ -462,9 +538,15 @@ fn test_fulltext_index_and_search() {
 fn test_graph_add_edge_and_traverse() {
     let config = GraphConfig::default();
     let mut graph = MemoryGraphTable::new(TableId::from(1), "test_graph".to_string(), config);
-    graph.add_edge(b"alice", b"follows", b"bob", b"edge1").unwrap();
-    graph.add_edge(b"alice", b"follows", b"charlie", b"edge2").unwrap();
-    graph.add_edge(b"bob", b"follows", b"david", b"edge3").unwrap();
+    graph
+        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .unwrap();
+    graph
+        .add_edge(b"alice", b"follows", b"charlie", b"edge2")
+        .unwrap();
+    graph
+        .add_edge(b"bob", b"follows", b"david", b"edge3")
+        .unwrap();
 
     let mut cursor = graph.outgoing(b"alice", Some(b"follows")).unwrap();
     let mut count = 0;
@@ -496,7 +578,15 @@ fn test_table_with_bloom_filter() {
     db.insert(table_id, b"user3", b"Charlie").unwrap();
 
     let pager = create_test_pager();
-    let mut bloom = PagedBloomFilter::new(TableId::from(2), "users_bloom".to_string(), pager.clone(), 1000, 10, None).unwrap();
+    let mut bloom = PagedBloomFilter::new(
+        TableId::from(2),
+        "users_bloom".to_string(),
+        pager.clone(),
+        1000,
+        10,
+        None,
+    )
+    .unwrap();
     bloom.insert_key(b"user1").unwrap();
     bloom.insert_key(b"user2").unwrap();
     bloom.insert_key(b"user3").unwrap();
@@ -515,25 +605,40 @@ fn test_table_with_bloom_filter() {
 fn test_table_with_secondary_index_pattern() {
     let db = create_test_db();
     let users_id = db.create_table("users", btree_table_options()).unwrap();
-    let email_index_id = db.create_table("email_index", btree_table_options()).unwrap();
+    let email_index_id = db
+        .create_table("email_index", btree_table_options())
+        .unwrap();
 
     let user1_data = r#"{"id":1,"name":"Alice","email":"alice@example.com"}"#;
-    db.insert(users_id, b"user1", user1_data.as_bytes()).unwrap();
-    db.insert(email_index_id, b"alice@example.com", b"user1").unwrap();
+    db.insert(users_id, b"user1", user1_data.as_bytes())
+        .unwrap();
+    db.insert(email_index_id, b"alice@example.com", b"user1")
+        .unwrap();
 
-    let user_id = db.get(email_index_id, b"alice@example.com").unwrap().unwrap();
+    let user_id = db
+        .get(email_index_id, b"alice@example.com")
+        .unwrap()
+        .unwrap();
     let user_data = db.get(users_id, &user_id.0).unwrap().unwrap();
-    assert!(std::str::from_utf8(user_data.as_ref()).unwrap().contains("Alice"));
+    assert!(
+        std::str::from_utf8(user_data.as_ref())
+            .unwrap()
+            .contains("Alice")
+    );
 }
 
 #[test]
 fn test_composite_index_pattern() {
     let db = create_test_db();
     let orders_id = db.create_table("orders", btree_table_options()).unwrap();
-    db.insert(orders_id, b"2024-01:user1:order1", b"{\"amount\":100}").unwrap();
-    db.insert(orders_id, b"2024-01:user1:order2", b"{\"amount\":200}").unwrap();
-    db.insert(orders_id, b"2024-01:user2:order1", b"{\"amount\":150}").unwrap();
-    db.insert(orders_id, b"2024-02:user1:order1", b"{\"amount\":300}").unwrap();
+    db.insert(orders_id, b"2024-01:user1:order1", b"{\"amount\":100}")
+        .unwrap();
+    db.insert(orders_id, b"2024-01:user1:order2", b"{\"amount\":200}")
+        .unwrap();
+    db.insert(orders_id, b"2024-01:user2:order1", b"{\"amount\":150}")
+        .unwrap();
+    db.insert(orders_id, b"2024-02:user1:order1", b"{\"amount\":300}")
+        .unwrap();
 
     let info = db.get_object_info(orders_id).unwrap().unwrap();
     assert_eq!(info.options.engine, TableEngineKind::BTree);
@@ -551,7 +656,8 @@ fn test_concurrent_reads() {
     for i in 0..100 {
         let key = format!("user{:04}", i);
         let value = format!("User {}", i);
-        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
 
     let mut handles = vec![];
@@ -562,7 +668,8 @@ fn test_concurrent_reads() {
         for i in 0..25 {
             let key = format!("user{:04}", thread_id * 25 + i);
             let value = format!("User {}", thread_id * 25 + i);
-            db.insert(new_table_id, key.as_bytes(), value.as_bytes()).unwrap();
+            db.insert(new_table_id, key.as_bytes(), value.as_bytes())
+                .unwrap();
         }
         handles.push(thread::spawn(move || {
             for i in 0..25 {
@@ -597,7 +704,10 @@ fn test_concurrent_writes_different_keys() {
                 let key = format!("user{:04}_{:02}", thread_id, i);
                 let value = format!("User {}-{}", thread_id, i);
                 if let Err(e) = db.insert(table_id, key.as_bytes(), value.as_bytes()) {
-                    errors.lock().unwrap().push(format!("Thread {} failed: {:?}", thread_id, e));
+                    errors
+                        .lock()
+                        .unwrap()
+                        .push(format!("Thread {} failed: {:?}", thread_id, e));
                 }
             }
         }));
@@ -606,7 +716,11 @@ fn test_concurrent_writes_different_keys() {
         handle.join().unwrap();
     }
     let errors = errors.lock().unwrap();
-    assert!(errors.is_empty(), "Concurrent writes should succeed: {:?}", *errors);
+    assert!(
+        errors.is_empty(),
+        "Concurrent writes should succeed: {:?}",
+        *errors
+    );
 }
 
 // =============================================================================
@@ -620,7 +734,10 @@ fn test_insert_duplicate_key_error() {
     db.insert(table_id, b"user1", b"Alice").unwrap();
     let result = db.insert(table_id, b"user1", b"Bob");
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind, DatabaseErrorKind::KeyAlreadyExists);
+    assert_eq!(
+        result.unwrap_err().kind,
+        DatabaseErrorKind::KeyAlreadyExists
+    );
 }
 
 #[test]
@@ -643,7 +760,15 @@ fn test_operation_on_nonexistent_table() {
 #[test]
 fn test_bloom_filter_definitely_not_contains() {
     let pager = create_test_pager();
-    let mut bloom = PagedBloomFilter::new(TableId::from(1), "test_bloom".to_string(), pager.clone(), 1000, 10, None).unwrap();
+    let mut bloom = PagedBloomFilter::new(
+        TableId::from(1),
+        "test_bloom".to_string(),
+        pager.clone(),
+        1000,
+        10,
+        None,
+    )
+    .unwrap();
     bloom.insert_key(b"key1").unwrap();
     assert!(!bloom.might_contain(b"key_not_exists").unwrap());
 }
@@ -651,8 +776,21 @@ fn test_bloom_filter_definitely_not_contains() {
 #[test]
 fn test_vector_search_dimension_mismatch() {
     let pager = create_test_pager();
-    let config = HnswConfig { dimensions: 4, metric: nanokv::table::VectorMetric::Cosine, max_connections: 16, max_connections_layer0: 32, ef_construction: 200, ml: 1.0 };
-    let hnsw = PagedHnswVector::new(TableId::from(1), "test_hnsw".to_string(), pager.clone(), config).unwrap();
+    let config = HnswConfig {
+        dimensions: 4,
+        metric: nanokv::table::VectorMetric::Cosine,
+        max_connections: 16,
+        max_connections_layer0: 32,
+        ef_construction: 200,
+        ml: 1.0,
+    };
+    let hnsw = PagedHnswVector::new(
+        TableId::from(1),
+        "test_hnsw".to_string(),
+        pager.clone(),
+        config,
+    )
+    .unwrap();
     let result = hnsw.insert_vector(b"id1", &[1.0, 0.0, 0.0]);
     assert!(result.is_err());
 }
@@ -672,7 +810,9 @@ fn test_empty_table_operations() {
 #[test]
 fn test_empty_value() {
     let db = create_test_db();
-    let table_id = db.create_table("empty_values", default_table_options()).unwrap();
+    let table_id = db
+        .create_table("empty_values", default_table_options())
+        .unwrap();
     db.insert(table_id, b"key", b"").unwrap();
     let value = db.get(table_id, b"key").unwrap();
     if let Some(v) = value {
@@ -683,19 +823,36 @@ fn test_empty_value() {
 #[test]
 fn test_special_byte_keys() {
     let db = create_test_db();
-    let table_id = db.create_table("special_keys", default_table_options()).unwrap();
+    let table_id = db
+        .create_table("special_keys", default_table_options())
+        .unwrap();
     db.insert(table_id, b"\x00\x00\x00", b"null_bytes").unwrap();
     db.insert(table_id, b"\xFF\xFF\xFF", b"max_bytes").unwrap();
-    db.insert(table_id, b"key\x00with\x00nulls", b"embedded_nulls").unwrap();
-    assert_eq!(db.get(table_id, b"\x00\x00\x00").unwrap().unwrap().as_ref(), b"null_bytes");
-    assert_eq!(db.get(table_id, b"\xFF\xFF\xFF").unwrap().unwrap().as_ref(), b"max_bytes");
-    assert_eq!(db.get(table_id, b"key\x00with\x00nulls").unwrap().unwrap().as_ref(), b"embedded_nulls");
+    db.insert(table_id, b"key\x00with\x00nulls", b"embedded_nulls")
+        .unwrap();
+    assert_eq!(
+        db.get(table_id, b"\x00\x00\x00").unwrap().unwrap().as_ref(),
+        b"null_bytes"
+    );
+    assert_eq!(
+        db.get(table_id, b"\xFF\xFF\xFF").unwrap().unwrap().as_ref(),
+        b"max_bytes"
+    );
+    assert_eq!(
+        db.get(table_id, b"key\x00with\x00nulls")
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"embedded_nulls"
+    );
 }
 
 #[test]
 fn test_large_values() {
     let db = create_test_db();
-    let table_id = db.create_table("large_values", btree_table_options()).unwrap();
+    let table_id = db
+        .create_table("large_values", btree_table_options())
+        .unwrap();
     let large_value = vec![b'X'; 1024 * 1024];
     db.insert(table_id, b"large", &large_value).unwrap();
     let retrieved = db.get(table_id, b"large").unwrap().unwrap();
@@ -705,11 +862,14 @@ fn test_large_values() {
 #[test]
 fn test_many_small_keys() {
     let db = create_test_db();
-    let table_id = db.create_table("many_keys", default_table_options()).unwrap();
+    let table_id = db
+        .create_table("many_keys", default_table_options())
+        .unwrap();
     for i in 0..1000 {
         let key = format!("k{:06}", i);
         let value = format!("v{}", i);
-        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
     for i in 0..1000 {
         let key = format!("k{:06}", i);
@@ -722,11 +882,14 @@ fn test_many_small_keys() {
 #[test]
 fn test_delete_all_keys() {
     let db = create_test_db();
-    let table_id = db.create_table("delete_all", default_table_options()).unwrap();
+    let table_id = db
+        .create_table("delete_all", default_table_options())
+        .unwrap();
     for i in 0..100 {
         let key = format!("key{:03}", i);
         let value = format!("value{}", i);
-        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
     for i in 0..100 {
         let key = format!("key{:03}", i);
@@ -745,9 +908,10 @@ fn test_delete_all_keys() {
 #[test]
 fn test_property_insert_then_get() {
     let db = create_test_db();
-    let table_id = db.create_table("property_test", default_table_options()).unwrap();
-    let mut rng = rand::thread_rng();
-    use rand::RngCore;
+    let table_id = db
+        .create_table("property_test", default_table_options())
+        .unwrap();
+    let mut rng = rand::rng();
     let mut inserted = std::collections::HashMap::new();
 
     for _ in 0..100 {
@@ -769,9 +933,10 @@ fn test_property_insert_then_get() {
 #[test]
 fn test_property_delete_removes_key() {
     let db = create_test_db();
-    let table_id = db.create_table("property_delete", default_table_options()).unwrap();
-    let mut rng = rand::thread_rng();
-    use rand::RngCore;
+    let table_id = db
+        .create_table("property_delete", default_table_options())
+        .unwrap();
+    let mut rng = rand::rng();
     let mut keys = Vec::new();
 
     for _ in 0..50 {
@@ -799,7 +964,9 @@ fn test_property_scan_returns_all_inserted_keys() {
 
     for i in 0..100 {
         let key = format!("key{:04}", i);
-        writer.put(key.as_bytes(), format!("value{}", i).as_bytes()).unwrap();
+        writer
+            .put(key.as_bytes(), format!("value{}", i).as_bytes())
+            .unwrap();
         inserted_keys.insert(key);
     }
     writer.flush().unwrap();
@@ -821,9 +988,16 @@ fn test_property_scan_returns_all_inserted_keys() {
 #[test]
 fn test_property_bloom_filter_no_false_negatives() {
     let pager = create_test_pager();
-    let mut bloom = PagedBloomFilter::new(TableId::from(1), "property_bloom".to_string(), pager.clone(), 10000, 10, None).unwrap();
-    let mut rng = rand::thread_rng();
-    use rand::RngCore;
+    let mut bloom = PagedBloomFilter::new(
+        TableId::from(1),
+        "property_bloom".to_string(),
+        pager.clone(),
+        10000,
+        10,
+        None,
+    )
+    .unwrap();
+    let mut rng = rand::rng();
     let mut inserted = Vec::new();
 
     for _ in 0..1000 {
@@ -834,14 +1008,19 @@ fn test_property_bloom_filter_no_false_negatives() {
     }
 
     for key in &inserted {
-        assert!(bloom.might_contain(key).unwrap(), "Bloom filter must not have false negatives");
+        assert!(
+            bloom.might_contain(key).unwrap(),
+            "Bloom filter must not have false negatives"
+        );
     }
 }
 
 #[test]
 fn test_property_table_idempotent_delete() {
     let db = create_test_db();
-    let table_id = db.create_table("idempotent_delete", default_table_options()).unwrap();
+    let table_id = db
+        .create_table("idempotent_delete", default_table_options())
+        .unwrap();
     db.insert(table_id, b"key", b"value").unwrap();
     assert!(db.delete(table_id, b"key").unwrap());
     assert!(!db.delete(table_id, b"key").unwrap());
@@ -855,29 +1034,38 @@ fn test_property_table_idempotent_delete() {
 #[test]
 fn test_benchmark_sequential_insert() {
     let db = create_test_db();
-    let table_id = db.create_table("benchmark_seq", btree_table_options()).unwrap();
+    let table_id = db
+        .create_table("benchmark_seq", btree_table_options())
+        .unwrap();
     let count = 1000;
     let start = Instant::now();
     for i in 0..count {
         let key = format!("key{:06}", i);
         let value = format!("value{}", i);
-        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
     let duration = start.elapsed();
     let ops_per_sec = count as f64 / duration.as_secs_f64();
-    eprintln!("Sequential insert: {} ops in {:?} ({:.0} ops/sec)", count, duration, ops_per_sec);
+    eprintln!(
+        "Sequential insert: {} ops in {:?} ({:.0} ops/sec)",
+        count, duration, ops_per_sec
+    );
     assert!(ops_per_sec > 100.0);
 }
 
 #[test]
 fn test_benchmark_sequential_get() {
     let db = create_test_db();
-    let table_id = db.create_table("benchmark_get", btree_table_options()).unwrap();
+    let table_id = db
+        .create_table("benchmark_get", btree_table_options())
+        .unwrap();
     let count = 1000;
     for i in 0..count {
         let key = format!("key{:06}", i);
         let value = format!("value{}", i);
-        db.insert(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        db.insert(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
     }
     let start = Instant::now();
     for i in 0..count {
@@ -886,7 +1074,10 @@ fn test_benchmark_sequential_get() {
     }
     let duration = start.elapsed();
     let ops_per_sec = count as f64 / duration.as_secs_f64();
-    eprintln!("Sequential get: {} ops in {:?} ({:.0} ops/sec)", count, duration, ops_per_sec);
+    eprintln!(
+        "Sequential get: {} ops in {:?} ({:.0} ops/sec)",
+        count, duration, ops_per_sec
+    );
     assert!(ops_per_sec > 1000.0);
 }
 
@@ -919,14 +1110,25 @@ fn test_benchmark_scan() {
     }
     let duration = start.elapsed();
     let ops_per_sec = 10.0 / duration.as_secs_f64();
-    eprintln!("Full scan: {} ops in {:?} ({:.0} ops/sec)", 10, duration, ops_per_sec);
+    eprintln!(
+        "Full scan: {} ops in {:?} ({:.0} ops/sec)",
+        10, duration, ops_per_sec
+    );
 }
 
 #[test]
 fn test_benchmark_bloom_filter() {
     let pager = create_test_pager();
     let count = 10000;
-    let mut bloom = PagedBloomFilter::new(TableId::from(1), "benchmark_bloom".to_string(), pager.clone(), count, 10, None).unwrap();
+    let mut bloom = PagedBloomFilter::new(
+        TableId::from(1),
+        "benchmark_bloom".to_string(),
+        pager.clone(),
+        count,
+        10,
+        None,
+    )
+    .unwrap();
 
     let start = Instant::now();
     for i in 0..count {
@@ -935,7 +1137,10 @@ fn test_benchmark_bloom_filter() {
     }
     let duration = start.elapsed();
     let ops_per_sec = count as f64 / duration.as_secs_f64();
-    eprintln!("Bloom insert: {} ops in {:?} ({:.0} ops/sec)", count, duration, ops_per_sec);
+    eprintln!(
+        "Bloom insert: {} ops in {:?} ({:.0} ops/sec)",
+        count, duration, ops_per_sec
+    );
 
     let start = Instant::now();
     for i in 0..count {
@@ -944,7 +1149,10 @@ fn test_benchmark_bloom_filter() {
     }
     let duration = start.elapsed();
     let ops_per_sec = count as f64 / duration.as_secs_f64();
-    eprintln!("Bloom lookup: {} ops in {:?} ({:.0} ops/sec)", count, duration, ops_per_sec);
+    eprintln!(
+        "Bloom lookup: {} ops in {:?} ({:.0} ops/sec)",
+        count, duration, ops_per_sec
+    );
 }
 
 // =============================================================================
@@ -986,17 +1194,30 @@ fn test_table_statistics() {
 #[test]
 fn test_multiple_engines_isolation() {
     let db = create_test_db();
-    let memory_id = db.create_table("memory_table", default_table_options()).unwrap();
-    let btree_id = db.create_table("btree_table", btree_table_options()).unwrap();
+    let memory_id = db
+        .create_table("memory_table", default_table_options())
+        .unwrap();
+    let btree_id = db
+        .create_table("btree_table", btree_table_options())
+        .unwrap();
     let lsm_id = db.create_table("lsm_table", lsm_table_options()).unwrap();
 
     db.insert(memory_id, b"key", b"memory_value").unwrap();
     db.insert(btree_id, b"key", b"btree_value").unwrap();
     db.insert(lsm_id, b"key", b"lsm_value").unwrap();
 
-    assert_eq!(db.get(memory_id, b"key").unwrap().unwrap().as_ref(), b"memory_value");
-    assert_eq!(db.get(btree_id, b"key").unwrap().unwrap().as_ref(), b"btree_value");
-    assert_eq!(db.get(lsm_id, b"key").unwrap().unwrap().as_ref(), b"lsm_value");
+    assert_eq!(
+        db.get(memory_id, b"key").unwrap().unwrap().as_ref(),
+        b"memory_value"
+    );
+    assert_eq!(
+        db.get(btree_id, b"key").unwrap().unwrap().as_ref(),
+        b"btree_value"
+    );
+    assert_eq!(
+        db.get(lsm_id, b"key").unwrap().unwrap().as_ref(),
+        b"lsm_value"
+    );
 }
 
 #[test]

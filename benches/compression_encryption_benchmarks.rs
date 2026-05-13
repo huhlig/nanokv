@@ -22,6 +22,7 @@ use nanokv::txn::TransactionId;
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
 use nanokv::wal::{WalWriter, WalWriterConfig, WriteOpType};
+use rand::Rng;
 use std::hint::black_box;
 // ============================================================================
 // Helper Functions
@@ -58,9 +59,8 @@ fn generate_moderate_data(size: usize) -> Vec<u8> {
 
 /// Generate incompressible data (random bytes)
 fn generate_incompressible_data(size: usize) -> Vec<u8> {
-    use rand::RngCore;
     let mut data = vec![0u8; size];
-    rand::thread_rng().fill_bytes(&mut data);
+    rand::rng().fill_bytes(&mut data);
     data
 }
 

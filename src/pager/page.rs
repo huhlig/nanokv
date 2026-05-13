@@ -19,7 +19,7 @@
 use crate::pager::{CompressionType, EncryptionType, PagerError, PagerResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
@@ -336,7 +336,7 @@ impl Page {
 
                 // Generate random 12-byte nonce
                 let mut nonce_bytes = [0u8; 12];
-                rand::thread_rng().fill_bytes(&mut nonce_bytes);
+                rand::rng().fill_bytes(&mut nonce_bytes);
                 let nonce = Nonce::from_slice(&nonce_bytes);
 
                 // Create cipher

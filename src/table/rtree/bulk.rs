@@ -20,14 +20,12 @@
 //! partitioning them into tiles, resulting in minimal overlap and good
 //! query performance.
 
-use crate::pager::{PageId, PageType, Pager};
-use crate::table::TableError;
-use crate::vfs::FileSystem;
-use std::sync::Arc;
-
 use super::config::SpatialConfig;
 use super::mbr::Mbr;
 use super::node::{InternalEntry, LeafEntry, RTreeNode};
+use crate::pager::{PageId, PageType, Pager};
+use crate::table::TableError;
+use crate::vfs::FileSystem;
 
 /// Entry to be bulk loaded, with precomputed center coordinates.
 #[derive(Clone)]
@@ -290,6 +288,7 @@ mod tests {
     use crate::table::GeoPoint;
     use crate::types::KeyBuf;
     use crate::vfs::MemoryFileSystem;
+    use std::sync::Arc;
 
     fn create_test_pager(fs: &MemoryFileSystem, path: &str) -> Arc<Pager<MemoryFileSystem>> {
         let config = PagerConfig::new()

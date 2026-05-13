@@ -22,7 +22,7 @@ use crate::types::TableId;
 use crate::wal::{WalError, WalResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::fmt::Formatter;
 use std::io::Write;
@@ -342,7 +342,7 @@ impl WalRecord {
                 })?;
 
                 let mut nonce_bytes = [0u8; 12];
-                rand::thread_rng().fill_bytes(&mut nonce_bytes);
+                rand::rng().fill_bytes(&mut nonce_bytes);
                 let nonce = Nonce::from_slice(&nonce_bytes);
 
                 let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
