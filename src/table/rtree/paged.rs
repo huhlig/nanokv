@@ -27,6 +27,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, instrument};
 
+use super::bulk::str_bulk_load;
 use super::config::SpatialConfig;
 use super::mbr::Mbr;
 use super::node::{InternalEntry, LeafEntry, RTreeNode};
@@ -109,6 +110,46 @@ impl<FS: FileSystem> PagedRTree<FS> {
         let root_node = Self::read_node(&pager, root_page_id)?;
         let height = Self::calculate_height(&pager, root_page_id, &root_node)?;
         let object_count = Self::count_objects(&pager, root_page_id, &root_node)?;
+
+        Ok(Self {
+            table_id,
+            name,
+            pager,
+            root_page_id: RwLock::new(root_page_id),
+            config,
+            height: RwLock::new(height),
+            object_count: RwLock::new(object_count),
+            node_cache: RwLock::new(HashMap::new()),
+        })
+    }
+
+    /// Create a new paged R-Tree using STR bulk loading.
+    ///
+    /// This is much faster than sequential insertion for large datasets
+    /// and produces a better-balanced tree with less overlap.
+    pub fn bulk_load(
+        table_id: TableId,
+        name: String,
+        pager: Arc<Pager<FS>>,
+        config: SpatialConfig,
+        entries: Vec<(Vec<u8>, GeometryRef<'_>)>,
+    ) -> TableResult<Self> {
+        config
+            .validate()
+            .map_err(|e| TableError::Other(format!("Invalid spatial config: {}", e)))?;
+
+        // Convert geometries to leaf entries
+        let leaf_entries: Vec<LeafEntry> = entries
+            .into_iter()
+            .map(|(id, geometry)| {
+                let mbr = Self::geometry_to_mbr_static(geometry)?;
+                Ok(LeafEntry::new(mbr, KeyBuf(id)))
+            })
+            .collect::<TableResult<Vec<_>>>()?;
+
+        // Perform bulk loading
+        let (root_page_id, height, object_count) =
+            str_bulk_load(&pager, leaf_entries, &config)?;
 
         Ok(Self {
             table_id,
@@ -736,6 +777,11 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
     /// Convert a geometry reference to an MBR.
     fn geometry_to_mbr(&self, geometry: GeometryRef<'_>) -> TableResult<Mbr> {
+        Self::geometry_to_mbr_static(geometry)
+    }
+
+    /// Convert a geometry reference to an MBR (static version).
+    fn geometry_to_mbr_static(geometry: GeometryRef<'_>) -> TableResult<Mbr> {
         match geometry {
             GeometryRef::Point(point) => Ok(Mbr::from_point_2d(point)),
             GeometryRef::BoundingBox { min, max } => Ok(Mbr::from_points_2d(min, max)),

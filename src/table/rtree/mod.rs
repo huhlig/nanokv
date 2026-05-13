@@ -36,6 +36,7 @@
 //! Each node maintains a minimum bounding rectangle that encompasses all
 //! its children, enabling efficient spatial pruning during queries.
 
+mod bulk;
 mod config;
 mod mbr;
 mod node;

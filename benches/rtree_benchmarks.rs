@@ -368,6 +368,145 @@ fn bench_strategy_capacity_matrix(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Bulk Loading vs Sequential Insertion Benchmark
+// ============================================================================
+
+fn bench_bulk_loading(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bulk_loading");
+
+    for count in [1_000, 10_000, 100_000].iter() {
+        group.throughput(Throughput::Elements(*count as u64));
+        let points = generate_points(*count, 42);
+
+        // Sequential insertion benchmark
+        group.bench_with_input(
+            BenchmarkId::new("sequential", count),
+            &points.clone(),
+            |b, points| {
+                b.iter(|| {
+                    let fs = MemoryFileSystem::new();
+                    let mut rtree = create_rtree(&fs, "/bench_sequential.db", SpatialConfig::default().with_max_entries(64));
+
+                    for (id, point) in points {
+                        rtree
+                            .insert_geometry(id, GeometryRef::Point(*point))
+                            .unwrap();
+                    }
+
+                    let stats = rtree.stats().unwrap();
+                    black_box(stats);
+                });
+            },
+        );
+
+        // Bulk loading benchmark
+        group.bench_with_input(
+            BenchmarkId::new("bulk_load", count),
+            &points.clone(),
+            |b, points| {
+                let entries: Vec<(Vec<u8>, GeometryRef<'_>)> = points
+                    .iter()
+                    .map(|(id, point)| (id.clone(), GeometryRef::Point(*point)))
+                    .collect();
+
+                b.iter(|| {
+                    let fs = MemoryFileSystem::new();
+                    let pager = create_test_pager(&fs, "/bench_bulk.db");
+                    let config = SpatialConfig::default().with_max_entries(64);
+                    let rtree = PagedRTree::bulk_load(
+                        TableId::from(1),
+                        "bench_bulk".to_string(),
+                        pager,
+                        config,
+                        entries.clone(),
+                    )
+                    .unwrap();
+
+                    let stats = rtree.stats().unwrap();
+                    black_box(stats);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Bulk Loading Query Performance Benchmark
+// ============================================================================
+
+fn bench_bulk_query_performance(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bulk_query_performance");
+
+    let count = 10_000;
+    let points = generate_points(count, 42);
+
+    // Create sequentially loaded tree
+    let fs_seq = MemoryFileSystem::new();
+    let mut rtree_seq = create_rtree(&fs_seq, "/bench_seq_query.db", SpatialConfig::default().with_max_entries(64));
+    for (id, point) in &points {
+        rtree_seq
+            .insert_geometry(id, GeometryRef::Point(*point))
+            .unwrap();
+    }
+
+    // Create bulk loaded tree
+    let fs_bulk = MemoryFileSystem::new();
+    let entries: Vec<(Vec<u8>, GeometryRef<'_>)> = points
+        .iter()
+        .map(|(id, point)| (id.clone(), GeometryRef::Point(*point)))
+        .collect();
+    let pager = create_test_pager(&fs_bulk, "/bench_bulk_query.db");
+    let config = SpatialConfig::default().with_max_entries(64);
+    let rtree_bulk = PagedRTree::bulk_load(
+        TableId::from(1),
+        "bench_bulk_query".to_string(),
+        pager,
+        config,
+        entries,
+    )
+    .unwrap();
+
+    let query = GeometryRef::BoundingBox {
+        min: GeoPoint { x: 45.0, y: 45.0 },
+        max: GeoPoint { x: 55.0, y: 55.0 },
+    };
+
+    group.bench_function("sequential_intersects", |b| {
+        b.iter(|| {
+            let results = rtree_seq.intersects(query.clone(), 1000).unwrap();
+            black_box(results);
+        });
+    });
+
+    group.bench_function("bulk_intersects", |b| {
+        b.iter(|| {
+            let results = rtree_bulk.intersects(query.clone(), 1000).unwrap();
+            black_box(results);
+        });
+    });
+
+    let query_point = GeoPoint { x: 50.0, y: 50.0 };
+
+    group.bench_function("sequential_nearest", |b| {
+        b.iter(|| {
+            let results = rtree_seq.nearest(query_point, 10).unwrap();
+            black_box(results);
+        });
+    });
+
+    group.bench_function("bulk_nearest", |b| {
+        b.iter(|| {
+            let results = rtree_bulk.nearest(query_point, 10).unwrap();
+            black_box(results);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insertion_throughput,
@@ -378,6 +517,8 @@ criterion_group!(
     bench_memory_usage,
     bench_node_capacity,
     bench_strategy_capacity_matrix,
+    bench_bulk_loading,
+    bench_bulk_query_performance,
 );
 
 criterion_main!(benches);
