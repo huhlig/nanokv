@@ -39,6 +39,7 @@ pub fn split_internal_entries(
         SplitStrategy::Linear => linear_split_internal(entries, dimensions),
         SplitStrategy::Quadratic => quadratic_split_internal(entries, dimensions),
         SplitStrategy::RStar => rstar_split_internal(entries, dimensions),
+        SplitStrategy::Hilbert => hilbert_split_internal(entries, dimensions),
     }
 }
 
@@ -52,6 +53,7 @@ pub fn split_leaf_entries(
         SplitStrategy::Linear => linear_split_leaf(entries, dimensions),
         SplitStrategy::Quadratic => quadratic_split_leaf(entries, dimensions),
         SplitStrategy::RStar => rstar_split_leaf(entries, dimensions),
+        SplitStrategy::Hilbert => hilbert_split_leaf(entries, dimensions),
     }
 }
 
@@ -437,6 +439,158 @@ fn rstar_split_leaf(entries: Vec<LeafEntry>, dimensions: usize) -> SplitResult<L
 }
 
 // =============================================================================
+// Hilbert Split (space-filling curve ordering)
+// =============================================================================
+
+/// Hilbert split for internal entries.
+/// Sorts entries by their Hilbert curve value and splits at the midpoint.
+fn hilbert_split_internal(
+    mut entries: Vec<InternalEntry>,
+    dimensions: usize,
+) -> SplitResult<InternalEntry> {
+    if entries.len() < 2 {
+        return SplitResult {
+            left: entries,
+            right: Vec::new(),
+        };
+    }
+
+    // Compute Hilbert values for each entry using the MBR center point
+    let mut entries_with_hilbert: Vec<(InternalEntry, u64)> = entries
+        .drain(..)
+        .map(|entry| {
+            let center = entry.mbr.center();
+            let z = if dimensions >= 3 {
+                (entry.mbr.min[2] + entry.mbr.max[2]) / 2.0
+            } else {
+                0.0
+            };
+            let hilbert_value = compute_hilbert_value(center.x, center.y, z);
+            (entry, hilbert_value)
+        })
+        .collect();
+
+    // Sort by Hilbert value
+    entries_with_hilbert.sort_by_key(|(_, h)| *h);
+
+    // Split at midpoint
+    let mid = entries_with_hilbert.len() / 2;
+    let right = entries_with_hilbert.split_off(mid);
+
+    let left = entries_with_hilbert
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
+    let right = right.into_iter().map(|(entry, _)| entry).collect();
+
+    SplitResult { left, right }
+}
+
+/// Hilbert split for leaf entries.
+/// Sorts entries by their Hilbert curve value and splits at the midpoint.
+fn hilbert_split_leaf(mut entries: Vec<LeafEntry>, dimensions: usize) -> SplitResult<LeafEntry> {
+    if entries.len() < 2 {
+        return SplitResult {
+            left: entries,
+            right: Vec::new(),
+        };
+    }
+
+    let mut entries_with_hilbert: Vec<(LeafEntry, u64)> = entries
+        .drain(..)
+        .map(|entry| {
+            let center = entry.mbr.center();
+            let z = if dimensions >= 3 {
+                (entry.mbr.min[2] + entry.mbr.max[2]) / 2.0
+            } else {
+                0.0
+            };
+            let hilbert_value = compute_hilbert_value(center.x, center.y, z);
+            (entry, hilbert_value)
+        })
+        .collect();
+
+    entries_with_hilbert.sort_by_key(|(_, h)| *h);
+
+    let mid = entries_with_hilbert.len() / 2;
+    let right = entries_with_hilbert.split_off(mid);
+
+    let left = entries_with_hilbert
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
+    let right = right.into_iter().map(|(entry, _)| entry).collect();
+
+    SplitResult { left, right }
+}
+
+// =============================================================================
+// Hilbert Space-Filling Curve
+// =============================================================================
+
+/// Compute the Hilbert curve value for a 2D or 3D point.
+///
+/// Uses the standard algorithm for mapping multi-dimensional coordinates
+/// to a 1D value along the Hilbert space-filling curve. Coordinates are
+/// normalized to a 16-bit range for efficient computation.
+fn compute_hilbert_value(x: f64, y: f64, z: f64) -> u64 {
+    const BITS: u32 = 16;
+    const MAX_VAL: f64 = (1 << BITS) as f64 - 1.0;
+
+    // Normalize coordinates to [0, MAX_VAL]
+    let nx = ((x / 360.0) + 0.5).clamp(0.0, 1.0) * MAX_VAL;
+    let ny = ((y / 180.0) + 0.5).clamp(0.0, 1.0) * MAX_VAL;
+
+    let mut ix = nx as u32;
+    let mut iy = ny as u32;
+
+    // 2D Hilbert curve: convert (x, y) to distance d along the curve
+    // Using the algorithm from "Programming the Hilbert Curve" by John Skilling
+    let mut d = 0u64;
+    let mut s = 1u32 << (BITS - 1);
+
+    while s > 0 {
+        let rx = if ix & s != 0 { 1 } else { 0 };
+        let ry = if iy & s != 0 { 1 } else { 0 };
+
+        d += (s as u64 * s as u64) * ((3 * rx) ^ ry);
+
+        // Rotate/reflect
+        if ry == 0 {
+            if rx == 1 {
+                ix = s - 1 - (ix & (s - 1));
+                iy = s - 1 - (iy & (s - 1));
+            }
+            // Swap x and y
+            let temp = ix;
+            ix = iy;
+            iy = temp;
+        }
+
+        s >>= 1;
+    }
+
+    // For 3D, interleave z bits into the result
+    if z != 0.0 {
+        let nz = ((z / 360.0) + 0.5).clamp(0.0, 1.0) * MAX_VAL;
+        let iz = nz as u32;
+
+        let mut result = 0u64;
+        for i in 0..BITS {
+            let x_bit = ((ix >> i) & 1) as u64;
+            let y_bit = ((iy >> i) & 1) as u64;
+            let z_bit = ((iz >> i) & 1) as u64;
+            result |= x_bit << (i * 3);
+            result |= y_bit << (i * 3 + 1);
+            result |= z_bit << (i * 3 + 2);
+        }
+        result
+    } else {
+        d
+    }
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
@@ -610,6 +764,85 @@ mod tests {
         assert!(!result.left.is_empty());
         assert!(!result.right.is_empty());
         assert_eq!(result.left.len() + result.right.len(), 4);
+    }
+
+    #[test]
+    fn test_hilbert_split() {
+        let entries = create_test_leaf_entries();
+        let result = split_leaf_entries(entries, SplitStrategy::Hilbert, 2);
+
+        assert!(!result.left.is_empty());
+        assert!(!result.right.is_empty());
+        assert_eq!(result.left.len() + result.right.len(), 4);
+    }
+
+    #[test]
+    fn test_hilbert_split_preserves_spatial_clustering() {
+        // Create entries that are clearly clustered in two groups
+        let entries = vec![
+            // Cluster 1: bottom-left
+            LeafEntry::new(
+                Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 0.5, y: 0.5 }),
+                KeyBuf(b"a1".to_vec()),
+            ),
+            LeafEntry::new(
+                Mbr::from_points_2d(GeoPoint { x: 0.1, y: 0.1 }, GeoPoint { x: 0.6, y: 0.6 }),
+                KeyBuf(b"a2".to_vec()),
+            ),
+            LeafEntry::new(
+                Mbr::from_points_2d(GeoPoint { x: 0.2, y: 0.2 }, GeoPoint { x: 0.7, y: 0.7 }),
+                KeyBuf(b"a3".to_vec()),
+            ),
+            // Cluster 2: top-right
+            LeafEntry::new(
+                Mbr::from_points_2d(GeoPoint { x: 8.0, y: 8.0 }, GeoPoint { x: 8.5, y: 8.5 }),
+                KeyBuf(b"b1".to_vec()),
+            ),
+            LeafEntry::new(
+                Mbr::from_points_2d(GeoPoint { x: 8.1, y: 8.1 }, GeoPoint { x: 8.6, y: 8.6 }),
+                KeyBuf(b"b2".to_vec()),
+            ),
+            LeafEntry::new(
+                Mbr::from_points_2d(GeoPoint { x: 8.2, y: 8.2 }, GeoPoint { x: 8.7, y: 8.7 }),
+                KeyBuf(b"b3".to_vec()),
+            ),
+        ];
+
+        let result = split_leaf_entries(entries, SplitStrategy::Hilbert, 2);
+
+        assert_eq!(result.left.len(), 3);
+        assert_eq!(result.right.len(), 3);
+
+        // Verify that entries in each group are spatially close
+        let left_mbr = calculate_combined_mbr_leaf(&result.left, 2);
+        let right_mbr = calculate_combined_mbr_leaf(&result.right, 2);
+
+        // The groups should not overlap much (Hilbert should cluster well)
+        let overlap = left_mbr.overlap_area(&right_mbr);
+        let total_area = left_mbr.area() + right_mbr.area();
+        // Overlap should be less than 50% of total area for good clustering
+        assert!(
+            overlap < total_area * 0.5,
+            "Hilbert split should produce well-clustered groups"
+        );
+    }
+
+    #[test]
+    fn test_hilbert_value_ordering() {
+        // Test that Hilbert values preserve spatial ordering
+        let v1 = compute_hilbert_value(0.0, 0.0, 0.0);
+        let v2 = compute_hilbert_value(1.0, 1.0, 0.0);
+        let v3 = compute_hilbert_value(100.0, 100.0, 0.0);
+
+        // Points further apart should have more different Hilbert values
+        let diff_12 = (v1 as i64 - v2 as i64).abs();
+        let diff_13 = (v1 as i64 - v3 as i64).abs();
+
+        // v1 and v3 are much further apart than v1 and v2
+        assert!(
+            diff_13 > diff_12,
+            "Hilbert values should reflect spatial distance"
+        );
     }
 }
 

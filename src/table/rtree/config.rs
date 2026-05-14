@@ -137,6 +137,11 @@ pub enum SplitStrategy {
     /// - Minimizing perimeter (not just area)
     /// - Forced reinsertion to improve tree structure
     RStar,
+
+    /// Hilbert split (O(n log n) with Hilbert curve ordering)
+    /// Uses Hilbert space-filling curve for better spatial clustering.
+    /// Particularly effective for skewed data distributions.
+    Hilbert,
 }
 
 impl SplitStrategy {
@@ -146,6 +151,7 @@ impl SplitStrategy {
             Self::Linear => "Linear split - fast O(n) but lower quality",
             Self::Quadratic => "Quadratic split - O(n²) with better quality",
             Self::RStar => "R*-tree split - best quality with forced reinsert",
+            Self::Hilbert => "Hilbert split - space-filling curve for better clustering",
         }
     }
 }
