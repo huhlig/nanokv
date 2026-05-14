@@ -172,6 +172,22 @@ impl MemoryHashTable {
         Ok((key.len() + value.len() + 16) as u64)
     }
 
+    /// Mark all versions created by the given transaction as committed.
+    ///
+    /// This must be called after flush() to make the changes visible to readers.
+    pub fn commit_versions(&self, tx_id: TransactionId, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+        let mut data = self.data.write().unwrap();
+
+        for chain in data.values_mut() {
+            // Mark versions created by this transaction as committed
+            if chain.created_by == tx_id && chain.commit_lsn.is_none() {
+                chain.commit(commit_lsn);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Delete a value (direct access).
     pub fn delete(&self, key: &[u8]) -> TableResult<bool> {
         let mut data = self.data.write().unwrap();
@@ -276,6 +292,7 @@ pub struct MemoryHashTableWriter<'a> {
     table: &'a MemoryHashTable,
     tx_id: TransactionId,
     snapshot_lsn: LogSequenceNumber,
+    pending_changes: Vec<(Vec<u8>, Option<Vec<u8>>)>, // (key, Some(value) for put, None for delete)
 }
 
 impl MemoryHashTable {
@@ -298,6 +315,7 @@ impl MemoryHashTable {
             table: self,
             tx_id,
             snapshot_lsn,
+            pending_changes: Vec::new(),
         })
     }
 }
@@ -320,11 +338,22 @@ impl<'a> MemoryHashTableReader<'a> {
 
 impl<'a> MutableTable for MemoryHashTableWriter<'a> {
     fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
-        self.table.put(key, value, self.tx_id, self.snapshot_lsn)
+        self.pending_changes
+            .push((key.to_vec(), Some(value.to_vec())));
+        Ok((key.len() + value.len() + 16) as u64)
     }
 
     fn delete(&mut self, key: &[u8]) -> TableResult<bool> {
-        self.table.delete(key)
+        let data = self.table.data.read().unwrap();
+        let exists = data.contains_key(key);
+        drop(data);
+
+        if exists {
+            self.pending_changes.push((key.to_vec(), None));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn range_delete(&mut self, _bounds: ScanBounds) -> TableResult<u64> {
@@ -378,7 +407,76 @@ impl<'a> BatchOps for MemoryHashTableWriter<'a> {
 
 impl<'a> Flushable for MemoryHashTableWriter<'a> {
     fn flush(&mut self) -> TableResult<()> {
-        // In-memory hash table doesn't need flushing
+        if self.pending_changes.is_empty() {
+            return Ok(());
+        }
+
+        let mut data = self.table.data.write().unwrap();
+
+        for (key, value_opt) in self.pending_changes.drain(..) {
+            match value_opt {
+                Some(value) => {
+                    // Insert or update with uncommitted version
+                    let old_size = data
+                        .get(&key)
+                        .map(|chain| MemoryHashTable::estimate_entry_size(&key, chain))
+                        .unwrap_or(0);
+
+                    let prev_version = data.get(&key).map(|chain| Box::new(chain.clone()));
+                    let new_chain = VersionChain {
+                        value,
+                        created_by: self.tx_id,
+                        commit_lsn: None, // Uncommitted - will be set by commit_versions()
+                        prev_version,
+                    };
+
+                    let new_size = MemoryHashTable::estimate_entry_size(&key, &new_chain);
+                    data.insert(key, new_chain);
+
+                    let delta = new_size as isize - old_size as isize;
+                    self.table.update_memory_usage(delta);
+                }
+                None => {
+                    // Delete - create tombstone
+                    if let Some(chain) = data.get(&key) {
+                        let old_size = MemoryHashTable::estimate_entry_size(&key, chain);
+                        
+                        let prev_version = Some(Box::new(chain.clone()));
+                        let tombstone = VersionChain {
+                            value: Vec::new(), // Empty value = tombstone
+                            created_by: self.tx_id,
+                            commit_lsn: None, // Uncommitted
+                            prev_version,
+                        };
+
+                        let new_size = MemoryHashTable::estimate_entry_size(&key, &tombstone);
+                        data.insert(key, tombstone);
+
+                        let delta = new_size as isize - old_size as isize;
+                        self.table.update_memory_usage(delta);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a> MemoryHashTableWriter<'a> {
+    /// Mark all versions created by this transaction as committed.
+    ///
+    /// This must be called after flush() to make the changes visible to readers.
+    pub fn commit_versions(&self, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+        let mut data = self.table.data.write().unwrap();
+
+        for chain in data.values_mut() {
+            // Mark versions created by this transaction as committed
+            if chain.created_by == self.tx_id && chain.commit_lsn.is_none() {
+                chain.commit(commit_lsn);
+            }
+        }
+
         Ok(())
     }
 }
