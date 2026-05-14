@@ -1399,6 +1399,18 @@ impl<'a> Flushable for MemoryARTWriter<'a> {
     }
 }
 
+impl<'a> MemoryARTWriter<'a> {
+    /// Mark all versions created by this transaction as committed.
+    ///
+    /// This must be called after flush() to make the changes visible to readers.
+    /// The commit_lsn is obtained from the WAL after writing the COMMIT record.
+    pub fn commit_versions(&self, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+        let mut root = self.table.root.write().unwrap();
+        MemoryART::commit_all(&mut root, commit_lsn, self.tx_id);
+        Ok(())
+    }
+}
+
 impl<'a> TableWriter for MemoryARTWriter<'a> {
     fn tx_id(&self) -> TransactionId {
         self.tx_id
