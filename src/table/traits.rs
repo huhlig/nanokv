@@ -948,15 +948,15 @@ pub trait FullTextSearch {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn index_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
+    fn index_document(&self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
 
     /// Update an existing document, replacing its indexed content.
     ///
     /// This is more efficient than delete-then-insert for posting list updates,
     /// as it can reuse existing posting list entries where terms haven't changed.
-    fn update_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
+    fn update_document(&self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
 
-    fn delete_document(&mut self, doc_id: &[u8]) -> TableResult<()>;
+    fn delete_document(&self, doc_id: &[u8]) -> TableResult<()>;
 
     fn search(&self, query: TextQuery<'_>, limit: usize) -> TableResult<Vec<ScoredDocument>>;
 

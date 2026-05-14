@@ -404,7 +404,7 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
         }
     }
 
-    fn index_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()> {
+    fn index_document(&self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()> {
         // Remove existing document first if it exists (for updates)
         {
             let doc_store = self.document_store.read().unwrap();
@@ -475,13 +475,13 @@ impl<FS: FileSystem> FullTextSearch for PagedFullTextIndex<FS> {
         Ok(())
     }
 
-    fn update_document(&mut self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()> {
+    fn update_document(&self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()> {
         // Delete and re-index
         self.delete_document(doc_id)?;
         self.index_document(doc_id, fields)
     }
 
-    fn delete_document(&mut self, doc_id: &[u8]) -> TableResult<()> {
+    fn delete_document(&self, doc_id: &[u8]) -> TableResult<()> {
         // Remove from document store
         let removed = self.document_store.write().unwrap().remove(doc_id);
 

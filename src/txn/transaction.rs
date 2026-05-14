@@ -363,7 +363,7 @@ pub struct Transaction<FS: FileSystem> {
 
     // Track specialty-table full-text operations for commit/rollback
     // Each entry is (table_id, full_text_operation)
-    fulltext_write_set: Vec<(TableId, FullTextOp)>,
+    fulltext_write_set: RwLock<Vec<(TableId, FullTextOp)>>,
 
     // Shared conflict detector for coordinating with other transactions
     conflict_detector: Arc<Mutex<ConflictDetector>>,
@@ -406,7 +406,7 @@ impl<FS: FileSystem> Transaction<FS> {
             timeseries_write_set: std::cell::RefCell::new(Vec::new()),
             vector_write_set: RwLock::new(Vec::new()),
             geospatial_write_set: Vec::new(),
-            fulltext_write_set: Vec::new(),
+            fulltext_write_set: RwLock::new(Vec::new()),
             conflict_detector,
             wal,
             engine_registry,
@@ -514,8 +514,8 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 
     /// Record a full-text operation for commit/rollback.
-    pub(crate) fn record_fulltext_operation(&mut self, object_id: TableId, op: FullTextOp) {
-        self.fulltext_write_set.push((object_id, op));
+    pub(crate) fn record_fulltext_operation(&self, object_id: TableId, op: FullTextOp) {
+        self.fulltext_write_set.write().unwrap().push((object_id, op));
     }
 
     /// Prepare the transaction for commit (two-phase commit).
@@ -1724,53 +1724,49 @@ impl<FS: FileSystem> Transaction<FS> {
         }
 
         // Apply full-text operations after geospatial operations.
-        // Note: PagedFullTextIndex methods require &mut self, but the engine is stored in Arc.
-        // The Full-Text Index implementation needs to be updated to use interior mutability (RwLock)
-        // for its mutable state before full-text operations can be applied in transactions.
-        // Operations are logged to WAL for durability.
-        for (_object_id, _op) in &self.fulltext_write_set {
-            // TODO: Apply full-text operations when PagedFullTextIndex is updated to use interior mutability
-            // if let Some(engine) = self.engine_registry.get(*object_id) {
-            //     match &engine {
-            //         crate::table::TableEngineInstance::PagedFullTextIndex(fulltext) => {
-            //             match op {
-            //                 FullTextOp::IndexDocument { doc_id, fields } => {
-            //                     let text_fields: Vec<TextField<'_>> = fields
-            //                         .iter()
-            //                         .map(|(name, text, boost)| TextField {
-            //                             name: name.as_str(),
-            //                             text: text.as_str(),
-            //                             boost: *boost,
-            //                         })
-            //                         .collect();
-            //                     fulltext.index_document(doc_id, &text_fields)
-            //                         .map_err(|e| TransactionError::Other(format!("Full-text index_document failed: {}", e)))?;
-            //                 }
-            //                 FullTextOp::UpdateDocument { doc_id, fields } => {
-            //                     let text_fields: Vec<TextField<'_>> = fields
-            //                         .iter()
-            //                         .map(|(name, text, boost)| TextField {
-            //                             name: name.as_str(),
-            //                             text: text.as_str(),
-            //                             boost: *boost,
-            //                         })
-            //                         .collect();
-            //                     fulltext.update_document(doc_id, &text_fields)
-            //                         .map_err(|e| TransactionError::Other(format!("Full-text update_document failed: {}", e)))?;
-            //                 }
-            //                 FullTextOp::DeleteDocument { doc_id } => {
-            //                     fulltext.delete_document(doc_id)
-            //                         .map_err(|e| TransactionError::Other(format!("Full-text delete_document failed: {}", e)))?;
-            //                 }
-            //             }
-            //         }
-            //         _ => {
-            //             return Err(TransactionError::Other(
-            //                 "table is not a full-text index".to_string(),
-            //             ))
-            //         }
-            //     }
-            // }
+        let fulltext_ops = self.fulltext_write_set.read().unwrap();
+        for (object_id, op) in fulltext_ops.iter() {
+            if let Some(engine) = self.engine_registry.get(*object_id) {
+                match &engine {
+                    crate::table::TableEngineInstance::PagedFullTextIndex(fulltext) => {
+                        match op {
+                            FullTextOp::IndexDocument { doc_id, fields } => {
+                                let text_fields: Vec<TextField<'_>> = fields
+                                    .iter()
+                                    .map(|(name, text, boost)| TextField {
+                                        name: name.as_str(),
+                                        text: text.as_str(),
+                                        boost: *boost,
+                                    })
+                                    .collect();
+                                fulltext.index_document(doc_id, &text_fields)
+                                    .map_err(|e| TransactionError::Other(format!("Full-text index_document failed: {}", e)))?;
+                            }
+                            FullTextOp::UpdateDocument { doc_id, fields } => {
+                                let text_fields: Vec<TextField<'_>> = fields
+                                    .iter()
+                                    .map(|(name, text, boost)| TextField {
+                                        name: name.as_str(),
+                                        text: text.as_str(),
+                                        boost: *boost,
+                                    })
+                                    .collect();
+                                fulltext.update_document(doc_id, &text_fields)
+                                    .map_err(|e| TransactionError::Other(format!("Full-text update_document failed: {}", e)))?;
+                            }
+                            FullTextOp::DeleteDocument { doc_id } => {
+                                fulltext.delete_document(doc_id)
+                                    .map_err(|e| TransactionError::Other(format!("Full-text delete_document failed: {}", e)))?;
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(TransactionError::Other(
+                            "table is not a full-text index".to_string(),
+                        ))
+                    }
+                }
+            }
         }
 
         // Update current LSN
@@ -2783,7 +2779,7 @@ impl<FS: FileSystem> FullTextSearch for Transaction<FS> {
     }
 
     fn index_document(
-        &mut self,
+        &self,
         doc_id: &[u8],
         fields: &[TextField<'_>],
     ) -> crate::table::TableResult<()> {
@@ -2826,7 +2822,7 @@ impl<FS: FileSystem> FullTextSearch for Transaction<FS> {
     }
 
     fn update_document(
-        &mut self,
+        &self,
         doc_id: &[u8],
         fields: &[TextField<'_>],
     ) -> crate::table::TableResult<()> {
@@ -2868,7 +2864,7 @@ impl<FS: FileSystem> FullTextSearch for Transaction<FS> {
         Ok(())
     }
 
-    fn delete_document(&mut self, doc_id: &[u8]) -> crate::table::TableResult<()> {
+    fn delete_document(&self, doc_id: &[u8]) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
                 "transaction {} is not active for delete_document",
