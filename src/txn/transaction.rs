@@ -1402,6 +1402,11 @@ impl<FS: FileSystem> Transaction<FS> {
                         Flushable::flush(&mut writer).map_err(|e| {
                             TransactionError::Other(format!("BTree flush failed: {}", e))
                         })?;
+
+                        // Mark versions as committed so they become visible to readers
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!("BTree commit_versions failed: {}", e))
+                        })?;
                     }
                     TableEngineInstance::LsmTree(lsm) => {
                         let mut writer =

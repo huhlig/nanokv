@@ -927,7 +927,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
         key: Vec<u8>,
         value: Vec<u8>,
         tx_id: TransactionId,
-        commit_lsn: LogSequenceNumber,
+        _commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
         // Find the leaf page with path
         let (leaf_page_id, pos, path) = self.search_with_path(&key)?;
@@ -941,15 +941,13 @@ impl<FS: FileSystem> PagedBTree<FS> {
             if pos < entries.len() && entries[pos].key == key {
                 // Update existing entry's version chain by prepending new version
                 let old_chain = entries[pos].chain.clone();
-                let mut new_chain = old_chain.prepend(value, tx_id);
-                // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
-                new_chain.commit(commit_lsn);
+                let new_chain = old_chain.prepend(value, tx_id);
+                // Leave uncommitted - will be committed by commit_versions()
                 entries[pos].chain = new_chain;
             } else {
                 // Insert new entry with new version chain
-                let mut chain = VersionChain::new(value, tx_id);
-                // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
-                chain.commit(commit_lsn);
+                let chain = VersionChain::new(value, tx_id);
+                // Leave uncommitted - will be committed by commit_versions()
                 entries.insert(
                     pos,
                     LeafEntry {
@@ -1164,7 +1162,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
         &self,
         key: &[u8],
         tx_id: TransactionId,
-        commit_lsn: LogSequenceNumber,
+        _commit_lsn: LogSequenceNumber,
     ) -> TableResult<bool> {
         // Find the leaf page
         let (leaf_page_id, pos) = self.search(key)?;
@@ -1178,9 +1176,8 @@ impl<FS: FileSystem> PagedBTree<FS> {
             if pos < entries.len() && entries[pos].key == key {
                 // Mark as deleted in version chain by prepending empty value
                 let old_chain = entries[pos].chain.clone();
-                let mut new_chain = old_chain.prepend(Vec::new(), tx_id);
-                // Commit immediately for simplicity (in real implementation, this would be done at transaction commit)
-                new_chain.commit(commit_lsn);
+                let new_chain = old_chain.prepend(Vec::new(), tx_id);
+                // Leave uncommitted - will be committed by commit_versions()
                 entries[pos].chain = new_chain;
 
                 // Write updated node
@@ -1197,6 +1194,80 @@ impl<FS: FileSystem> PagedBTree<FS> {
         }
 
         Ok(false)
+    }
+
+    /// Commit all uncommitted versions created by the given transaction.
+    ///
+    /// Traverses all leaf pages and marks versions created by tx_id with the given commit_lsn.
+    fn commit_versions_for_tx(
+        &self,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
+        let mut current_page_id = self.get_root_page_id();
+
+        // Navigate to leftmost leaf
+        loop {
+            let node = self.read_node(current_page_id)?;
+            match &node {
+                BTreeNode::Internal { entries, .. } => {
+                    // Follow leftmost child
+                    current_page_id =
+                        entries
+                            .first()
+                            .map(|e| e.child_page_id)
+                            .unwrap_or(match &node {
+                                BTreeNode::Internal {
+                                    rightmost_child, ..
+                                } => *rightmost_child,
+                                _ => unreachable!(),
+                            });
+                }
+                BTreeNode::Leaf { .. } => break,
+            }
+        }
+
+        // Traverse all leaf pages and commit versions
+        loop {
+            let node = self.read_node(current_page_id)?;
+            if let BTreeNode::Leaf { entries, next_leaf } = node {
+                let mut new_entries = entries.clone();
+
+                for entry in new_entries.iter_mut() {
+                    Self::commit_chain_recursive(&mut entry.chain, tx_id, commit_lsn);
+                }
+
+                // Write back the updated node
+                let updated_node = BTreeNode::Leaf {
+                    entries: new_entries,
+                    next_leaf,
+                };
+                self.write_node(current_page_id, &updated_node)?;
+
+                if next_leaf == PageId::from(0) {
+                    break;
+                }
+                current_page_id = next_leaf;
+            } else {
+                unreachable!("Expected leaf node");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recursively commit versions in a chain created by tx_id.
+    fn commit_chain_recursive(
+        chain: &mut VersionChain,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) {
+        if chain.created_by == tx_id && chain.commit_lsn.is_none() {
+            chain.commit(commit_lsn);
+        }
+        if let Some(ref mut prev) = chain.prev_version {
+            Self::commit_chain_recursive(prev, tx_id, commit_lsn);
+        }
     }
 }
 
@@ -1487,23 +1558,37 @@ impl<'a, FS: FileSystem> Flushable for PagedBTreeWriter<'a, FS> {
             return Ok(());
         }
 
-        // Apply all pending changes
+        // Apply all pending changes (versions remain uncommitted)
         for (key, value_opt) in self.pending_changes.drain(..) {
             match value_opt {
                 Some(value) => {
-                    // Insert or update
-                    self.table
-                        .insert_internal(key, value, self.tx_id, self.snapshot_lsn)?;
+                    // Insert or update (versions left uncommitted)
+                    self.table.insert_internal(
+                        key,
+                        value,
+                        self.tx_id,
+                        LogSequenceNumber::from(0),
+                    )?;
                 }
                 None => {
-                    // Delete
+                    // Delete (versions left uncommitted)
                     self.table
-                        .delete_internal(&key, self.tx_id, self.snapshot_lsn)?;
+                        .delete_internal(&key, self.tx_id, LogSequenceNumber::from(0))?;
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+impl<'a, FS: FileSystem> PagedBTreeWriter<'a, FS> {
+    /// Mark all versions created by this transaction as committed.
+    ///
+    /// This must be called after flush() to make the changes visible to readers.
+    /// The commit_lsn is obtained from the WAL after writing the COMMIT record.
+    pub fn commit_versions(&self, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+        self.table.commit_versions_for_tx(self.tx_id, commit_lsn)
     }
 }
 
