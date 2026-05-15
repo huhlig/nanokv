@@ -564,6 +564,27 @@ impl<FS: FileSystem> LsmTree<FS> {
 
         Ok(iterators)
     }
+
+    /// Vacuum obsolete versions from the active and immutable memtables.
+    ///
+    /// Note: This only vacuums memtables. SSTables are immutable and cleaned up
+    /// during compaction. For a full vacuum, trigger compaction after calling this.
+    ///
+    /// Returns the total count of removed versions.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let mut total_removed = 0;
+
+        // Vacuum active memtable
+        total_removed += self.active_memtable.read().unwrap().vacuum(min_visible_lsn)?;
+
+        // Vacuum immutable memtables
+        let immutable = self.immutable_memtables.read().unwrap();
+        for memtable in immutable.iter() {
+            total_removed += memtable.vacuum(min_visible_lsn)?;
+        }
+
+        Ok(total_removed)
+    }
 }
 
 impl<FS: FileSystem> Table for LsmTree<FS> {

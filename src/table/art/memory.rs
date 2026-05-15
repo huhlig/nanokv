@@ -1179,6 +1179,60 @@ impl MemoryART {
             }
         }
     }
+
+    /// Vacuum obsolete versions from all entries in the tree.
+    ///
+    /// Recursively traverses the ART and calls VersionChain::vacuum() on each
+    /// leaf entry, removing versions older than min_visible_lsn while preserving
+    /// one old version as a base.
+    ///
+    /// Returns the total count of removed versions.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let mut root = self.root.write().unwrap();
+        Ok(Self::vacuum_node(root.as_mut(), min_visible_lsn))
+    }
+
+    /// Vacuum a single node recursively.
+    fn vacuum_node(node: Option<&mut Box<ARTNode>>, min_visible_lsn: LogSequenceNumber) -> usize {
+        let Some(node) = node else {
+            return 0;
+        };
+
+        match node.as_mut() {
+            ARTNode::Leaf(leaf) => {
+                // Vacuum the leaf's version chain
+                leaf.chain.vacuum(min_visible_lsn)
+            }
+            ARTNode::Node4 { children, .. } => {
+                let mut total_removed = 0;
+                for child in children.iter_mut() {
+                    total_removed += Self::vacuum_node(child.as_mut(), min_visible_lsn);
+                }
+                total_removed
+            }
+            ARTNode::Node16 { children, .. } => {
+                let mut total_removed = 0;
+                for child in children.iter_mut() {
+                    total_removed += Self::vacuum_node(child.as_mut(), min_visible_lsn);
+                }
+                total_removed
+            }
+            ARTNode::Node48 { children, .. } => {
+                let mut total_removed = 0;
+                for child in children.iter_mut() {
+                    total_removed += Self::vacuum_node(child.as_mut(), min_visible_lsn);
+                }
+                total_removed
+            }
+            ARTNode::Node256 { children, .. } => {
+                let mut total_removed = 0;
+                for child in children.iter_mut() {
+                    total_removed += Self::vacuum_node(child.as_mut(), min_visible_lsn);
+                }
+                total_removed
+            }
+        }
+    }
 }
 
 impl Table for MemoryART {

@@ -2248,6 +2248,53 @@ impl<FS: FileSystem> PagedBTree<FS> {
 
         Ok(())
     }
+
+    /// Vacuum obsolete versions from all entries in the tree.
+    ///
+    /// Recursively traverses the B-Tree and calls VersionChain::vacuum() on each
+    /// leaf entry, removing versions older than min_visible_lsn while preserving
+    /// one old version as a base.
+    ///
+    /// Returns the total count of removed versions.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let root_page_id = *self.root_page_id.read().unwrap();
+        if root_page_id == PageId::from(0) {
+            return Ok(0);
+        }
+        self.vacuum_node(root_page_id, min_visible_lsn)
+    }
+
+    /// Vacuum a single node recursively.
+    fn vacuum_node(&self, page_id: PageId, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let node = self.read_node(page_id)?;
+        let mut total_removed = 0;
+
+        match node {
+            BTreeNode::Internal {
+                entries,
+                rightmost_child,
+            } => {
+                // Recursively vacuum all child nodes
+                for entry in &entries {
+                    total_removed += self.vacuum_node(entry.child_page_id, min_visible_lsn)?;
+                }
+                total_removed += self.vacuum_node(rightmost_child, min_visible_lsn)?;
+            }
+            BTreeNode::Leaf { mut entries, next_leaf } => {
+                // Vacuum each entry's version chain
+                for entry in &mut entries {
+                    let removed = entry.chain.vacuum(min_visible_lsn);
+                    total_removed += removed;
+                }
+
+                // Write the updated node back to disk
+                let updated_node = BTreeNode::Leaf { entries, next_leaf };
+                self.write_node(page_id, &updated_node)?;
+            }
+        }
+
+        Ok(total_removed)
+    }
 }
 
 #[cfg(test)]

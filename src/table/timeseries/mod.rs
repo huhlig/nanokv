@@ -285,13 +285,13 @@ impl<FS: FileSystem> TimeSeriesTable<FS> {
     }
 
     /// Vacuum old versions that are no longer visible.
-    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<u64> {
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
         let mut state = self.state.write().unwrap();
-        let mut total_removed = 0u64;
+        let mut total_removed = 0usize;
 
         for manager in state.series.values_mut() {
             for bucket in manager.buckets.values_mut() {
-                total_removed += bucket.vacuum(min_visible_lsn) as u64;
+                total_removed += bucket.vacuum(min_visible_lsn);
             }
         }
 

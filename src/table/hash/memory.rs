@@ -208,6 +208,25 @@ impl MemoryHashTable {
         }
     }
 
+    /// Vacuum obsolete versions from all entries in the table.
+    ///
+    /// Iterates through all keys and calls VersionChain::vacuum() on each,
+    /// removing versions older than min_visible_lsn while preserving one
+    /// old version as a base.
+    ///
+    /// Returns the total count of removed versions.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let mut data = self.data.write().unwrap();
+        let mut total_removed = 0;
+
+        for (_key, chain) in data.iter_mut() {
+            let removed = chain.vacuum(min_visible_lsn);
+            total_removed += removed;
+        }
+
+        Ok(total_removed)
+    }
+
     /// Get approximate length.
     pub fn approximate_len(&self) -> TableResult<Option<u64>> {
         let data = self.data.read().unwrap();

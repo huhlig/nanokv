@@ -252,6 +252,34 @@ impl MemoryGraphTable {
         let edges = cursor.collect_all()?;
         Ok(edges.iter().any(|e| e.target.0 == target))
     }
+
+    /// Vacuum obsolete versions from all entries in the graph.
+    ///
+    /// Vacuums both the underlying storage and the in-memory index (if enabled).
+    /// For the index, vacuums both outgoing and incoming edge version chains.
+    ///
+    /// Returns the total count of removed versions.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        // Vacuum underlying storage
+        let mut total_removed = self.storage.vacuum(min_visible_lsn)?;
+
+        // Vacuum in-memory index if enabled
+        if self.config.use_memory_index {
+            let mut index = self.index.write().unwrap();
+            
+            // Vacuum outgoing edges
+            for chain in index.outgoing_edges.values_mut() {
+                total_removed += chain.vacuum(min_visible_lsn);
+            }
+            
+            // Vacuum incoming edges
+            for chain in index.incoming_edges.values_mut() {
+                total_removed += chain.vacuum(min_visible_lsn);
+            }
+        }
+
+        Ok(total_removed)
+    }
 }
 
 impl Table for MemoryGraphTable {
