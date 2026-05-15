@@ -133,7 +133,9 @@ pub enum MutationKind {
 }
 
 /// Owned key buffer.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct KeyBuf(pub Vec<u8>);
 
 impl AsRef<[u8]> for KeyBuf {

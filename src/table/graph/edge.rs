@@ -19,7 +19,7 @@
 use crate::types::KeyBuf;
 
 /// Represents an edge in the graph with all its properties.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Edge {
     /// Unique edge identifier
     pub edge_id: KeyBuf,

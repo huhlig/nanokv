@@ -27,11 +27,12 @@
 //! The implementation uses a Hash table as the underlying storage engine,
 //! with specialized indexing for graph operations.
 
+use crate::snap::Snapshot;
 use crate::table::{
     EdgeCursor, EdgeRef, GraphAdjacency, MemoryHashTable, SpecialtyTableCapabilities,
     SpecialtyTableStats, Table, TableError, TableResult, VerificationReport,
 };
-use crate::txn::TransactionId;
+use crate::txn::{TransactionId, VersionChain};
 use crate::types::{KeyBuf, TableId};
 use crate::wal::LogSequenceNumber;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -64,13 +65,13 @@ pub struct MemoryGraphTable {
     tx_counter: RwLock<u64>,
 }
 
-/// In-memory index for fast graph operations.
+/// In-memory index for fast graph operations with MVCC support.
 #[derive(Default)]
 struct GraphIndex {
-    /// Map from vertex to outgoing edges
-    outgoing: HashMap<Vec<u8>, Vec<Edge>>,
-    /// Map from vertex to incoming edges
-    incoming: HashMap<Vec<u8>, Vec<Edge>>,
+    /// Map from (source, label, edge_id) to edge version chain for outgoing edges
+    outgoing_edges: HashMap<(Vec<u8>, Vec<u8>, Vec<u8>), VersionChain>,
+    /// Map from (target, label, edge_id) to edge version chain for incoming edges
+    incoming_edges: HashMap<(Vec<u8>, Vec<u8>, Vec<u8>), VersionChain>,
     /// Set of all vertices
     vertices: HashSet<Vec<u8>>,
 }
@@ -97,6 +98,48 @@ impl MemoryGraphTable {
             TransactionId::from(*counter),
             LogSequenceNumber::from(*counter),
         )
+    }
+
+    /// Mark all uncommitted versions as committed.
+    ///
+    /// This must be called after edge operations to make changes visible to readers.
+    /// Note: This commits ALL uncommitted versions, not just those from a specific transaction.
+    /// This is appropriate for the graph table's usage pattern where operations are batched.
+    pub fn commit_versions(
+        &self,
+        _tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
+        // Commit versions in underlying storage (pass through tx_id for storage layer)
+        self.storage.commit_versions(_tx_id, commit_lsn)?;
+
+        // Commit ALL uncommitted versions in memory index
+        if self.config.use_memory_index {
+            let mut index = self.index.write().unwrap();
+            for chain in index.outgoing_edges.values_mut() {
+                // Recursively commit all uncommitted versions in the chain
+                Self::commit_all_uncommitted(chain, commit_lsn);
+            }
+            for chain in index.incoming_edges.values_mut() {
+                // Recursively commit all uncommitted versions in the chain
+                Self::commit_all_uncommitted(chain, commit_lsn);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recursively commit all uncommitted versions in a chain.
+    fn commit_all_uncommitted(chain: &mut VersionChain, commit_lsn: LogSequenceNumber) {
+        // Commit this version if it's uncommitted
+        if chain.commit_lsn.is_none() {
+            chain.commit(commit_lsn);
+        }
+
+        // Recursively commit previous versions
+        if let Some(prev) = chain.prev_version.as_mut() {
+            Self::commit_all_uncommitted(prev, commit_lsn);
+        }
     }
 
     /// Add a vertex to the graph (implicit when adding edges).
@@ -232,7 +275,7 @@ impl Table for MemoryGraphTable {
             reverse_scan: false,
             range_delete: false,
             merge_operator: false,
-            mvcc_native: false,
+            mvcc_native: true, // Now supports MVCC with VersionChain
             append_optimized: false,
             memory_resident: true,
             disk_resident: false,
@@ -341,12 +384,13 @@ impl GraphAdjacency for MemoryGraphTable {
             self.storage.put(&rev_in_key.encode(), target, tx_id, lsn)?;
         }
 
-        // Update in-memory index
+        // Update in-memory index with version chain
         if self.config.use_memory_index {
             let mut index = self.index.write().unwrap();
             index.vertices.insert(source.to_vec());
             index.vertices.insert(target.to_vec());
 
+            // Create edge data for version chain
             let edge = Edge::new(
                 KeyBuf(edge_id.to_vec()),
                 KeyBuf(source.to_vec()),
@@ -354,19 +398,38 @@ impl GraphAdjacency for MemoryGraphTable {
                 KeyBuf(target.to_vec()),
                 weight,
             );
+            let edge_bytes = serde_json::to_vec(&edge)
+                .map_err(|e| TableError::serialization_error("Edge", e.to_string()))?;
 
-            index
-                .outgoing
-                .entry(source.to_vec())
-                .or_default()
-                .push(edge.clone());
+            // Store outgoing edge with version chain
+            let out_key = (source.to_vec(), label.to_vec(), edge_id.to_vec());
+            let prev_version = index
+                .outgoing_edges
+                .get(&out_key)
+                .map(|chain| Box::new(chain.clone()));
+            let new_chain = VersionChain {
+                value: edge_bytes.clone(),
+                created_by: tx_id,
+                commit_lsn: None, // Uncommitted - will be set by commit_versions()
+                prev_version,
+            };
+            index.outgoing_edges.insert(out_key, new_chain);
 
-            index
-                .incoming
-                .entry(target.to_vec())
-                .or_default()
-                .push(edge.clone());
+            // Store incoming edge with version chain
+            let in_key = (target.to_vec(), label.to_vec(), edge_id.to_vec());
+            let prev_version = index
+                .incoming_edges
+                .get(&in_key)
+                .map(|chain| Box::new(chain.clone()));
+            let new_chain = VersionChain {
+                value: edge_bytes.clone(),
+                created_by: tx_id,
+                commit_lsn: None,
+                prev_version,
+            };
+            index.incoming_edges.insert(in_key, new_chain);
 
+            // For undirected graphs, add reverse edges
             if !self.config.directed {
                 let rev_edge = Edge::unweighted(
                     KeyBuf(edge_id.to_vec()),
@@ -374,18 +437,34 @@ impl GraphAdjacency for MemoryGraphTable {
                     KeyBuf(label.to_vec()),
                     KeyBuf(source.to_vec()),
                 );
+                let rev_edge_bytes = serde_json::to_vec(&rev_edge)
+                    .map_err(|e| TableError::serialization_error("Edge", e.to_string()))?;
 
-                index
-                    .outgoing
-                    .entry(target.to_vec())
-                    .or_default()
-                    .push(rev_edge.clone());
+                let rev_out_key = (target.to_vec(), label.to_vec(), edge_id.to_vec());
+                let prev_version = index
+                    .outgoing_edges
+                    .get(&rev_out_key)
+                    .map(|chain| Box::new(chain.clone()));
+                let new_chain = VersionChain {
+                    value: rev_edge_bytes.clone(),
+                    created_by: tx_id,
+                    commit_lsn: None,
+                    prev_version,
+                };
+                index.outgoing_edges.insert(rev_out_key, new_chain);
 
-                index
-                    .incoming
-                    .entry(source.to_vec())
-                    .or_default()
-                    .push(rev_edge);
+                let rev_in_key = (source.to_vec(), label.to_vec(), edge_id.to_vec());
+                let prev_version = index
+                    .incoming_edges
+                    .get(&rev_in_key)
+                    .map(|chain| Box::new(chain.clone()));
+                let new_chain = VersionChain {
+                    value: rev_edge_bytes,
+                    created_by: tx_id,
+                    commit_lsn: None,
+                    prev_version,
+                };
+                index.incoming_edges.insert(rev_in_key, new_chain);
             }
         }
 
@@ -399,7 +478,9 @@ impl GraphAdjacency for MemoryGraphTable {
         target: &[u8],
         edge_id: &[u8],
     ) -> TableResult<()> {
-        // Remove edge data
+        let (tx_id, _lsn) = self.next_tx();
+
+        // Remove edge data (storage layer handles tombstones)
         let edge_key = GraphKey::EdgeData {
             edge_id: KeyBuf(edge_id.to_vec()),
         };
@@ -438,25 +519,56 @@ impl GraphAdjacency for MemoryGraphTable {
             self.storage.delete(&rev_in_key.encode())?;
         }
 
-        // Update in-memory index
+        // Update in-memory index with tombstones (empty value)
         if self.config.use_memory_index {
             let mut index = self.index.write().unwrap();
 
-            if let Some(edges) = index.outgoing.get_mut(source) {
-                edges.retain(|e| e.edge_id.0 != edge_id);
+            // Create tombstone for outgoing edge
+            let out_key = (source.to_vec(), label.to_vec(), edge_id.to_vec());
+            if let Some(chain) = index.outgoing_edges.get(&out_key) {
+                let tombstone = VersionChain {
+                    value: Vec::new(), // Empty value = tombstone
+                    created_by: tx_id,
+                    commit_lsn: None, // Uncommitted
+                    prev_version: Some(Box::new(chain.clone())),
+                };
+                index.outgoing_edges.insert(out_key, tombstone);
             }
 
-            if let Some(edges) = index.incoming.get_mut(target) {
-                edges.retain(|e| e.edge_id.0 != edge_id);
+            // Create tombstone for incoming edge
+            let in_key = (target.to_vec(), label.to_vec(), edge_id.to_vec());
+            if let Some(chain) = index.incoming_edges.get(&in_key) {
+                let tombstone = VersionChain {
+                    value: Vec::new(),
+                    created_by: tx_id,
+                    commit_lsn: None,
+                    prev_version: Some(Box::new(chain.clone())),
+                };
+                index.incoming_edges.insert(in_key, tombstone);
             }
 
+            // For undirected graphs, create tombstones for reverse edges
             if !self.config.directed {
-                if let Some(edges) = index.outgoing.get_mut(target) {
-                    edges.retain(|e| e.edge_id.0 != edge_id);
+                let rev_out_key = (target.to_vec(), label.to_vec(), edge_id.to_vec());
+                if let Some(chain) = index.outgoing_edges.get(&rev_out_key) {
+                    let tombstone = VersionChain {
+                        value: Vec::new(),
+                        created_by: tx_id,
+                        commit_lsn: None,
+                        prev_version: Some(Box::new(chain.clone())),
+                    };
+                    index.outgoing_edges.insert(rev_out_key, tombstone);
                 }
 
-                if let Some(edges) = index.incoming.get_mut(source) {
-                    edges.retain(|e| e.edge_id.0 != edge_id);
+                let rev_in_key = (source.to_vec(), label.to_vec(), edge_id.to_vec());
+                if let Some(chain) = index.incoming_edges.get(&rev_in_key) {
+                    let tombstone = VersionChain {
+                        value: Vec::new(),
+                        created_by: tx_id,
+                        commit_lsn: None,
+                        prev_version: Some(Box::new(chain.clone())),
+                    };
+                    index.incoming_edges.insert(rev_in_key, tombstone);
                 }
             }
         }
@@ -468,23 +580,41 @@ impl GraphAdjacency for MemoryGraphTable {
         // Use in-memory index if available
         if self.config.use_memory_index {
             let index = self.index.read().unwrap();
-            let edges = index
-                .outgoing
-                .get(source)
-                .map(|edges| {
-                    if let Some(label) = label {
-                        edges
-                            .iter()
-                            .filter(|e| e.label.0 == label)
-                            .cloned()
-                            .collect()
-                    } else {
-                        edges.clone()
-                    }
-                })
-                .unwrap_or_default();
+            let mut visible_edges = Vec::new();
 
-            return Ok(MemoryEdgeCursor::new(edges));
+            // Create a snapshot that sees all committed versions
+            // Use max LSN to see everything that's been committed
+            let snapshot = Snapshot::new(
+                crate::snap::SnapshotId::from(0),
+                String::new(),
+                LogSequenceNumber::from(u64::MAX),
+                0,
+                0,
+                Vec::new(),
+            );
+
+            // Scan outgoing edges and filter by source and label
+            for ((edge_source, edge_label, _edge_id), chain) in index.outgoing_edges.iter() {
+                if edge_source == source {
+                    if let Some(label_filter) = label {
+                        if edge_label != label_filter {
+                            continue;
+                        }
+                    }
+
+                    // Check visibility
+                    if let Some(edge_bytes) = chain.find_visible_version(&snapshot) {
+                        // Empty value means tombstone (deleted)
+                        if !edge_bytes.is_empty() {
+                            if let Ok(edge) = serde_json::from_slice::<Edge>(edge_bytes) {
+                                visible_edges.push(edge);
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Ok(MemoryEdgeCursor::new(visible_edges));
         }
 
         // Otherwise, scan storage (less efficient)
@@ -496,23 +626,41 @@ impl GraphAdjacency for MemoryGraphTable {
         // Use in-memory index if available
         if self.config.use_memory_index {
             let index = self.index.read().unwrap();
-            let edges = index
-                .incoming
-                .get(target)
-                .map(|edges| {
-                    if let Some(label) = label {
-                        edges
-                            .iter()
-                            .filter(|e| e.label.0 == label)
-                            .cloned()
-                            .collect()
-                    } else {
-                        edges.clone()
-                    }
-                })
-                .unwrap_or_default();
+            let mut visible_edges = Vec::new();
 
-            return Ok(MemoryEdgeCursor::new(edges));
+            // Create a snapshot that sees all committed versions
+            // Use max LSN to see everything that's been committed
+            let snapshot = Snapshot::new(
+                crate::snap::SnapshotId::from(0),
+                String::new(),
+                LogSequenceNumber::from(u64::MAX),
+                0,
+                0,
+                Vec::new(),
+            );
+
+            // Scan incoming edges and filter by target and label
+            for ((edge_target, edge_label, _edge_id), chain) in index.incoming_edges.iter() {
+                if edge_target == target {
+                    if let Some(label_filter) = label {
+                        if edge_label != label_filter {
+                            continue;
+                        }
+                    }
+
+                    // Check visibility
+                    if let Some(edge_bytes) = chain.find_visible_version(&snapshot) {
+                        // Empty value means tombstone (deleted)
+                        if !edge_bytes.is_empty() {
+                            if let Ok(edge) = serde_json::from_slice::<Edge>(edge_bytes) {
+                                visible_edges.push(edge);
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Ok(MemoryEdgeCursor::new(visible_edges));
         }
 
         // Otherwise, scan storage (less efficient)
@@ -524,11 +672,8 @@ impl GraphAdjacency for MemoryGraphTable {
 
         let (entry_count, distinct_keys) = if self.config.use_memory_index {
             let index = self.index.read().unwrap();
-            let edge_count = index
-                .outgoing
-                .values()
-                .map(|edges| edges.len())
-                .sum::<usize>();
+            // Count unique edges from outgoing edges (each edge appears once there)
+            let edge_count = index.outgoing_edges.len();
             (Some(edge_count as u64), Some(index.vertices.len() as u64))
         } else {
             (storage_stats.row_count, None)
