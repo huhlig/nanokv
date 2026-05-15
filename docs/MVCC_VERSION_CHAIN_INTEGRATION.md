@@ -38,12 +38,16 @@ This document tracks the integration of MVCC (Multi-Version Concurrency Control)
    - Iterator merges chains from multiple sources
    - Compaction preserves version chains
 
-### ❌ Engines WITHOUT VersionChain Integration
+### ✅ Engines WITH VersionChain Integration (Continued)
 
-1. **TimeSeriesTable** (`src/table/timeseries/mod.rs`)
-   - Current: Stores raw values in buckets
-   - Need: Version chains for point updates/deletes
-   - Priority: HIGH (specialty table with transactions)
+6. **TimeSeriesTable** (`src/table/timeseries/mod.rs`)
+   - Status: ✅ Integrated
+   - Stores `BTreeMap<i64, VersionChain>` in TimeBucket
+   - Implements transaction-aware methods: `append_point_tx`, `scan_series_snapshot`, `latest_before_snapshot`
+   - Has `commit_versions()` and `vacuum()` methods
+   - Serializes/deserializes chains with postcard
+
+### ❌ Engines WITHOUT VersionChain Integration
 
 2. **MemoryGraphTable** (`src/table/graph/memory.rs`)
    - Current: Stores edges in HashMaps
@@ -319,12 +323,13 @@ fn test_mvcc_snapshot_isolation() {
 ## Next Steps
 
 1. ✅ Document current state (this document)
-2. ⏳ Integrate TimeSeriesTable with VersionChain
+2. ✅ Integrate TimeSeriesTable with VersionChain
 3. ⏳ Integrate MemoryGraphTable with VersionChain
 4. ⏳ Add commit_versions() calls in Transaction::commit()
 5. ⏳ Add vacuum support
-6. ⏳ Add comprehensive MVCC tests
-7. ⏳ Integrate remaining specialty tables
+6. ✅ Add comprehensive MVCC tests for TimeSeriesTable
+7. ⏳ Update existing persistence tests for new MVCC API
+8. ⏳ Integrate remaining specialty tables
 
 ## References
 

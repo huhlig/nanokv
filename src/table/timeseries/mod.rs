@@ -58,11 +58,13 @@ pub use self::compression::{
 pub use self::config::{TimeSeriesCompression, TimeSeriesConfig, TimeSeriesRetentionPolicy};
 
 use crate::pager::{PageId, Pager};
+use crate::snap::Snapshot;
 use crate::table::{
     SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableCapabilities, TableEngineKind,
     TableResult, TableStatistics, TimePointRef, TimeSeries as TimeSeriesTrait, TimeSeriesCursor,
     VerificationReport,
 };
+use crate::txn::TransactionId;
 use crate::types::TableId;
 use crate::vfs::FileSystem;
 use crate::wal::LogSequenceNumber;
@@ -188,6 +190,113 @@ impl<FS: FileSystem> TimeSeriesTable<FS> {
         }
         state.series.get_mut(series_key).unwrap()
     }
+
+    /// Append a point with transaction tracking (MVCC-aware).
+    pub fn append_point_tx(
+        &self,
+        series_key: &[u8],
+        timestamp: i64,
+        value_key: &[u8],
+        tx_id: TransactionId,
+    ) -> TableResult<()> {
+        let mut state = self.state.write().unwrap();
+
+        // Get or create the bucket manager for this series
+        let manager = Self::get_or_create_series_manager(
+            &mut state,
+            series_key,
+            &self.config,
+            self.pager.clone(),
+        );
+
+        // Get or create the appropriate bucket
+        let bucket = manager.get_or_create_bucket(timestamp)?;
+
+        // Insert the data point with transaction ID
+        bucket.insert(timestamp, value_key.to_vec(), tx_id)?;
+
+        // Update statistics
+        state.total_points += 1;
+        state.total_size += (series_key.len() + 8 + value_key.len()) as u64;
+
+        Ok(())
+    }
+
+    /// Scan series with snapshot visibility (MVCC-aware).
+    pub fn scan_series_snapshot(
+        &self,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
+        snapshot: Snapshot,
+    ) -> TableResult<TimeSeriesTableCursor<'_, FS>> {
+        TimeSeriesTableCursor::new_with_snapshot(self, series_key, start_ts, end_ts, snapshot)
+    }
+
+    /// Get latest point before timestamp with snapshot visibility (MVCC-aware).
+    pub fn latest_before_snapshot(
+        &self,
+        series_key: &[u8],
+        timestamp: i64,
+        snapshot: &Snapshot,
+    ) -> TableResult<Option<TimePointRef>> {
+        let state = self.state.read().unwrap();
+
+        // Get the series manager
+        let manager = match state.series.get(series_key) {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        // Get all bucket IDs up to the timestamp
+        let bucket_id = BucketId::from_timestamp(timestamp, self.config.bucket_size);
+
+        // Search backwards through buckets
+        for (&bid, _) in manager.buckets.range(..=bucket_id).rev() {
+            if let Some(bucket) = manager.get_bucket(bid) {
+                if let Some((ts, value_key)) = bucket.latest_before(timestamp, snapshot) {
+                    return Ok(Some(TimePointRef {
+                        series_key: crate::types::KeyBuf(series_key.to_vec()),
+                        timestamp: ts,
+                        value_key: crate::types::KeyBuf(value_key),
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Commit all uncommitted versions for a transaction.
+    pub fn commit_versions(
+        &self,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
+        let mut state = self.state.write().unwrap();
+
+        for manager in state.series.values_mut() {
+            for bucket in manager.buckets.values_mut() {
+                bucket.commit_versions(tx_id, commit_lsn);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Vacuum old versions that are no longer visible.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<u64> {
+        let mut state = self.state.write().unwrap();
+        let mut total_removed = 0u64;
+
+        for manager in state.series.values_mut() {
+            for bucket in manager.buckets.values_mut() {
+                total_removed += bucket.vacuum(min_visible_lsn) as u64;
+            }
+        }
+
+        Ok(total_removed)
+    }
 }
 
 // =============================================================================
@@ -271,27 +380,10 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
     }
 
     fn append_point(&self, series_key: &[u8], timestamp: i64, value_key: &[u8]) -> TableResult<()> {
-        let mut state = self.state.write().unwrap();
-
-        // Get or create the bucket manager for this series
-        let manager = Self::get_or_create_series_manager(
-            &mut state,
-            series_key,
-            &self.config,
-            self.pager.clone(),
-        );
-
-        // Get or create the appropriate bucket
-        let bucket = manager.get_or_create_bucket(timestamp)?;
-
-        // Insert the data point
-        bucket.insert(timestamp, value_key.to_vec())?;
-
-        // Update statistics
-        state.total_points += 1;
-        state.total_size += (series_key.len() + 8 + value_key.len()) as u64;
-
-        Ok(())
+        // Use a default transaction ID for non-transactional appends
+        // In a real system, this would be called through a transaction
+        let tx_id = TransactionId::from(0);
+        self.append_point_tx(series_key, timestamp, value_key, tx_id)
     }
 
     fn scan_series(
@@ -308,31 +400,17 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
         series_key: &[u8],
         timestamp: i64,
     ) -> TableResult<Option<TimePointRef>> {
-        let state = self.state.read().unwrap();
+        // Create a snapshot that sees all committed data
+        let snapshot = Snapshot::new(
+            crate::snap::SnapshotId::from(0),
+            String::new(),
+            LogSequenceNumber::from(u64::MAX),
+            0,
+            0,
+            Vec::new(),
+        );
 
-        // Get the series manager
-        let manager = match state.series.get(series_key) {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-
-        // Get all bucket IDs up to the timestamp
-        let bucket_id = BucketId::from_timestamp(timestamp, self.config.bucket_size);
-
-        // Search backwards through buckets
-        for (&bid, _) in manager.buckets.range(..=bucket_id).rev() {
-            if let Some(bucket) = manager.get_bucket(bid)
-                && let Some((ts, value_key)) = bucket.latest_before(timestamp)
-            {
-                return Ok(Some(TimePointRef {
-                    series_key: crate::types::KeyBuf(series_key.to_vec()),
-                    timestamp: *ts,
-                    value_key: crate::types::KeyBuf(value_key.clone()),
-                }));
-            }
-        }
-
-        Ok(None)
+        self.latest_before_snapshot(series_key, timestamp, &snapshot)
     }
 
     fn stats(&self) -> TableResult<SpecialtyTableStats> {
@@ -506,9 +584,29 @@ impl<'a, FS: FileSystem> TimeSeriesTableCursor<'a, FS> {
         start_ts: i64,
         end_ts: i64,
     ) -> TableResult<Self> {
+        // Create a snapshot that sees all committed data
+        let snapshot = Snapshot::new(
+            crate::snap::SnapshotId::from(0),
+            String::new(),
+            LogSequenceNumber::from(u64::MAX),
+            0,
+            0,
+            Vec::new(),
+        );
+
+        Self::new_with_snapshot(table, series_key, start_ts, end_ts, snapshot)
+    }
+
+    fn new_with_snapshot(
+        table: &'a TimeSeriesTable<FS>,
+        series_key: &[u8],
+        start_ts: i64,
+        end_ts: i64,
+        snapshot: Snapshot,
+    ) -> TableResult<Self> {
         let state = table.state.read().unwrap();
 
-        // Collect all points in the range
+        // Collect all points in the range with snapshot visibility
         let mut points = Vec::new();
 
         if let Some(manager) = state.series.get(series_key) {
@@ -516,8 +614,8 @@ impl<'a, FS: FileSystem> TimeSeriesTableCursor<'a, FS> {
 
             for bucket_id in bucket_ids {
                 if let Some(bucket) = manager.get_bucket(bucket_id) {
-                    for (ts, value_key) in bucket.range(start_ts, end_ts) {
-                        points.push((*ts, value_key.clone()));
+                    for (ts, value_key) in bucket.range(start_ts, end_ts, &snapshot) {
+                        points.push((ts, value_key));
                     }
                 }
             }

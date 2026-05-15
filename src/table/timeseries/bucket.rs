@@ -21,8 +21,11 @@
 //! time range, enabling efficient range queries and data management.
 
 use crate::pager::{Page, PageId, PageType, Pager};
+use crate::snap::Snapshot;
 use crate::table::TableResult;
+use crate::txn::{TransactionId, VersionChain};
 use crate::vfs::FileSystem;
+use crate::wal::LogSequenceNumber;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -73,8 +76,9 @@ pub struct TimeBucket<FS: FileSystem> {
     /// End timestamp (exclusive)
     end_ts: i64,
 
-    /// Data points in this bucket: (timestamp, value_key)
-    points: BTreeMap<i64, Vec<u8>>,
+    /// Data points in this bucket: (timestamp, version_chain)
+    /// Each timestamp can have multiple versions for MVCC support
+    points: BTreeMap<i64, VersionChain>,
 
     /// Page ID where this bucket is stored (if persisted)
     page_id: Option<PageId>,
@@ -140,8 +144,13 @@ impl<FS: FileSystem> TimeBucket<FS> {
         timestamp >= self.start_ts && timestamp < self.end_ts
     }
 
-    /// Insert a data point into the bucket.
-    pub fn insert(&mut self, timestamp: i64, value_key: Vec<u8>) -> TableResult<()> {
+    /// Insert a data point into the bucket with transaction tracking.
+    pub fn insert(
+        &mut self,
+        timestamp: i64,
+        value_key: Vec<u8>,
+        tx_id: TransactionId,
+    ) -> TableResult<()> {
         if !self.contains_timestamp(timestamp) {
             return Err(crate::table::TableError::Other(format!(
                 "Timestamp {} is outside bucket range [{}, {})",
@@ -149,15 +158,28 @@ impl<FS: FileSystem> TimeBucket<FS> {
             )));
         }
 
-        self.points.insert(timestamp, value_key);
+        // Create or update version chain
+        let new_chain = if let Some(existing_chain) = self.points.remove(&timestamp) {
+            // Prepend new version to existing chain
+            existing_chain.prepend(value_key, tx_id)
+        } else {
+            // Create new version chain
+            VersionChain::new(value_key, tx_id)
+        };
+
+        self.points.insert(timestamp, new_chain);
         self.dirty = true;
         Ok(())
     }
 
-    /// Get a data point by timestamp.
-    pub fn get(&mut self, timestamp: i64) -> Option<&Vec<u8>> {
+    /// Get a data point by timestamp with snapshot visibility.
+    pub fn get(&mut self, timestamp: i64, snapshot: &Snapshot) -> Option<Vec<u8>> {
         self.touch();
-        self.points.get(&timestamp)
+        if let Some(chain) = self.points.get(&timestamp) {
+            chain.find_visible_version(snapshot).map(|v| v.to_vec())
+        } else {
+            None
+        }
     }
 
     /// Get the number of points in this bucket.
@@ -175,19 +197,41 @@ impl<FS: FileSystem> TimeBucket<FS> {
         self.dirty
     }
 
-    /// Get an iterator over points in the specified time range.
-    pub fn range(&self, start: i64, end: i64) -> impl Iterator<Item = (&i64, &Vec<u8>)> {
-        self.points.range(start..end)
+    /// Get an iterator over points in the specified time range with snapshot visibility.
+    pub fn range<'a>(
+        &'a self,
+        start: i64,
+        end: i64,
+        snapshot: &'a Snapshot,
+    ) -> impl Iterator<Item = (i64, Vec<u8>)> + 'a {
+        self.points
+            .range(start..end)
+            .filter_map(move |(ts, chain)| {
+                chain
+                    .find_visible_version(snapshot)
+                    .map(|v| (*ts, v.to_vec()))
+            })
     }
 
-    /// Get all points in the bucket.
-    pub fn iter(&self) -> impl Iterator<Item = (&i64, &Vec<u8>)> {
-        self.points.iter()
+    /// Get all points in the bucket with snapshot visibility.
+    pub fn iter<'a>(&'a self, snapshot: &'a Snapshot) -> impl Iterator<Item = (i64, Vec<u8>)> + 'a {
+        self.points.iter().filter_map(move |(ts, chain)| {
+            chain
+                .find_visible_version(snapshot)
+                .map(|v| (*ts, v.to_vec()))
+        })
     }
 
-    /// Find the latest point before or at the given timestamp.
-    pub fn latest_before(&self, timestamp: i64) -> Option<(&i64, &Vec<u8>)> {
-        self.points.range(..=timestamp).next_back()
+    /// Find the latest point before or at the given timestamp with snapshot visibility.
+    pub fn latest_before(&self, timestamp: i64, snapshot: &Snapshot) -> Option<(i64, Vec<u8>)> {
+        self.points
+            .range(..=timestamp)
+            .rev()
+            .find_map(|(ts, chain)| {
+                chain
+                    .find_visible_version(snapshot)
+                    .map(|v| (*ts, v.to_vec()))
+            })
     }
 
     /// Serialize the bucket to bytes.
@@ -209,11 +253,14 @@ impl<FS: FileSystem> TimeBucket<FS> {
         // Write number of points (4 bytes)
         bytes.extend_from_slice(&(self.points.len() as u32).to_le_bytes());
 
-        // Write each point: timestamp (8 bytes) + value_key_len (4 bytes) + value_key
-        for (timestamp, value_key) in &self.points {
+        // Write each point: timestamp (8 bytes) + chain_len (4 bytes) + serialized_chain
+        for (timestamp, chain) in &self.points {
             bytes.extend_from_slice(&timestamp.to_le_bytes());
-            bytes.extend_from_slice(&(value_key.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(value_key);
+
+            // Serialize the version chain using postcard
+            let chain_bytes = postcard::to_allocvec(chain).unwrap_or_default();
+            bytes.extend_from_slice(&(chain_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&chain_bytes);
         }
 
         bytes
@@ -284,25 +331,31 @@ impl<FS: FileSystem> TimeBucket<FS> {
             let timestamp = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
             pos += 8;
 
-            // Read value_key length
+            // Read chain length
             if data.len() < pos + 4 {
                 return Err(crate::table::TableError::Other(
-                    "Insufficient data for value_key length".to_string(),
+                    "Insufficient data for chain length".to_string(),
                 ));
             }
-            let value_key_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            let chain_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
 
-            // Read value_key
-            if data.len() < pos + value_key_len {
+            // Read and deserialize version chain
+            if data.len() < pos + chain_len {
                 return Err(crate::table::TableError::Other(
-                    "Insufficient data for value_key".to_string(),
+                    "Insufficient data for version chain".to_string(),
                 ));
             }
-            let value_key = data[pos..pos + value_key_len].to_vec();
-            pos += value_key_len;
+            let chain: VersionChain =
+                postcard::from_bytes(&data[pos..pos + chain_len]).map_err(|e| {
+                    crate::table::TableError::Other(format!(
+                        "Failed to deserialize version chain: {}",
+                        e
+                    ))
+                })?;
+            pos += chain_len;
 
-            points.insert(timestamp, value_key);
+            points.insert(timestamp, chain);
         }
 
         Ok(Self {
@@ -386,10 +439,50 @@ impl<FS: FileSystem> TimeBucket<FS> {
     /// Get the estimated size in bytes.
     pub fn estimated_size(&self) -> usize {
         let mut size = 32; // Fixed overhead (id, timestamps, metadata)
-        for value_key in self.points.values() {
-            size += 8 + 4 + value_key.len(); // timestamp + length + value_key
+        for (_, chain) in &self.points {
+            size += 8; // timestamp
+            let mut current = Some(chain);
+            while let Some(version) = current {
+                size += 4 + version.value.len(); // length + value
+                size += std::mem::size_of::<VersionChain>();
+                current = version.prev_version.as_deref();
+            }
         }
         size
+    }
+
+    /// Commit all uncommitted versions created by the given transaction.
+    pub fn commit_versions(&mut self, tx_id: TransactionId, commit_lsn: LogSequenceNumber) {
+        for chain in self.points.values_mut() {
+            Self::commit_chain_recursive(chain, tx_id, commit_lsn);
+        }
+        self.dirty = true;
+    }
+
+    /// Recursively commit versions in a chain.
+    fn commit_chain_recursive(
+        chain: &mut VersionChain,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) {
+        if chain.created_by == tx_id && chain.commit_lsn.is_none() {
+            chain.commit(commit_lsn);
+        }
+        if let Some(prev) = &mut chain.prev_version {
+            Self::commit_chain_recursive(prev, tx_id, commit_lsn);
+        }
+    }
+
+    /// Vacuum old versions that are no longer visible.
+    pub fn vacuum(&mut self, min_visible_lsn: LogSequenceNumber) -> usize {
+        let mut removed = 0;
+        for chain in self.points.values_mut() {
+            removed += chain.vacuum(min_visible_lsn);
+        }
+        if removed > 0 {
+            self.dirty = true;
+        }
+        removed
     }
 }
 
