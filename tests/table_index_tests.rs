@@ -172,6 +172,7 @@ fn test_btree_scan_forward() {
     writer.put(b"alice", b"Alice").unwrap();
     writer.put(b"bob", b"Bob").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
     let bounds = ScanBounds::All;
@@ -200,6 +201,7 @@ fn test_btree_scan_range() {
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
     let bounds = ScanBounds::Range {
@@ -227,6 +229,7 @@ fn test_btree_scan_prefix() {
     writer.put(b"admin:1", b"Charlie").unwrap();
     writer.put(b"user:3", b"David").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
     let bounds = ScanBounds::Prefix(KeyBuf(b"user:".to_vec()));
@@ -250,6 +253,7 @@ fn test_btree_scan_reverse() {
     writer.put(b"bob", b"Bob").unwrap();
     writer.put(b"charlie", b"Charlie").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
     let bounds = ScanBounds::All;
@@ -320,6 +324,7 @@ fn test_table_batch_operations() {
     assert_eq!(report.attempted, 10);
     assert_eq!(report.applied, 10);
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
     for i in 0..10 {
@@ -970,6 +975,7 @@ fn test_property_scan_returns_all_inserted_keys() {
         inserted_keys.insert(key);
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
     let bounds = ScanBounds::All;
@@ -1094,6 +1100,7 @@ fn test_benchmark_scan() {
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let start = Instant::now();
     for _ in 0..10 {
@@ -1183,6 +1190,7 @@ fn test_table_statistics() {
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
     let stats = Table::stats(&table).unwrap();
     assert!(stats.row_count.is_some() || stats.row_count.is_none());
 }

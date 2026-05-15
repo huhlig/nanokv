@@ -1431,6 +1431,14 @@ impl<FS: FileSystem> Transaction<FS> {
                         Flushable::flush(&mut writer).map_err(|e| {
                             TransactionError::Other(format!("LSM flush failed: {}", e))
                         })?;
+
+                        // Mark versions as committed so they become visible to readers
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "LSM commit_versions failed: {}",
+                                e
+                            ))
+                        })?;
                     }
                     TableEngineInstance::MemoryBTree(mem) => {
                         let mut writer =
@@ -1538,6 +1546,14 @@ impl<FS: FileSystem> Transaction<FS> {
 
                         Flushable::flush(&mut writer).map_err(|e| {
                             TransactionError::Other(format!("Hash table flush failed: {}", e))
+                        })?;
+
+                        // Mark versions as committed so they become visible to readers
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Hash table commit_versions failed: {}",
+                                e
+                            ))
                         })?;
                     }
                     TableEngineInstance::MemoryBlob(blob) => {

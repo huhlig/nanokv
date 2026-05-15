@@ -131,6 +131,10 @@ impl MemoryHashTable {
                 Vec::new(),
             );
             if let Some(value) = chain.find_visible_version(&snapshot) {
+                // Empty value means tombstone (deleted)
+                if value.is_empty() {
+                    return Ok(None);
+                }
                 return Ok(Some(ValueBuf(value.to_vec())));
             }
         }
@@ -175,7 +179,11 @@ impl MemoryHashTable {
     /// Mark all versions created by the given transaction as committed.
     ///
     /// This must be called after flush() to make the changes visible to readers.
-    pub fn commit_versions(&self, tx_id: TransactionId, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+    pub fn commit_versions(
+        &self,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
         let mut data = self.data.write().unwrap();
 
         for chain in data.values_mut() {
@@ -440,7 +448,7 @@ impl<'a> Flushable for MemoryHashTableWriter<'a> {
                     // Delete - create tombstone
                     if let Some(chain) = data.get(&key) {
                         let old_size = MemoryHashTable::estimate_entry_size(&key, chain);
-                        
+
                         let prev_version = Some(Box::new(chain.clone()));
                         let tombstone = VersionChain {
                             value: Vec::new(), // Empty value = tombstone
@@ -506,9 +514,13 @@ mod tests {
         let bytes = writer.put(b"key1", b"value1").unwrap();
         assert!(bytes > 0);
 
-        // Test get
-        let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
-        let value = reader.get(b"key1", LogSequenceNumber::from(1)).unwrap();
+        // Flush and commit
+        writer.flush().unwrap();
+        writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
+
+        // Test get - now visible after commit
+        let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
+        let value = reader.get(b"key1", LogSequenceNumber::from(10)).unwrap();
         assert_eq!(value, Some(ValueBuf(b"value1".to_vec())));
 
         // Test delete
@@ -516,9 +528,11 @@ mod tests {
             .writer(TransactionId::from(2), LogSequenceNumber::from(2))
             .unwrap();
         assert!(writer.delete(b"key1").unwrap());
+        writer.flush().unwrap();
+        writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
-        let reader = table.reader(LogSequenceNumber::from(2)).unwrap();
-        let value = reader.get(b"key1", LogSequenceNumber::from(2)).unwrap();
+        let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+        let value = reader.get(b"key1", LogSequenceNumber::from(20)).unwrap();
         assert_eq!(value, None);
     }
 

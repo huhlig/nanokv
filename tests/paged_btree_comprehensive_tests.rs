@@ -59,6 +59,7 @@ fn insert_test_data(
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 }
 
 // =============================================================================
@@ -260,6 +261,7 @@ fn test_mvcc_snapshot_isolation() {
     writer1.put(b"key_a", b"value_v1").unwrap();
     writer1.put(b"key_b", b"value_v1").unwrap();
     writer1.flush().unwrap();
+    writer1.commit_versions(LogSequenceNumber::from(15)).unwrap();
 
     // Transaction 2: Update data at LSN 20
     let tx2 = TransactionId::from(2);
@@ -268,6 +270,7 @@ fn test_mvcc_snapshot_isolation() {
     writer2.put(b"key_a", b"value_v2").unwrap();
     writer2.put(b"key_c", b"value_v2").unwrap();
     writer2.flush().unwrap();
+    writer2.commit_versions(LogSequenceNumber::from(25)).unwrap();
 
     // Read at LSN 15 (should see v1, not v2)
     let reader_old = table.reader(LogSequenceNumber::from(15)).unwrap();
@@ -304,6 +307,7 @@ fn test_mvcc_delete_visibility() {
     let mut writer1 = table.writer(tx1, lsn1).unwrap();
     writer1.put(b"key_a", b"value_v1").unwrap();
     writer1.flush().unwrap();
+    writer1.commit_versions(LogSequenceNumber::from(15)).unwrap();
 
     // Delete at LSN 20
     let tx2 = TransactionId::from(2);
@@ -311,6 +315,7 @@ fn test_mvcc_delete_visibility() {
     let mut writer2 = table.writer(tx2, lsn2).unwrap();
     writer2.delete(b"key_a").unwrap();
     writer2.flush().unwrap();
+    writer2.commit_versions(LogSequenceNumber::from(25)).unwrap();
 
     // Read at LSN 15 (before delete - should see value)
     let reader_before = table.reader(LogSequenceNumber::from(15)).unwrap();
@@ -339,6 +344,7 @@ fn test_mvcc_multiple_versions() {
         let value = format!("value_v{}", i);
         writer.put(b"key_a", value.as_bytes()).unwrap();
         writer.flush().unwrap();
+        writer.commit_versions(LogSequenceNumber::from(i as u64 * 10 + 5)).unwrap();
     }
 
     // Read at different snapshots
@@ -526,6 +532,7 @@ fn test_prefix_scan_basic() {
     writer.put(b"user:2:email", b"bob@example.com").unwrap();
     writer.put(b"post:1:title", b"Hello World").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
 
@@ -560,6 +567,7 @@ fn test_single_key_operations() {
     let mut writer = table.writer(tx, lsn).unwrap();
     writer.put(b"only_key", b"only_value").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Test get
     let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
@@ -592,6 +600,7 @@ fn test_large_values() {
     let large_value = vec![b'X'; 10 * 1024];
     writer.put(b"large_key", &large_value).unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Verify retrieval
     let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
@@ -621,6 +630,7 @@ fn test_many_small_keys() {
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Verify count via cursor
     let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
@@ -651,6 +661,7 @@ fn test_duplicate_key_updates() {
         writer.put(b"same_key", value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Should see latest value
     let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
@@ -688,6 +699,7 @@ fn test_boundary_keys() {
     writer.put(&long_key, b"long_key_value").unwrap();
 
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Verify both
     let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
@@ -755,6 +767,7 @@ fn test_reader_writer_isolation() {
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
 
     // Reader should not see new data (snapshot isolation)
     let result = reader

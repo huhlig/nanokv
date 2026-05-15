@@ -60,10 +60,11 @@ fn test_hash_table_basic_put_get() {
     let bytes = writer.put(b"key1", b"value1").unwrap();
     assert!(bytes > 0);
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    // Get the value
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
-    let value = reader.get(b"key1", LogSequenceNumber::from(1)).unwrap();
+    // Get the value - visible after commit
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
+    let value = reader.get(b"key1", LogSequenceNumber::from(10)).unwrap();
     assert_eq!(value, Some(ValueBuf(b"value1".to_vec())));
 }
 
@@ -77,6 +78,7 @@ fn test_hash_table_update() {
         .unwrap();
     writer.put(b"key1", b"value1").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
     // Update
     let mut writer = table
@@ -84,10 +86,11 @@ fn test_hash_table_update() {
         .unwrap();
     writer.put(b"key1", b"value2").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Verify update
-    let reader = table.reader(LogSequenceNumber::from(2)).unwrap();
-    let value = reader.get(b"key1", LogSequenceNumber::from(2)).unwrap();
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let value = reader.get(b"key1", LogSequenceNumber::from(20)).unwrap();
     assert_eq!(value, Some(ValueBuf(b"value2".to_vec())));
 }
 
@@ -101,6 +104,7 @@ fn test_hash_table_delete() {
         .unwrap();
     writer.put(b"key1", b"value1").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
     // Delete it
     let mut writer = table
@@ -108,10 +112,11 @@ fn test_hash_table_delete() {
         .unwrap();
     assert!(writer.delete(b"key1").unwrap());
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
     // Verify deletion
-    let reader = table.reader(LogSequenceNumber::from(2)).unwrap();
-    let value = reader.get(b"key1", LogSequenceNumber::from(2)).unwrap();
+    let reader = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let value = reader.get(b"key1", LogSequenceNumber::from(20)).unwrap();
     assert_eq!(value, None);
 }
 
@@ -138,15 +143,17 @@ fn test_hash_table_batch_get() {
     writer.put(b"key2", b"value2").unwrap();
     writer.put(b"key3", b"value3").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    // Batch get
+    // Batch get - use writer's batch_get with committed LSN
+    let writer2 = table.writer(TransactionId::from(2), LogSequenceNumber::from(10)).unwrap();
     let keys = vec![
         b"key1".as_ref(),
         b"key2".as_ref(),
         b"key3".as_ref(),
         b"key4".as_ref(),
     ];
-    let values = writer.batch_get(&keys).unwrap();
+    let values = writer2.batch_get(&keys).unwrap();
 
     assert_eq!(values.len(), 4);
     assert_eq!(values[0], Some(ValueBuf(b"value1".to_vec())));
@@ -188,19 +195,20 @@ fn test_hash_table_batch_operations() {
     assert_eq!(report.applied, 3);
 
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    // Verify all values
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
+    // Verify all values - visible after commit
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
     assert_eq!(
-        reader.get(b"key1", LogSequenceNumber::from(1)).unwrap(),
+        reader.get(b"key1", LogSequenceNumber::from(10)).unwrap(),
         Some(ValueBuf(b"value1".to_vec()))
     );
     assert_eq!(
-        reader.get(b"key2", LogSequenceNumber::from(1)).unwrap(),
+        reader.get(b"key2", LogSequenceNumber::from(10)).unwrap(),
         Some(ValueBuf(b"value2".to_vec()))
     );
     assert_eq!(
-        reader.get(b"key3", LogSequenceNumber::from(1)).unwrap(),
+        reader.get(b"key3", LogSequenceNumber::from(10)).unwrap(),
         Some(ValueBuf(b"value3".to_vec()))
     );
 }
@@ -232,14 +240,15 @@ fn test_hash_table_collision_handling() {
         writer.put(key.as_bytes(), value.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    // Verify all keys are retrievable
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
+    // Verify all keys are retrievable - visible after commit
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
     for i in 0..1000 {
         let key = format!("key{}", i);
         let expected_value = format!("value{}", i);
         let value = reader
-            .get(key.as_bytes(), LogSequenceNumber::from(1))
+            .get(key.as_bytes(), LogSequenceNumber::from(10))
             .unwrap();
         assert_eq!(value, Some(ValueBuf(expected_value.as_bytes().to_vec())));
     }
@@ -270,12 +279,13 @@ fn test_hash_table_hash_distribution() {
         writer.put(pattern.as_bytes(), pattern.as_bytes()).unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    // Verify all keys are retrievable
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
+    // Verify all keys are retrievable - visible after commit
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
     for pattern in &patterns {
         let value = reader
-            .get(pattern.as_bytes(), LogSequenceNumber::from(1))
+            .get(pattern.as_bytes(), LogSequenceNumber::from(10))
             .unwrap();
         assert_eq!(value, Some(ValueBuf(pattern.as_bytes().to_vec())));
     }
@@ -292,11 +302,12 @@ fn test_hash_table_large_values() {
     let large_value = vec![0xAB; 1024 * 1024];
     writer.put(b"large_key", &large_value).unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    // Verify retrieval
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
+    // Verify retrieval - visible after commit
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
     let value = reader
-        .get(b"large_key", LogSequenceNumber::from(1))
+        .get(b"large_key", LogSequenceNumber::from(10))
         .unwrap();
     assert_eq!(value, Some(ValueBuf(large_value)));
 }
@@ -308,13 +319,14 @@ fn test_hash_table_empty_key_value() {
         .writer(TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
 
-    // Empty key and value
-    writer.put(b"", b"").unwrap();
+    // Empty key with small value (empty values are reserved for tombstones)
+    writer.put(b"", b"empty_key_value").unwrap();
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
-    let value = reader.get(b"", LogSequenceNumber::from(1)).unwrap();
-    assert_eq!(value, Some(ValueBuf(vec![])));
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
+    let value = reader.get(b"", LogSequenceNumber::from(10)).unwrap();
+    assert_eq!(value, Some(ValueBuf(b"empty_key_value".to_vec())));
 }
 
 #[test]
@@ -386,6 +398,7 @@ fn test_hash_table_concurrent_readers() {
             writer.put(key.as_bytes(), value.as_bytes()).unwrap();
         }
         writer.flush().unwrap();
+        writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
     }
 
     // Spawn multiple reader threads
@@ -393,12 +406,12 @@ fn test_hash_table_concurrent_readers() {
     for _ in 0..10 {
         let table_clone = Arc::clone(&table);
         let handle = thread::spawn(move || {
-            let reader = table_clone.reader(LogSequenceNumber::from(1)).unwrap();
+            let reader = table_clone.reader(LogSequenceNumber::from(10)).unwrap();
             for i in 0..100 {
                 let key = format!("key{}", i);
                 let expected_value = format!("value{}", i);
                 let value = reader
-                    .get(key.as_bytes(), LogSequenceNumber::from(1))
+                    .get(key.as_bytes(), LogSequenceNumber::from(10))
                     .unwrap();
                 assert_eq!(value, Some(ValueBuf(expected_value.as_bytes().to_vec())));
             }
@@ -422,6 +435,7 @@ fn test_hash_table_mvcc_visibility() {
         .unwrap();
     writer1.put(b"key1", b"value1").unwrap();
     writer1.flush().unwrap();
+    writer1.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
     // Transaction 2: Update value
     let mut writer2 = table
@@ -429,15 +443,16 @@ fn test_hash_table_mvcc_visibility() {
         .unwrap();
     writer2.put(b"key1", b"value2").unwrap();
     writer2.flush().unwrap();
+    writer2.commit_versions(LogSequenceNumber::from(20)).unwrap();
 
-    // Reader at LSN 1 should see value1
-    let reader1 = table.reader(LogSequenceNumber::from(1)).unwrap();
-    let value1 = reader1.get(b"key1", LogSequenceNumber::from(1)).unwrap();
+    // Reader at LSN 10 should see value1
+    let reader1 = table.reader(LogSequenceNumber::from(10)).unwrap();
+    let value1 = reader1.get(b"key1", LogSequenceNumber::from(10)).unwrap();
     assert_eq!(value1, Some(ValueBuf(b"value1".to_vec())));
 
-    // Reader at LSN 2 should see value2
-    let reader2 = table.reader(LogSequenceNumber::from(2)).unwrap();
-    let value2 = reader2.get(b"key1", LogSequenceNumber::from(2)).unwrap();
+    // Reader at LSN 20 should see value2
+    let reader2 = table.reader(LogSequenceNumber::from(20)).unwrap();
+    let value2 = reader2.get(b"key1", LogSequenceNumber::from(20)).unwrap();
     assert_eq!(value2, Some(ValueBuf(b"value2".to_vec())));
 }
 
@@ -454,8 +469,9 @@ fn test_hash_table_approximate_len() {
         writer.put(key.as_bytes(), b"value").unwrap();
     }
     writer.flush().unwrap();
+    writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
-    let reader = table.reader(LogSequenceNumber::from(1)).unwrap();
+    let reader = table.reader(LogSequenceNumber::from(10)).unwrap();
     let len = reader.approximate_len().unwrap();
     assert_eq!(len, Some(50));
 }

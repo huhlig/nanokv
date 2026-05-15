@@ -329,6 +329,7 @@ fn test_lsm_mvcc() {
         .put(b"mvcc_key", b"value_v1")
         .expect("Failed to put");
     writer1.flush().expect("Failed to flush");
+    writer1.commit_versions(LogSequenceNumber::from(10)).expect("Failed to commit");
 
     // Transaction 2: Update value at LSN 20
     let tx2 = TransactionId::from(2);
@@ -338,6 +339,7 @@ fn test_lsm_mvcc() {
         .put(b"mvcc_key", b"value_v2")
         .expect("Failed to put");
     writer2.flush().expect("Failed to flush");
+    writer2.commit_versions(LogSequenceNumber::from(20)).expect("Failed to commit");
 
     // Transaction 3: Delete key at LSN 30
     let tx3 = TransactionId::from(3);
@@ -345,6 +347,7 @@ fn test_lsm_mvcc() {
     let mut writer3 = lsm.writer(tx3, lsn3).expect("Failed to create writer");
     writer3.delete(b"mvcc_key").expect("Failed to delete");
     writer3.flush().expect("Failed to flush");
+    writer3.commit_versions(LogSequenceNumber::from(30)).expect("Failed to commit");
 
     // Read at LSN 5: key should not exist (before any writes)
     let reader_before = lsm
@@ -402,6 +405,7 @@ fn test_lsm_mvcc() {
     writer4.put(b"key_a", b"a_v1").expect("Failed to put");
     writer4.put(b"key_b", b"b_v1").expect("Failed to put");
     writer4.flush().expect("Failed to flush");
+    writer4.commit_versions(LogSequenceNumber::from(40)).expect("Failed to commit");
 
     let tx5 = TransactionId::from(5);
     let lsn5 = LogSequenceNumber::from(50);
@@ -409,6 +413,7 @@ fn test_lsm_mvcc() {
     writer5.put(b"key_a", b"a_v2").expect("Failed to put");
     // key_b stays at v1
     writer5.flush().expect("Failed to flush");
+    writer5.commit_versions(LogSequenceNumber::from(50)).expect("Failed to commit");
 
     // Read at LSN 45: both keys at v1
     let reader_45 = lsm

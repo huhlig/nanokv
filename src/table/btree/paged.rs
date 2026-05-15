@@ -927,7 +927,7 @@ impl<FS: FileSystem> PagedBTree<FS> {
         key: Vec<u8>,
         value: Vec<u8>,
         tx_id: TransactionId,
-        _commit_lsn: LogSequenceNumber,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
         // Find the leaf page with path
         let (leaf_page_id, pos, path) = self.search_with_path(&key)?;
@@ -941,13 +941,19 @@ impl<FS: FileSystem> PagedBTree<FS> {
             if pos < entries.len() && entries[pos].key == key {
                 // Update existing entry's version chain by prepending new version
                 let old_chain = entries[pos].chain.clone();
-                let new_chain = old_chain.prepend(value, tx_id);
-                // Leave uncommitted - will be committed by commit_versions()
+                let mut new_chain = old_chain.prepend(value, tx_id);
+                // Commit immediately if commit_lsn > 0
+                if commit_lsn.as_u64() > 0 {
+                    new_chain.commit(commit_lsn);
+                }
                 entries[pos].chain = new_chain;
             } else {
                 // Insert new entry with new version chain
-                let chain = VersionChain::new(value, tx_id);
-                // Leave uncommitted - will be committed by commit_versions()
+                let mut chain = VersionChain::new(value, tx_id);
+                // Commit immediately if commit_lsn > 0
+                if commit_lsn.as_u64() > 0 {
+                    chain.commit(commit_lsn);
+                }
                 entries.insert(
                     pos,
                     LeafEntry {

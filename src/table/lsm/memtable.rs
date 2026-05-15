@@ -158,6 +158,23 @@ impl Memtable {
         self.insert(key, Vec::new(), txn_id, commit_lsn)
     }
 
+    /// Mark all versions created by a transaction as committed.
+    ///
+    /// This iterates through all entries in the memtable and marks the head version
+    /// as committed if it was created by the specified transaction and is not yet committed.
+    pub fn commit_versions(&self, txn_id: TransactionId, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+        let mut data = self.data.write().unwrap();
+
+        for chain in data.values_mut() {
+            // Only mark the head version if it was created by this transaction and is uncommitted
+            if chain.created_by == txn_id && chain.commit_lsn.is_none() {
+                chain.commit(commit_lsn);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get the value for a key visible at the given LSN.
     ///
     /// Traverses the version chain to find the first visible version.
