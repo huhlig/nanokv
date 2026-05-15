@@ -97,7 +97,9 @@ fn test_put_stream_to_memtable_small() {
     let bytes_written = writer.put_stream(b"key1", &mut stream).unwrap();
     assert!(bytes_written > 0);
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -120,7 +122,9 @@ fn test_put_stream_to_memtable_medium() {
     let bytes_written = writer.put_stream(b"key2", &mut stream).unwrap();
     assert!(bytes_written > 0);
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -143,7 +147,9 @@ fn test_put_stream_to_memtable_large() {
     let bytes_written = writer.put_stream(b"key3", &mut stream).unwrap();
     assert!(bytes_written > 0);
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -163,7 +169,9 @@ fn test_get_stream_from_memtable() {
     let mut writer = lsm.writer(tx_id, snapshot_lsn).unwrap();
     writer.put(b"stream_key", &test_data).unwrap();
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read using stream
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -209,7 +217,9 @@ fn test_multiple_streaming_values_in_memtable() {
     writer.put_stream(b"key3", &mut stream3).unwrap();
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Verify all values
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -247,7 +257,9 @@ fn test_stream_1mb_value() {
     let bytes_written = writer.put_stream(b"large_key", &mut stream).unwrap();
     assert!(bytes_written > 0);
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -271,7 +283,9 @@ fn test_mvcc_with_streaming_values() {
     let mut writer1 = lsm.writer(tx1, lsn1).unwrap();
     writer1.put_stream(b"mvcc_key", &mut stream1).unwrap();
     writer1.flush().unwrap();
-    writer1.commit_versions(LogSequenceNumber::from(15)).unwrap();
+    writer1
+        .commit_versions(LogSequenceNumber::from(15))
+        .unwrap();
 
     // Transaction 2: Update with different value
     let tx2 = TransactionId::from(2);
@@ -282,7 +296,9 @@ fn test_mvcc_with_streaming_values() {
     let mut writer2 = lsm.writer(tx2, lsn2).unwrap();
     writer2.put_stream(b"mvcc_key", &mut stream2).unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(25)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(25))
+        .unwrap();
 
     // Read at different snapshots
     let reader_old = lsm.reader(LogSequenceNumber::from(15)).unwrap();
@@ -313,7 +329,9 @@ fn test_delete_streaming_value() {
     let mut writer = lsm.writer(tx_id, snapshot_lsn).unwrap();
     writer.put_stream(b"delete_key", &mut stream).unwrap();
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Verify it exists
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -327,7 +345,9 @@ fn test_delete_streaming_value() {
     let mut writer2 = lsm.writer(tx_id2, LogSequenceNumber::from(100)).unwrap();
     writer2.delete(b"delete_key").unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify it's gone
     let reader2 = lsm.reader(LogSequenceNumber::from(200)).unwrap();
@@ -349,7 +369,9 @@ fn test_overwrite_streaming_value() {
     let mut writer1 = lsm.writer(tx1, LogSequenceNumber::from(0)).unwrap();
     writer1.put_stream(b"overwrite_key", &mut stream1).unwrap();
     writer1.flush().unwrap();
-    writer1.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer1
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Overwrite with different size
     let tx2 = TransactionId::from(2);
@@ -359,7 +381,9 @@ fn test_overwrite_streaming_value() {
     let mut writer2 = lsm.writer(tx2, LogSequenceNumber::from(100)).unwrap();
     writer2.put_stream(b"overwrite_key", &mut stream2).unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify new value
     let reader = lsm.reader(LogSequenceNumber::from(200)).unwrap();
@@ -386,7 +410,9 @@ fn test_stream_with_pattern_data() {
     let mut writer = lsm.writer(tx_id, LogSequenceNumber::from(0)).unwrap();
     writer.put_stream(b"pattern_key", &mut stream).unwrap();
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back and verify pattern
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -414,7 +440,9 @@ fn test_empty_stream() {
     let mut writer = lsm.writer(tx_id, LogSequenceNumber::from(0)).unwrap();
     writer.put_stream(b"empty_key", &mut stream).unwrap();
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back - empty values may or may not be stored
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();
@@ -448,7 +476,9 @@ fn test_stream_size_hints() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Verify all values
     let reader = lsm.reader(LogSequenceNumber::from(100)).unwrap();

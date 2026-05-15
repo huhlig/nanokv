@@ -49,7 +49,9 @@ fn test_btree_node_split_on_insert() {
 
     // Flush to apply changes
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Verify all keys are still accessible (read at LSN after writes)
     let read_lsn = LogSequenceNumber::from(100);
@@ -83,7 +85,9 @@ fn test_btree_sequential_inserts() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify all keys (read at LSN after writes)
     let read_lsn = LogSequenceNumber::from(200);
@@ -115,7 +119,9 @@ fn test_btree_reverse_inserts() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify all keys (read at LSN after writes)
     let read_lsn = LogSequenceNumber::from(200);
@@ -149,7 +155,9 @@ fn test_btree_random_inserts() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify all keys (read at LSN after writes)
     let read_lsn = LogSequenceNumber::from(200);
@@ -181,7 +189,9 @@ fn test_btree_update_existing_keys() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Update the same keys (use higher LSN for snapshot)
     let tx_id2 = TransactionId::from(2);
@@ -194,7 +204,9 @@ fn test_btree_update_existing_keys() {
     }
 
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify updated values (read at latest LSN to see v2)
     let read_lsn = LogSequenceNumber::from(200);
@@ -226,7 +238,9 @@ fn test_btree_delete_keys() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Delete some keys (use higher LSN for snapshot)
     let tx_id2 = TransactionId::from(2);
@@ -239,7 +253,9 @@ fn test_btree_delete_keys() {
     }
 
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify keys at snapshot before delete (MVCC: should still see all before delete)
     // Read at LSN 150 (after first commit at 100, before delete commit at 200)
@@ -289,7 +305,9 @@ fn test_btree_mixed_operations() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(200)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(200))
+        .unwrap();
 
     // Verify state (read at LSN after all operations)
     let read_lsn = LogSequenceNumber::from(200);

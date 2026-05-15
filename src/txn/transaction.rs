@@ -1403,10 +1403,7 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("BTree flush failed: {}", e))
                         })?;
 
-                        // Mark versions as committed so they become visible to readers
-                        writer.commit_versions(commit_lsn).map_err(|e| {
-                            TransactionError::Other(format!("BTree commit_versions failed: {}", e))
-                        })?;
+                        // Note: commit_versions() will be called later for all modified tables
                     }
                     TableEngineInstance::LsmTree(lsm) => {
                         let mut writer =
@@ -1432,13 +1429,7 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("LSM flush failed: {}", e))
                         })?;
 
-                        // Mark versions as committed so they become visible to readers
-                        writer.commit_versions(commit_lsn).map_err(|e| {
-                            TransactionError::Other(format!(
-                                "LSM commit_versions failed: {}",
-                                e
-                            ))
-                        })?;
+                        // Note: commit_versions() will be called later for all modified tables
                     }
                     TableEngineInstance::MemoryBTree(mem) => {
                         let mut writer =
@@ -1473,13 +1464,7 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("Memory BTree flush failed: {}", e))
                         })?;
 
-                        // Mark versions as committed so they become visible to readers
-                        writer.commit_versions(commit_lsn).map_err(|e| {
-                            TransactionError::Other(format!(
-                                "Memory BTree commit_versions failed: {}",
-                                e
-                            ))
-                        })?;
+                        // Note: commit_versions() will be called later for all modified tables
                     }
                     TableEngineInstance::MemoryART(art) => {
                         let mut writer =
@@ -1511,13 +1496,7 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("Memory ART flush failed: {}", e))
                         })?;
 
-                        // Mark versions as committed so they become visible to readers
-                        writer.commit_versions(commit_lsn).map_err(|e| {
-                            TransactionError::Other(format!(
-                                "Memory ART commit_versions failed: {}",
-                                e
-                            ))
-                        })?;
+                        // Note: commit_versions() will be called later for all modified tables
                     }
                     TableEngineInstance::MemoryHashTable(hash) => {
                         let mut writer =
@@ -1548,13 +1527,7 @@ impl<FS: FileSystem> Transaction<FS> {
                             TransactionError::Other(format!("Hash table flush failed: {}", e))
                         })?;
 
-                        // Mark versions as committed so they become visible to readers
-                        writer.commit_versions(commit_lsn).map_err(|e| {
-                            TransactionError::Other(format!(
-                                "Hash table commit_versions failed: {}",
-                                e
-                            ))
-                        })?;
+                        // Note: commit_versions() will be called later for all modified tables
                     }
                     TableEngineInstance::MemoryBlob(blob) => {
                         // Blob tables don't use writer pattern, access directly
@@ -1808,6 +1781,152 @@ impl<FS: FileSystem> Transaction<FS> {
                         return Err(TransactionError::Other(
                             "table is not a full-text index".to_string(),
                         ));
+                    }
+                }
+            }
+        }
+
+        // After all operations are applied, commit version chains for all modified tables.
+        // This makes the changes visible to readers by marking uncommitted versions with commit_lsn.
+
+        // Collect all unique table IDs that were modified
+        let mut modified_tables = std::collections::HashSet::new();
+
+        // Add tables from write_set
+        for ((object_id, _key), _value_opt) in &self.write_set {
+            modified_tables.insert(*object_id);
+        }
+
+        // Add tables from bloom_write_set
+        for (object_id, _key) in &self.bloom_write_set {
+            modified_tables.insert(*object_id);
+        }
+
+        // Add tables from graph_write_set
+        for (object_id, _op) in &self.graph_write_set {
+            modified_tables.insert(*object_id);
+        }
+
+        // Add tables from timeseries_write_set
+        for (object_id, _op) in self.timeseries_write_set.borrow().iter() {
+            modified_tables.insert(*object_id);
+        }
+
+        // Add tables from vector_write_set
+        {
+            let vector_ops = self.vector_write_set.read().unwrap();
+            for (object_id, _op) in vector_ops.iter() {
+                modified_tables.insert(*object_id);
+            }
+        }
+
+        // Add tables from geospatial_write_set
+        for (object_id, _op) in &self.geospatial_write_set {
+            modified_tables.insert(*object_id);
+        }
+
+        // Add tables from fulltext_write_set
+        {
+            let fulltext_ops = self.fulltext_write_set.read().unwrap();
+            for (object_id, _op) in fulltext_ops.iter() {
+                modified_tables.insert(*object_id);
+            }
+        }
+
+        // Now call commit_versions() on all modified tables that support it
+        for object_id in modified_tables {
+            if let Some(engine) = self.engine_registry.get(object_id) {
+                match &engine {
+                    TableEngineInstance::PagedBTree(btree) => {
+                        // Already committed in the write_set loop above, but call again to ensure
+                        // any additional modifications are committed
+                        let writer =
+                            SearchableTable::writer(btree.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "Failed to get BTree writer for commit: {}",
+                                        e
+                                    ))
+                                })?;
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!("BTree commit_versions failed: {}", e))
+                        })?;
+                    }
+                    TableEngineInstance::LsmTree(lsm) => {
+                        // Already committed in the write_set loop above
+                        let writer =
+                            SearchableTable::writer(lsm.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get LSM writer for commit: {}",
+                                    e
+                                ))
+                            })?;
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!("LSM commit_versions failed: {}", e))
+                        })?;
+                    }
+                    TableEngineInstance::MemoryBTree(mem) => {
+                        // Already committed in the write_set loop above
+                        let writer =
+                            SearchableTable::writer(mem.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get Memory BTree writer for commit: {}",
+                                    e
+                                ))
+                            })?;
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Memory BTree commit_versions failed: {}",
+                                e
+                            ))
+                        })?;
+                    }
+                    TableEngineInstance::MemoryART(art) => {
+                        // Already committed in the write_set loop above
+                        let writer =
+                            SearchableTable::writer(art.as_ref(), self.txn_id, self.snapshot_lsn)
+                                .map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "Failed to get Memory ART writer for commit: {}",
+                                    e
+                                ))
+                            })?;
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Memory ART commit_versions failed: {}",
+                                e
+                            ))
+                        })?;
+                    }
+                    TableEngineInstance::MemoryHashTable(hash) => {
+                        // Already committed in the write_set loop above
+                        let writer = hash.writer(self.txn_id, self.snapshot_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Failed to get Hash table writer for commit: {}",
+                                e
+                            ))
+                        })?;
+                        writer.commit_versions(commit_lsn).map_err(|e| {
+                            TransactionError::Other(format!(
+                                "Hash table commit_versions failed: {}",
+                                e
+                            ))
+                        })?;
+                    }
+                    // Specialty tables that don't yet have commit_versions() methods
+                    // will be handled when they integrate VersionChain support
+                    TableEngineInstance::PagedBloomFilter(_)
+                    | TableEngineInstance::PagedHnswVector(_)
+                    | TableEngineInstance::PagedRTree(_)
+                    | TableEngineInstance::TimeSeriesTable(_)
+                    | TableEngineInstance::PagedFullTextIndex(_)
+                    | TableEngineInstance::MemoryGraphTable(_)
+                    | TableEngineInstance::MemoryBlob(_)
+                    | TableEngineInstance::AppendLog(_) => {
+                        // These tables either don't use version chains yet or are append-only
+                        // Skip commit_versions() for now
                     }
                 }
             }

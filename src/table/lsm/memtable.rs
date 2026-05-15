@@ -162,7 +162,11 @@ impl Memtable {
     ///
     /// This iterates through all entries in the memtable and marks the head version
     /// as committed if it was created by the specified transaction and is not yet committed.
-    pub fn commit_versions(&self, txn_id: TransactionId, commit_lsn: LogSequenceNumber) -> TableResult<()> {
+    pub fn commit_versions(
+        &self,
+        txn_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
         let mut data = self.data.write().unwrap();
 
         for chain in data.values_mut() {

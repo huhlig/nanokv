@@ -79,7 +79,9 @@ fn test_end_to_end_streaming_workflow() {
     let mut writer = table.writer(tx_id, LogSequenceNumber::from(0)).unwrap();
     writer.put_stream(b"large_key", &mut stream).unwrap();
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Step 2: Read back using get
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
@@ -138,7 +140,9 @@ fn test_mixed_inline_and_streaming_values() {
     writer.put_stream(b"large", &mut large_stream).unwrap();
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Verify all values
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
@@ -252,7 +256,9 @@ fn test_concurrent_streaming_operations() {
     let mut writer1 = table.writer(tx1, LogSequenceNumber::from(10)).unwrap();
     writer1.put_stream(b"key1", &mut stream1).unwrap();
     writer1.flush().unwrap();
-    writer1.commit_versions(LogSequenceNumber::from(15)).unwrap();
+    writer1
+        .commit_versions(LogSequenceNumber::from(15))
+        .unwrap();
 
     // Transaction 2: Write different large value
     let data2 = vec![0x22; 75 * 1024];
@@ -260,7 +266,9 @@ fn test_concurrent_streaming_operations() {
     let mut writer2 = table.writer(tx2, LogSequenceNumber::from(20)).unwrap();
     writer2.put_stream(b"key2", &mut stream2).unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(25)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(25))
+        .unwrap();
 
     // Transaction 3: Write another large value
     let data3 = vec![0x33; 100 * 1024];
@@ -268,7 +276,9 @@ fn test_concurrent_streaming_operations() {
     let mut writer3 = table.writer(tx3, LogSequenceNumber::from(30)).unwrap();
     writer3.put_stream(b"key3", &mut stream3).unwrap();
     writer3.flush().unwrap();
-    writer3.commit_versions(LogSequenceNumber::from(35)).unwrap();
+    writer3
+        .commit_versions(LogSequenceNumber::from(35))
+        .unwrap();
 
     // Verify all values are independent
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
@@ -311,7 +321,9 @@ fn test_memory_efficiency() {
     }
 
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Verify all values can be read back
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();
@@ -341,7 +353,9 @@ fn test_streaming_with_updates() {
         .unwrap();
     writer1.put_stream(b"update_key", &mut stream1).unwrap();
     writer1.flush().unwrap();
-    writer1.commit_versions(LogSequenceNumber::from(15)).unwrap();
+    writer1
+        .commit_versions(LogSequenceNumber::from(15))
+        .unwrap();
 
     // Update with larger value
     let data2 = vec![0xBB; 100 * 1024];
@@ -351,7 +365,9 @@ fn test_streaming_with_updates() {
         .unwrap();
     writer2.put_stream(b"update_key", &mut stream2).unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(25)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(25))
+        .unwrap();
 
     // Update with smaller value
     let data3 = vec![0xCC; 25 * 1024];
@@ -361,7 +377,9 @@ fn test_streaming_with_updates() {
         .unwrap();
     writer3.put_stream(b"update_key", &mut stream3).unwrap();
     writer3.flush().unwrap();
-    writer3.commit_versions(LogSequenceNumber::from(35)).unwrap();
+    writer3
+        .commit_versions(LogSequenceNumber::from(35))
+        .unwrap();
 
     // Verify MVCC: different snapshots see different values
     let reader1 = table.reader(LogSequenceNumber::from(15)).unwrap();
@@ -406,7 +424,9 @@ fn test_streaming_with_deletes() {
     }
 
     writer1.flush().unwrap();
-    writer1.commit_versions(LogSequenceNumber::from(15)).unwrap();
+    writer1
+        .commit_versions(LogSequenceNumber::from(15))
+        .unwrap();
 
     // Delete some values
     let mut writer2 = table
@@ -415,7 +435,9 @@ fn test_streaming_with_deletes() {
     writer2.delete(b"delete_key_1").unwrap();
     writer2.delete(b"delete_key_3").unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(30)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(30))
+        .unwrap();
 
     // Verify deletions
     let reader = table.reader(LogSequenceNumber::from(30)).unwrap();
@@ -471,7 +493,9 @@ fn test_large_value_patterns() {
         .unwrap();
     writer.put_stream(b"pattern_key", &mut stream).unwrap();
     writer.flush().unwrap();
-    writer.commit_versions(LogSequenceNumber::from(100)).unwrap();
+    writer
+        .commit_versions(LogSequenceNumber::from(100))
+        .unwrap();
 
     // Read back and verify pattern integrity
     let reader = table.reader(LogSequenceNumber::from(100)).unwrap();

@@ -146,7 +146,9 @@ fn test_hash_table_batch_get() {
     writer.commit_versions(LogSequenceNumber::from(10)).unwrap();
 
     // Batch get - use writer's batch_get with committed LSN
-    let writer2 = table.writer(TransactionId::from(2), LogSequenceNumber::from(10)).unwrap();
+    let writer2 = table
+        .writer(TransactionId::from(2), LogSequenceNumber::from(10))
+        .unwrap();
     let keys = vec![
         b"key1".as_ref(),
         b"key2".as_ref(),
@@ -435,7 +437,9 @@ fn test_hash_table_mvcc_visibility() {
         .unwrap();
     writer1.put(b"key1", b"value1").unwrap();
     writer1.flush().unwrap();
-    writer1.commit_versions(LogSequenceNumber::from(10)).unwrap();
+    writer1
+        .commit_versions(LogSequenceNumber::from(10))
+        .unwrap();
 
     // Transaction 2: Update value
     let mut writer2 = table
@@ -443,7 +447,9 @@ fn test_hash_table_mvcc_visibility() {
         .unwrap();
     writer2.put(b"key1", b"value2").unwrap();
     writer2.flush().unwrap();
-    writer2.commit_versions(LogSequenceNumber::from(20)).unwrap();
+    writer2
+        .commit_versions(LogSequenceNumber::from(20))
+        .unwrap();
 
     // Reader at LSN 10 should see value1
     let reader1 = table.reader(LogSequenceNumber::from(10)).unwrap();

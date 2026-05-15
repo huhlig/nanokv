@@ -835,13 +835,11 @@ impl<'a, FS: FileSystem> Flushable for LsmWriter<'a, FS> {
             match value_opt {
                 Some(value) => {
                     // Insert or update - leave uncommitted
-                    self.tree
-                        .insert_internal(key, value, self.tx_id, None)?;
+                    self.tree.insert_internal(key, value, self.tx_id, None)?;
                 }
                 None => {
                     // Delete (insert tombstone) - leave uncommitted
-                    self.tree
-                        .delete_internal(key, self.tx_id, None)?;
+                    self.tree.delete_internal(key, self.tx_id, None)?;
                 }
             }
         }
@@ -869,11 +867,11 @@ impl<'a, FS: FileSystem> LsmWriter<'a, FS> {
         // Commit versions in the active memtable
         let active_memtable = self.tree.active_memtable.read().unwrap();
         active_memtable.commit_versions(self.tx_id, commit_lsn)?;
-        
+
         // Note: We don't need to commit in immutable memtables because those are
         // already being flushed to SSTables and won't have uncommitted data from
         // this transaction. The flush() method only writes to the active memtable.
-        
+
         Ok(())
     }
 }
