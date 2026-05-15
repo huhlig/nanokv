@@ -617,6 +617,106 @@ impl<FS: FileSystem> TableEngineRegistry<FS> {
         engines.contains_key(&table_id)
     }
 
+    /// Vacuum a table to remove obsolete version chains.
+    ///
+    /// This method delegates to the appropriate engine's vacuum implementation.
+    /// Not all engines support vacuuming (e.g., AppendLog, Bloom filters).
+    ///
+    /// # Arguments
+    ///
+    /// * `table_id` - The table to vacuum
+    /// * `min_visible_lsn` - The minimum LSN that must remain visible
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of versions removed, or an error if the table doesn't
+    /// exist or doesn't support vacuuming.
+    pub fn vacuum_table(
+        &self,
+        table_id: TableId,
+        min_visible_lsn: crate::wal::LogSequenceNumber,
+    ) -> Result<usize, crate::kvdb::DatabaseError> {
+        let engine = self.get(table_id).ok_or_else(|| {
+            crate::kvdb::DatabaseError::not_found(table_id)
+        })?;
+
+        match engine {
+            TableEngineInstance::PagedBTree(btree) => {
+                // PagedBTree supports vacuum
+                btree.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            TableEngineInstance::MemoryBTree(btree) => {
+                // MemoryBTree supports vacuum
+                btree.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            TableEngineInstance::MemoryHashTable(hash) => {
+                // MemoryHashTable supports vacuum
+                hash.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            TableEngineInstance::MemoryART(art) => {
+                // MemoryART supports vacuum
+                art.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            TableEngineInstance::LsmTree(lsm) => {
+                // LsmTree supports vacuum
+                lsm.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            TableEngineInstance::MemoryGraphTable(graph) => {
+                // MemoryGraphTable supports vacuum
+                graph.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            TableEngineInstance::TimeSeriesTable(ts) => {
+                // TimeSeriesTable supports vacuum
+                ts.vacuum(min_visible_lsn).map_err(|e| {
+                    crate::kvdb::DatabaseError::other(format!("Vacuum failed: {}", e))
+                })
+            }
+            // Engines that don't support vacuum
+            TableEngineInstance::AppendLog(_) => {
+                Err(crate::kvdb::DatabaseError::invalid_operation(
+                    "AppendLog does not support vacuum".to_string(),
+                ))
+            }
+            TableEngineInstance::PagedBloomFilter(_) => {
+                Err(crate::kvdb::DatabaseError::invalid_operation(
+                    "Bloom filters do not support vacuum".to_string(),
+                ))
+            }
+            TableEngineInstance::PagedHnswVector(_) => {
+                Err(crate::kvdb::DatabaseError::invalid_operation(
+                    "HNSW vectors do not support vacuum yet".to_string(),
+                ))
+            }
+            TableEngineInstance::PagedRTree(_) => {
+                Err(crate::kvdb::DatabaseError::invalid_operation(
+                    "R-Tree does not support vacuum yet".to_string(),
+                ))
+            }
+            TableEngineInstance::PagedFullTextIndex(_) => {
+                Err(crate::kvdb::DatabaseError::invalid_operation(
+                    "Full-text index does not support vacuum yet".to_string(),
+                ))
+            }
+            TableEngineInstance::MemoryBlob(_) => {
+                Err(crate::kvdb::DatabaseError::invalid_operation(
+                    "Blob storage does not support vacuum".to_string(),
+                ))
+            }
+        }
+    }
+
     /// Close all engines and clean up resources.
     pub fn close_all(&self) {
         let mut engines = self.engines.write().unwrap();

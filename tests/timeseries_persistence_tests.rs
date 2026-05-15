@@ -17,13 +17,38 @@
 //! Tests for TimeSeries bucket persistence, eviction, and recovery.
 
 use nanokv::pager::{Pager, PagerConfig};
+use nanokv::snap::Snapshot;
 use nanokv::table::TimeSeries;
 use nanokv::table::timeseries::{
     BucketId, BucketManager, TimeBucket, TimeSeriesAggregation, TimeSeriesConfig, TimeSeriesTable,
 };
+use nanokv::txn::TransactionId;
 use nanokv::types::TableId;
 use nanokv::vfs::MemoryFileSystem;
+use nanokv::wal::LogSequenceNumber;
 use std::sync::Arc;
+
+// Helper function to create a snapshot that sees all committed data
+fn create_snapshot() -> Snapshot {
+    Snapshot::new(
+        nanokv::snap::SnapshotId::from(0),
+        String::new(),
+        LogSequenceNumber::from(u64::MAX),
+        0,
+        0,
+        Vec::new(),
+    )
+}
+
+// Helper function to create a transaction ID for testing
+fn create_tx_id() -> TransactionId {
+    TransactionId::from(1)
+}
+
+// Helper function to create a commit LSN for testing
+fn create_commit_lsn() -> LogSequenceNumber {
+    LogSequenceNumber::from(1)
+}
 
 #[test]
 fn test_bucket_flush_and_load() {
@@ -34,9 +59,14 @@ fn test_bucket_flush_and_load() {
     // Create a bucket with data
     let bucket_id = BucketId(0);
     let mut bucket = TimeBucket::new(bucket_id, 3600, pager.clone());
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
 
-    bucket.insert(100, vec![1, 2, 3]).unwrap();
-    bucket.insert(200, vec![4, 5, 6]).unwrap();
+    bucket.insert(100, vec![1, 2, 3], tx_id).unwrap();
+    bucket.insert(200, vec![4, 5, 6], tx_id).unwrap();
+    
+    // Commit the versions
+    bucket.commit_versions(tx_id, commit_lsn);
 
     // Flush to disk
     assert!(bucket.is_dirty());
@@ -62,13 +92,17 @@ fn test_bucket_manager_eviction() {
 
     // Create a bucket manager with small memory limit
     let mut manager = BucketManager::new(3600, pager.clone(), 2);
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
 
     // Add buckets until eviction occurs
     let bucket1 = manager.get_or_create_bucket(100).unwrap();
-    bucket1.insert(100, vec![1]).unwrap();
+    bucket1.insert(100, vec![1], tx_id).unwrap();
+    bucket1.commit_versions(tx_id, commit_lsn);
 
     let bucket2 = manager.get_or_create_bucket(4000).unwrap();
-    bucket2.insert(4000, vec![2]).unwrap();
+    bucket2.insert(4000, vec![2], tx_id).unwrap();
+    bucket2.commit_versions(tx_id, commit_lsn);
 
     assert_eq!(manager.bucket_count(), 2);
 
@@ -80,7 +114,8 @@ fn test_bucket_manager_eviction() {
 
     // Adding a third bucket should trigger eviction
     let bucket3 = manager.get_or_create_bucket(8000).unwrap();
-    bucket3.insert(8000, vec![3]).unwrap();
+    bucket3.insert(8000, vec![3], tx_id).unwrap();
+    bucket3.commit_versions(tx_id, commit_lsn);
 
     // Should still have 2 buckets in memory (one was evicted)
     assert_eq!(manager.bucket_count(), 2);
@@ -98,28 +133,34 @@ fn test_bucket_manager_lazy_loading() {
 
     // Create a bucket manager with small memory limit
     let mut manager = BucketManager::new(3600, pager.clone(), 2);
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
+    let snapshot = create_snapshot();
 
     // Add and populate buckets
     let bucket1 = manager.get_or_create_bucket(100).unwrap();
-    bucket1.insert(100, vec![1, 2, 3]).unwrap();
+    bucket1.insert(100, vec![1, 2, 3], tx_id).unwrap();
+    bucket1.commit_versions(tx_id, commit_lsn);
 
     let bucket2 = manager.get_or_create_bucket(4000).unwrap();
-    bucket2.insert(4000, vec![4, 5, 6]).unwrap();
+    bucket2.insert(4000, vec![4, 5, 6], tx_id).unwrap();
+    bucket2.commit_versions(tx_id, commit_lsn);
 
     // Flush all buckets
     manager.flush_all().unwrap();
 
     // Add a third bucket to trigger eviction of the first
     let bucket3 = manager.get_or_create_bucket(8000).unwrap();
-    bucket3.insert(8000, vec![7, 8, 9]).unwrap();
+    bucket3.insert(8000, vec![7, 8, 9], tx_id).unwrap();
+    bucket3.commit_versions(tx_id, commit_lsn);
 
     // Now access the first bucket again - should be lazy loaded
     let reloaded_bucket1 = manager.get_or_create_bucket(100).unwrap();
 
     // Verify the data was preserved
     assert_eq!(reloaded_bucket1.len(), 1);
-    let value = reloaded_bucket1.get(100).unwrap();
-    assert_eq!(value, &vec![1, 2, 3]);
+    let value = reloaded_bucket1.get(100, &snapshot).unwrap();
+    assert_eq!(value, vec![1, 2, 3]);
 }
 
 #[test]
@@ -130,18 +171,23 @@ fn test_bucket_lru_eviction_order() {
 
     // Create a bucket manager with limit of 3 buckets
     let mut manager = BucketManager::new(3600, pager.clone(), 3);
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
 
     // Add 3 buckets
     let b1 = manager.get_or_create_bucket(100).unwrap();
-    b1.insert(100, vec![1]).unwrap();
+    b1.insert(100, vec![1], tx_id).unwrap();
+    b1.commit_versions(tx_id, commit_lsn);
     std::thread::sleep(std::time::Duration::from_millis(10));
 
     let b2 = manager.get_or_create_bucket(4000).unwrap();
-    b2.insert(4000, vec![2]).unwrap();
+    b2.insert(4000, vec![2], tx_id).unwrap();
+    b2.commit_versions(tx_id, commit_lsn);
     std::thread::sleep(std::time::Duration::from_millis(10));
 
     let b3 = manager.get_or_create_bucket(8000).unwrap();
-    b3.insert(8000, vec![3]).unwrap();
+    b3.insert(8000, vec![3], tx_id).unwrap();
+    b3.commit_versions(tx_id, commit_lsn);
     std::thread::sleep(std::time::Duration::from_millis(10));
 
     // Access bucket 1 to make it more recently used
@@ -153,7 +199,8 @@ fn test_bucket_lru_eviction_order() {
 
     // Add a 4th bucket - should evict bucket 2 (least recently used)
     let b4 = manager.get_or_create_bucket(12000).unwrap();
-    b4.insert(12000, vec![4]).unwrap();
+    b4.insert(12000, vec![4], tx_id).unwrap();
+    b4.commit_versions(tx_id, commit_lsn);
 
     // Bucket 1 and 3 should still be in memory
     assert_eq!(manager.bucket_count(), 3);
@@ -167,12 +214,14 @@ fn test_bucket_dirty_flag() {
 
     let bucket_id = BucketId(0);
     let mut bucket = TimeBucket::new(bucket_id, 3600, pager.clone());
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
 
     // Initially not dirty
     assert!(!bucket.is_dirty());
 
     // Insert makes it dirty
-    bucket.insert(100, vec![1, 2, 3]).unwrap();
+    bucket.insert(100, vec![1, 2, 3], tx_id).unwrap();
     assert!(bucket.is_dirty());
 
     // Flush clears dirty flag
@@ -180,7 +229,8 @@ fn test_bucket_dirty_flag() {
     assert!(!bucket.is_dirty());
 
     // Another insert makes it dirty again
-    bucket.insert(200, vec![4, 5, 6]).unwrap();
+    bucket.insert(200, vec![4, 5, 6], tx_id).unwrap();
+    bucket.commit_versions(tx_id, commit_lsn);
     assert!(bucket.is_dirty());
 }
 
@@ -192,6 +242,9 @@ fn test_bucket_last_access_time() {
 
     let bucket_id = BucketId(0);
     let mut bucket = TimeBucket::new(bucket_id, 3600, pager.clone());
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
+    let snapshot = create_snapshot();
 
     let initial_time = bucket.last_access_time();
     assert!(initial_time > 0);
@@ -200,13 +253,14 @@ fn test_bucket_last_access_time() {
     std::thread::sleep(std::time::Duration::from_millis(10));
 
     // Access the bucket
-    bucket.insert(100, vec![1]).unwrap();
+    bucket.insert(100, vec![1], tx_id).unwrap();
+    bucket.commit_versions(tx_id, commit_lsn);
     let after_insert = bucket.last_access_time();
     assert!(after_insert >= initial_time);
 
     // Wait and access again
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let _ = bucket.get(100);
+    let _ = bucket.get(100, &snapshot);
     let after_get = bucket.last_access_time();
     assert!(after_get >= after_insert);
 }
@@ -219,17 +273,21 @@ fn test_bucket_estimated_size() {
 
     let bucket_id = BucketId(0);
     let mut bucket = TimeBucket::new(bucket_id, 3600, pager.clone());
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
 
     let initial_size = bucket.estimated_size();
     assert!(initial_size > 0);
 
     // Add data
-    bucket.insert(100, vec![1, 2, 3]).unwrap();
+    bucket.insert(100, vec![1, 2, 3], tx_id).unwrap();
+    bucket.commit_versions(tx_id, commit_lsn);
     let size_after_insert = bucket.estimated_size();
     assert!(size_after_insert > initial_size);
 
     // Add more data
-    bucket.insert(200, vec![4, 5, 6, 7, 8]).unwrap();
+    bucket.insert(200, vec![4, 5, 6, 7, 8], tx_id).unwrap();
+    bucket.commit_versions(tx_id, commit_lsn);
     let size_after_second_insert = bucket.estimated_size();
     assert!(size_after_second_insert > size_after_insert);
 }
@@ -241,11 +299,14 @@ fn test_bucket_manager_flush_all() {
     let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
 
     let mut manager = BucketManager::new(3600, pager.clone(), 10);
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
 
     // Add multiple buckets with data
     for i in 0..5 {
         let bucket = manager.get_or_create_bucket(i * 4000).unwrap();
-        bucket.insert(i * 4000, vec![i as u8]).unwrap();
+        bucket.insert(i * 4000, vec![i as u8], tx_id).unwrap();
+        bucket.commit_versions(tx_id, commit_lsn);
         assert!(bucket.is_dirty());
     }
 
@@ -267,6 +328,9 @@ fn test_bucket_recovery_after_eviction() {
     let pager = Arc::new(Pager::create(&fs, "test.db", PagerConfig::default()).unwrap());
 
     let mut manager = BucketManager::new(3600, pager.clone(), 2);
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
+    let snapshot = create_snapshot();
 
     // Add data to multiple buckets
     let test_data = vec![
@@ -277,7 +341,8 @@ fn test_bucket_recovery_after_eviction() {
 
     for (timestamp, data) in &test_data {
         let bucket = manager.get_or_create_bucket(*timestamp).unwrap();
-        bucket.insert(*timestamp, data.clone()).unwrap();
+        bucket.insert(*timestamp, data.clone(), tx_id).unwrap();
+        bucket.commit_versions(tx_id, commit_lsn);
     }
 
     // Flush all to ensure data is persisted
@@ -286,8 +351,8 @@ fn test_bucket_recovery_after_eviction() {
     // Access buckets in different order to trigger evictions
     for (timestamp, expected_data) in &test_data {
         let bucket = manager.get_or_create_bucket(*timestamp).unwrap();
-        let value = bucket.get(*timestamp).unwrap();
-        assert_eq!(value, expected_data);
+        let value = bucket.get(*timestamp, &snapshot).unwrap();
+        assert_eq!(value, *expected_data);
     }
 }
 
@@ -320,11 +385,17 @@ fn test_large_bucket_persistence() {
 
     let bucket_id = BucketId(0);
     let mut bucket = TimeBucket::new(bucket_id, 3600, pager.clone());
+    let tx_id = create_tx_id();
+    let commit_lsn = create_commit_lsn();
+    let snapshot = create_snapshot();
 
     // Add many data points
     for i in 0..1000 {
-        bucket.insert(i, vec![i as u8; 10]).unwrap();
+        bucket.insert(i, vec![i as u8; 10], tx_id).unwrap();
     }
+    
+    // Commit all versions
+    bucket.commit_versions(tx_id, commit_lsn);
 
     // Flush to disk
     bucket.flush().unwrap();
@@ -337,8 +408,8 @@ fn test_large_bucket_persistence() {
 
     // Verify some data points
     for i in (0..1000).step_by(100) {
-        let value = loaded_bucket.get(i).unwrap();
-        assert_eq!(value, &vec![i as u8; 10]);
+        let value = loaded_bucket.get(i, &snapshot).unwrap();
+        assert_eq!(value, vec![i as u8; 10]);
     }
 }
 
@@ -346,7 +417,7 @@ fn test_large_bucket_persistence() {
 fn test_timeseries_cursor_aggregations() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "agg.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(1),
         "metrics".to_string(),
         pager,
@@ -365,6 +436,9 @@ fn test_timeseries_cursor_aggregations() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -383,7 +457,7 @@ fn test_timeseries_cursor_aggregations() {
 fn test_timeseries_cursor_downsampling_avg() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "downsample.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(2),
         "metrics".to_string(),
         pager,
@@ -402,6 +476,9 @@ fn test_timeseries_cursor_downsampling_avg() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 120).unwrap();
     let windows = cursor.downsample(60, TimeSeriesAggregation::Avg).unwrap();
@@ -426,7 +503,7 @@ fn test_timeseries_cursor_downsampling_avg() {
 fn test_timeseries_cursor_skips_non_numeric_values_for_numeric_aggregations() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "non_numeric.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(3),
         "metrics".to_string(),
         pager,
@@ -440,6 +517,9 @@ fn test_timeseries_cursor_skips_non_numeric_values_for_numeric_aggregations() {
         .append_point(series_key, 200, b"not-a-number")
         .unwrap();
     table.append_point(series_key, 300, b"18").unwrap();
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -454,7 +534,7 @@ fn test_timeseries_cursor_skips_non_numeric_values_for_numeric_aggregations() {
 fn test_timeseries_cursor_downsampling_count_and_invalid_interval() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "count.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(4),
         "metrics".to_string(),
         pager,
@@ -466,6 +546,9 @@ fn test_timeseries_cursor_downsampling_count_and_invalid_interval() {
     table.append_point(series_key, 10, b"bad").unwrap();
     table.append_point(series_key, 20, b"still-bad").unwrap();
     table.append_point(series_key, 70, b"ignored").unwrap();
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 120).unwrap();
     let windows = cursor.downsample(60, TimeSeriesAggregation::Count).unwrap();
@@ -517,7 +600,7 @@ fn test_aggregation_with_empty_series() {
 fn test_aggregation_with_single_value() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "single.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(6),
         "metrics".to_string(),
         pager,
@@ -527,6 +610,9 @@ fn test_aggregation_with_single_value() {
 
     let series_key = b"single-value";
     table.append_point(series_key, 100, b"42.5").unwrap();
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 200).unwrap();
 
@@ -541,7 +627,7 @@ fn test_aggregation_with_single_value() {
 fn test_aggregation_with_negative_values() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "negative.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(7),
         "metrics".to_string(),
         pager,
@@ -560,6 +646,9 @@ fn test_aggregation_with_negative_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -574,7 +663,7 @@ fn test_aggregation_with_negative_values() {
 fn test_aggregation_with_zero_values() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "zeros.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(8),
         "metrics".to_string(),
         pager,
@@ -586,6 +675,9 @@ fn test_aggregation_with_zero_values() {
     for i in 0..5 {
         table.append_point(series_key, i * 100, b"0").unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -600,7 +692,7 @@ fn test_aggregation_with_zero_values() {
 fn test_aggregation_with_very_large_values() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "large.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(9),
         "metrics".to_string(),
         pager,
@@ -618,6 +710,9 @@ fn test_aggregation_with_very_large_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 
@@ -631,7 +726,7 @@ fn test_aggregation_with_very_large_values() {
 fn test_aggregation_with_very_small_values() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "small.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(10),
         "metrics".to_string(),
         pager,
@@ -649,6 +744,9 @@ fn test_aggregation_with_very_small_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 
@@ -662,7 +760,7 @@ fn test_aggregation_with_very_small_values() {
 fn test_downsampling_with_uneven_windows() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "uneven.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(11),
         "metrics".to_string(),
         pager,
@@ -682,6 +780,9 @@ fn test_downsampling_with_uneven_windows() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 100).unwrap();
     let windows = cursor.downsample(50, TimeSeriesAggregation::Sum).unwrap();
@@ -702,7 +803,7 @@ fn test_downsampling_with_uneven_windows() {
 fn test_downsampling_with_min_max() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "minmax.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(12),
         "metrics".to_string(),
         pager,
@@ -722,6 +823,9 @@ fn test_downsampling_with_min_max() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 100).unwrap();
 
@@ -754,7 +858,7 @@ fn test_downsampling_with_min_max() {
 fn test_aggregation_with_json_nested_values() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "json_nested.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(13),
         "metrics".to_string(),
         pager,
@@ -772,6 +876,9 @@ fn test_aggregation_with_json_nested_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 
@@ -784,7 +891,7 @@ fn test_aggregation_with_json_nested_values() {
 fn test_aggregation_with_all_non_numeric() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "all_non_numeric.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(14),
         "metrics".to_string(),
         pager,
@@ -798,6 +905,9 @@ fn test_aggregation_with_all_non_numeric() {
             .append_point(series_key, i * 100, b"not-a-number")
             .unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -815,7 +925,7 @@ fn test_aggregation_with_all_non_numeric() {
 fn test_downsampling_with_large_interval() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "large_interval.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(15),
         "metrics".to_string(),
         pager,
@@ -829,6 +939,9 @@ fn test_downsampling_with_large_interval() {
             .append_point(series_key, i * 10, format!("{}", i * 10).as_bytes())
             .unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 100).unwrap();
 
@@ -842,7 +955,7 @@ fn test_downsampling_with_large_interval() {
 fn test_multiple_aggregations_consistency() {
     let fs = MemoryFileSystem::new();
     let pager = Arc::new(Pager::create(&fs, "consistency.db", PagerConfig::default()).unwrap());
-    let mut table = TimeSeriesTable::new(
+    let table = TimeSeriesTable::new(
         TableId::from(16),
         "metrics".to_string(),
         pager,
@@ -860,6 +973,9 @@ fn test_multiple_aggregations_consistency() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
+    
+    // Commit the versions so they become visible
+    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 

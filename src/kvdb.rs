@@ -587,6 +587,105 @@ impl<FS: FileSystem> Database<FS> {
         }
     }
 
+    /// Compute the minimum visible LSN across all active snapshots and transactions.
+    ///
+    /// This is the watermark below which version chains can be safely vacuumed.
+    /// Any version with commit_lsn < min_visible_lsn is guaranteed to be invisible
+    /// to all current and future transactions.
+    ///
+    /// Returns None if there are no active snapshots (meaning all committed versions
+    /// are potentially visible).
+    pub fn min_visible_lsn(&self) -> Option<LogSequenceNumber> {
+        let snapshots = self.snapshots.read().unwrap();
+        
+        // Find the minimum LSN across all active snapshots
+        snapshots.values().map(|snapshot| snapshot.lsn).min()
+    }
+
+    /// Vacuum a specific table to remove obsolete version chains.
+    ///
+    /// This removes versions older than the minimum visible LSN across all active
+    /// snapshots. The vacuum is performed atomically per table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_id` - The table to vacuum
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of versions removed, or an error if the table doesn't exist
+    /// or doesn't support vacuuming.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Vacuum a specific table
+    /// let removed = db.vacuum_table(table_id)?;
+    /// println!("Removed {} obsolete versions", removed);
+    /// ```
+    pub fn vacuum_table(&self, table_id: TableId) -> Result<usize, DatabaseError> {
+        // Get minimum visible LSN
+        let min_visible_lsn = match self.min_visible_lsn() {
+            Some(lsn) => lsn,
+            None => {
+                // No active snapshots - use current LSN as watermark
+                // This is conservative: we keep all versions visible to any future snapshot
+                self.current_snapshot_lsn()
+            }
+        };
+
+        // Get table info to determine engine type
+        let table_info = self
+            .get_object_info(table_id)?
+            .ok_or_else(|| DatabaseError::not_found(table_id))?;
+
+        // Vacuum the table through the engine registry
+        let registry = self.engine_registry.clone();
+        registry.vacuum_table(table_id, min_visible_lsn)
+    }
+
+    /// Vacuum all tables in the database.
+    ///
+    /// This is a convenience method that vacuums all tables that support it.
+    /// Tables that don't support vacuuming are skipped.
+    ///
+    /// # Returns
+    ///
+    /// Returns a map of table_id -> versions_removed for all vacuumed tables.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Vacuum all tables
+    /// let results = db.vacuum_all()?;
+    /// for (table_id, removed) in results {
+    ///     println!("Table {}: removed {} versions", table_id, removed);
+    /// }
+    /// ```
+    pub fn vacuum_all(&self) -> Result<std::collections::HashMap<TableId, usize>, DatabaseError> {
+        let mut results = std::collections::HashMap::new();
+        
+        // Get all tables
+        let tables = self.list_tables()?;
+        
+        for table_info in tables {
+            // Try to vacuum each table, but don't fail if a table doesn't support it
+            match self.vacuum_table(table_info.id) {
+                Ok(removed) => {
+                    if removed > 0 {
+                        results.insert(table_info.id, removed);
+                    }
+                }
+                Err(_) => {
+                    // Skip tables that don't support vacuuming
+                    continue;
+                }
+            }
+        }
+        
+        Ok(results)
+    }
+
     /// Get the consistency guarantees provided by this database.
     ///
     /// This documents the ACID properties, isolation levels, and crash
