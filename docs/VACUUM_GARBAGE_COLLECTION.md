@@ -87,22 +87,18 @@ db.vacuum_all()?;
 
 ## Implementation Status
 
-### Completed (nanokv-5fv)
+### Completed (nanokv-5fv) ✅ CLOSED
 - ✅ VersionChain::vacuum() method (already existed)
 - ✅ Database::min_visible_lsn() for watermark computation
 - ✅ Database::vacuum_table() and vacuum_all() APIs
 - ✅ TableEngineRegistry::vacuum_table() dispatcher
 - ✅ Infrastructure and design complete
+- ✅ vacuum() methods implemented in all table engines (nanokv-cod)
+- ✅ Basic tests passing (version_chain_tests, timeseries_mvcc_tests, memtable tests)
 
 ### Remaining Work
 
-1. **Implement vacuum() in all engines** (nanokv-cod)
-   - Add vacuum method to each table engine
-   - Iterate through stored data
-   - Call VersionChain::vacuum() on each entry
-   - Return total count of removed versions
-
-2. **Background vacuum task** (nanokv-mkk)
+1. **Background vacuum task** (nanokv-mkk) - OPEN
    - Periodic background task in Database
    - Configurable vacuum interval
    - Manual trigger API
