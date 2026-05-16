@@ -499,6 +499,7 @@ fn test_timeseries_append_and_scan() {
     table.append_point(b"cpu.usage", 1000, b"value1").unwrap();
     table.append_point(b"cpu.usage", 2000, b"value2").unwrap();
     table.append_point(b"cpu.usage", 3000, b"value3").unwrap();
+    // append_point uses TransactionId::from(1), so commit with matching ID
     table.commit_versions(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
 
     let mut cursor = table.scan_series(b"cpu.usage", 1500, 2500).unwrap();

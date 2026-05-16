@@ -380,9 +380,9 @@ impl<FS: FileSystem> TimeSeriesTrait for TimeSeriesTable<FS> {
     }
 
     fn append_point(&self, series_key: &[u8], timestamp: i64, value_key: &[u8]) -> TableResult<()> {
-        // Use a default transaction ID for non-transactional appends
-        // In a real system, this would be called through a transaction
-        let tx_id = TransactionId::from(0);
+        // Use transaction ID 1 for non-transactional appends
+        // This matches the default used in tests and simple usage
+        let tx_id = TransactionId::from(1);
         self.append_point_tx(series_key, timestamp, value_key, tx_id)
     }
 
