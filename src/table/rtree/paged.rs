@@ -1207,7 +1207,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
     /// Delete a geometry with transaction tracking.
     pub fn delete_geometry_tx(&self, id: &[u8], tx_id: TransactionId) -> TableResult<()> {
-        // For delete, we mark the entry with a new version that will be invisible
+        // For delete, we mark the entry with a tombstone version
         // The actual deletion happens during vacuum
         let root_page_id = self.root_page_id();
         let root_node = Self::read_node(&self.pager, root_page_id)?;
@@ -1220,8 +1220,8 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
             if let Some(entries) = leaf_node.leaf_entries_mut() {
                 if let Some(entry) = entries.get_mut(entry_index) {
-                    // Prepend a new version to mark as deleted
-                    entry.prepend_version(tx_id);
+                    // Prepend a tombstone version to mark as deleted
+                    entry.prepend_tombstone(tx_id);
                     Self::write_node(&self.pager, leaf_page_id, &leaf_node)?;
                     return Ok(());
                 }

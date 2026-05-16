@@ -103,8 +103,23 @@ impl LeafEntry {
     }
 
     /// Check if this entry is visible to the given snapshot.
+    /// Returns false if the visible version is a tombstone.
     pub fn is_visible(&self, snapshot: &Snapshot) -> bool {
-        self.version_chain.find_visible_version(snapshot).is_some()
+        match self.version_chain.find_visible_version(snapshot) {
+            Some(value) => !Self::is_tombstone(value),
+            None => false,
+        }
+    }
+
+    /// Check if a version value is a tombstone marker.
+    /// Tombstones are marked with a single byte [0xFF].
+    fn is_tombstone(value: &[u8]) -> bool {
+        value == &[0xFF]
+    }
+
+    /// Create a tombstone marker value.
+    fn tombstone_marker() -> Vec<u8> {
+        vec![0xFF]
     }
 
     /// Commit this entry's version at the given LSN.
@@ -113,12 +128,22 @@ impl LeafEntry {
     }
 
     /// Prepend a new version to this entry's chain.
+    /// For deletions, use prepend_tombstone instead.
     pub fn prepend_version(&mut self, tx_id: TransactionId) {
         let old_chain = std::mem::replace(
             &mut self.version_chain,
             VersionChain::new(Vec::new(), tx_id),
         );
         self.version_chain = old_chain.prepend(Vec::new(), tx_id);
+    }
+
+    /// Prepend a tombstone version to mark this entry as deleted.
+    pub fn prepend_tombstone(&mut self, tx_id: TransactionId) {
+        let old_chain = std::mem::replace(
+            &mut self.version_chain,
+            VersionChain::new(Self::tombstone_marker(), tx_id),
+        );
+        self.version_chain = old_chain.prepend(Self::tombstone_marker(), tx_id);
     }
 
     /// Vacuum old versions from this entry's chain.
