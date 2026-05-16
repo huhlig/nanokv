@@ -242,7 +242,6 @@ impl<FS: FileSystem> PagedRTree<FS> {
     fn insert_internal(&self, id: &[u8], geometry: GeometryRef<'_>, tx_id: TransactionId) -> TableResult<()> {
         let mbr = self.geometry_to_mbr(geometry)?;
         let object_id = KeyBuf(id.to_vec());
-        let entry = LeafEntry::new(mbr, object_id, tx_id);
 
         let root_page_id = self.root_page_id();
         let root_node = Self::read_node(&self.pager, root_page_id).map_err(|e| {
@@ -251,6 +250,31 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 id
             ))
         })?;
+
+        // Check if an entry with this ID already exists
+        if let Some((leaf_page_id, entry_index)) = self.find_leaf_entry(root_page_id, &root_node, id)? {
+            // Entry exists - update its version chain and MBR
+            let mut leaf_node = Self::read_node(&self.pager, leaf_page_id)?;
+            
+            if let Some(entries) = leaf_node.leaf_entries_mut() {
+                if let Some(entry) = entries.get_mut(entry_index) {
+                    // Update the MBR to the new geometry
+                    entry.mbr = mbr;
+                    // Prepend a new version to the chain
+                    entry.prepend_version(tx_id);
+                    Self::write_node(&self.pager, leaf_page_id, &leaf_node)?;
+                    return Ok(());
+                }
+            }
+            
+            return Err(TableError::Other(format!(
+                "Failed to update entry at index {} in leaf {}",
+                entry_index, leaf_page_id
+            )));
+        }
+
+        // Entry doesn't exist - create a new one
+        let entry = LeafEntry::new(mbr, object_id, tx_id);
 
         // Find the appropriate leaf node
         let leaf_page_id = self.choose_leaf(root_page_id, &root_node, &entry.mbr)?;
