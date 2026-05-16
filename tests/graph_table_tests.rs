@@ -18,11 +18,18 @@
 
 use nanokv::table::{GraphAdjacency, GraphConfig, MemoryGraphTable};
 use nanokv::types::TableId;
+use nanokv::txn::TransactionId;
+use nanokv::wal::LogSequenceNumber;
+
+/// Helper to commit graph changes for tests
+fn commit_graph(graph: &MemoryGraphTable) {
+    graph.commit_versions(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
+}
 
 #[test]
 fn test_graph_basic_operations() {
     let config = GraphConfig::new();
-    let mut graph = MemoryGraphTable::new(TableId::from(1), "test_graph".to_string(), config);
+    let graph = MemoryGraphTable::new(TableId::from(1), "test_graph".to_string(), config);
 
     // Add edges
     graph
@@ -34,6 +41,7 @@ fn test_graph_basic_operations() {
     graph
         .add_edge(b"alice", b"follows", b"charlie", b"edge3")
         .unwrap();
+    commit_graph(&graph);
 
     // Query outgoing edges
     let cursor = graph.outgoing(b"alice", Some(b"follows")).unwrap();

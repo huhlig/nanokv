@@ -344,7 +344,7 @@ impl GraphAdjacency for MemoryGraphTable {
     }
 
     fn add_edge(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
@@ -354,7 +354,7 @@ impl GraphAdjacency for MemoryGraphTable {
     }
 
     fn add_edge_with_weight(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
@@ -500,7 +500,7 @@ impl GraphAdjacency for MemoryGraphTable {
     }
 
     fn remove_edge(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],

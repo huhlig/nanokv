@@ -29,26 +29,41 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::sync::{Arc, Mutex, RwLock};
 
-/// Placeholder EdgeCursor for Transaction's GraphAdjacency implementation.
-/// This will be replaced with actual cursor when GraphAdjacency table engine is implemented.
+/// EdgeCursor for Transaction's GraphAdjacency implementation.
+/// Wraps the underlying MemoryEdgeCursor and owns the edge data.
 #[derive(Debug)]
 pub struct TransactionEdgeCursor {
-    _phantom: std::marker::PhantomData<()>,
+    edges: Vec<crate::table::EdgeRef>,
+    position: usize,
+}
+
+impl TransactionEdgeCursor {
+    /// Create a new TransactionEdgeCursor from a MemoryEdgeCursor.
+    fn from_memory_cursor(cursor: crate::table::graph::MemoryEdgeCursor) -> Self {
+        // Collect all edges from the cursor
+        let edges = cursor.collect_all().unwrap_or_default();
+        Self { edges, position: 0 }
+    }
 }
 
 impl EdgeCursor for TransactionEdgeCursor {
     fn valid(&self) -> bool {
-        false
+        self.position < self.edges.len()
     }
 
     fn current(&self) -> Option<crate::table::EdgeRef> {
-        None
+        if self.valid() {
+            Some(self.edges[self.position].clone())
+        } else {
+            None
+        }
     }
 
     fn next(&mut self) -> crate::table::TableResult<()> {
-        Err(crate::table::TableError::Other(
-            "GraphAdjacency table engine not yet implemented".to_string(),
-        ))
+        if self.valid() {
+            self.position += 1;
+        }
+        Ok(())
     }
 }
 
@@ -347,7 +362,7 @@ pub struct Transaction<FS: FileSystem> {
 
     // Track specialty-table graph edge operations for commit/rollback
     // Each entry is (table_id, edge_operation)
-    graph_write_set: Vec<(TableId, GraphEdgeOp)>,
+    graph_write_set: std::cell::RefCell<Vec<(TableId, GraphEdgeOp)>>,
 
     // Track specialty-table time series operations for commit/rollback
     // Each entry is (table_id, time_series_operation)
@@ -402,7 +417,7 @@ impl<FS: FileSystem> Transaction<FS> {
             read_set: HashSet::new(),
             write_set: HashMap::new(),
             bloom_write_set: HashSet::new(),
-            graph_write_set: Vec::new(),
+            graph_write_set: std::cell::RefCell::new(Vec::new()),
             timeseries_write_set: std::cell::RefCell::new(Vec::new()),
             vector_write_set: RwLock::new(Vec::new()),
             geospatial_write_set: RwLock::new(Vec::new()),
@@ -494,8 +509,8 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 
     /// Record a graph edge operation for commit/rollback.
-    pub(crate) fn record_graph_operation(&mut self, object_id: TableId, op: GraphEdgeOp) {
-        self.graph_write_set.push((object_id, op));
+    pub(crate) fn record_graph_operation(&self, object_id: TableId, op: GraphEdgeOp) {
+        self.graph_write_set.borrow_mut().push((object_id, op));
     }
 
     /// Record a time series operation for commit/rollback.
@@ -1648,32 +1663,48 @@ impl<FS: FileSystem> Transaction<FS> {
         }
 
         // Apply graph edge operations after bloom filter inserts.
-        // Note: GraphAdjacency table engine not yet implemented, so operations are logged to WAL
-        // but not applied to any actual table. When GraphAdjacency is implemented, add the variant
-        // to TableEngineInstance and uncomment the application logic below.
-        for (_object_id, _op) in &self.graph_write_set {
-            // TODO: Apply graph operations when GraphAdjacency table engine is implemented
-            // if let Some(engine) = self.engine_registry.get(*object_id) {
-            //     match &engine {
-            //         crate::table::TableEngineInstance::GraphAdjacency(graph) => {
-            //             match op {
-            //                 GraphEdgeOp::AddEdge { source, label, target, edge_id } => {
-            //                     graph.add_edge(source, label, target, edge_id)
-            //                         .map_err(|e| TransactionError::Other(format!("Graph add_edge failed: {}", e)))?;
-            //                 }
-            //                 GraphEdgeOp::RemoveEdge { source, label, target, edge_id } => {
-            //                     graph.remove_edge(source, label, target, edge_id)
-            //                         .map_err(|e| TransactionError::Other(format!("Graph remove_edge failed: {}", e)))?;
-            //                 }
-            //             }
-            //         }
-            //         _ => {
-            //             return Err(TransactionError::Other(
-            //                 "table is not a graph adjacency table".to_string(),
-            //             ))
-            //         }
-            //     }
-            // }
+        for (object_id, op) in self.graph_write_set.borrow().iter() {
+            if let Some(engine) = self.engine_registry.get(*object_id) {
+                match &engine {
+                    crate::table::TableEngineInstance::MemoryGraphTable(graph) => {
+                        match op {
+                            GraphEdgeOp::AddEdge {
+                                source,
+                                label,
+                                target,
+                                edge_id,
+                            } => {
+                                graph.add_edge(source.as_slice(), label.as_slice(), target.as_slice(), edge_id.as_slice()).map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "Graph add_edge failed: {}",
+                                        e
+                                    ))
+                                })?;
+                            }
+                            GraphEdgeOp::RemoveEdge {
+                                source,
+                                label,
+                                target,
+                                edge_id,
+                            } => {
+                                graph
+                                    .remove_edge(source.as_slice(), label.as_slice(), target.as_slice(), edge_id.as_slice())
+                                    .map_err(|e| {
+                                        TransactionError::Other(format!(
+                                            "Graph remove_edge failed: {}",
+                                            e
+                                        ))
+                                    })?;
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(TransactionError::Other(
+                            "table is not a graph adjacency table".to_string(),
+                        ))
+                    }
+                }
+            }
         }
 
         // Apply time series operations after graph edge operations.
@@ -1878,7 +1909,7 @@ impl<FS: FileSystem> Transaction<FS> {
         }
 
         // Add tables from graph_write_set
-        for (object_id, _op) in &self.graph_write_set {
+        for (object_id, _op) in self.graph_write_set.borrow().iter() {
             modified_tables.insert(*object_id);
         }
 
@@ -2205,7 +2236,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
     }
 
     fn add_edge(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
@@ -2256,7 +2287,7 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
     }
 
     fn remove_edge(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
@@ -2307,8 +2338,8 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
 
     fn outgoing(
         &self,
-        _source: &[u8],
-        _label: Option<&[u8]>,
+        source: &[u8],
+        label: Option<&[u8]>,
     ) -> crate::table::TableResult<Self::EdgeCursor<'_>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -2317,20 +2348,34 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
             )));
         }
 
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
-        // Note: GraphAdjacency table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "GraphAdjacency table engine not yet implemented".to_string(),
-        ))
+        // Get the graph table from the registry
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::MemoryGraphTable(graph) => {
+                    // Get the cursor from the underlying graph table
+                    let cursor = graph.outgoing(source, label)?;
+                    // Wrap it in TransactionEdgeCursor
+                    Ok(TransactionEdgeCursor::from_memory_cursor(cursor))
+                }
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a graph adjacency table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "graph table not found in registry".to_string(),
+            ))
+        }
     }
 
     fn incoming(
         &self,
-        _target: &[u8],
-        _label: Option<&[u8]>,
+        target: &[u8],
+        label: Option<&[u8]>,
     ) -> crate::table::TableResult<Self::EdgeCursor<'_>> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -2339,29 +2384,52 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
             )));
         }
 
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
-        // Note: GraphAdjacency table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "GraphAdjacency table engine not yet implemented".to_string(),
-        ))
+        // Get the graph table from the registry
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::MemoryGraphTable(graph) => {
+                    // Get the cursor from the underlying graph table
+                    let cursor = graph.incoming(target, label)?;
+                    // Wrap it in TransactionEdgeCursor
+                    Ok(TransactionEdgeCursor::from_memory_cursor(cursor))
+                }
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a graph adjacency table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "graph table not found in registry".to_string(),
+            ))
+        }
     }
 
     fn stats(&self) -> crate::table::TableResult<SpecialtyTableStats> {
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 
-        // Note: GraphAdjacency table engine not yet implemented
-        Err(crate::table::TableError::Other(
-            "GraphAdjacency table engine not yet implemented".to_string(),
-        ))
+        // Get stats from the underlying graph table
+        if let Some(engine) = self.engine_registry.get(table_id) {
+            match &engine {
+                crate::table::TableEngineInstance::MemoryGraphTable(graph) => graph.stats(),
+                _ => Err(crate::table::TableError::Other(
+                    "table is not a graph adjacency table".to_string(),
+                )),
+            }
+        } else {
+            Err(crate::table::TableError::Other(
+                "graph table not found in registry".to_string(),
+            ))
+        }
     }
 
     fn verify(&self) -> crate::table::TableResult<VerificationReport> {
-        let _table_id = self.current_table_id.ok_or_else(|| {
+        let table_id = self.current_table_id.ok_or_else(|| {
             crate::table::TableError::Other("no table context set for graph operation".to_string())
         })?;
 

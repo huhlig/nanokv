@@ -1021,7 +1021,7 @@ pub trait GraphAdjacency {
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
     fn add_edge(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
@@ -1030,7 +1030,7 @@ pub trait GraphAdjacency {
 
     /// Add an edge with an optional weight.
     fn add_edge_with_weight(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
@@ -1042,7 +1042,7 @@ pub trait GraphAdjacency {
     }
 
     fn remove_edge(
-        &mut self,
+        &self,
         source: &[u8],
         label: &[u8],
         target: &[u8],
