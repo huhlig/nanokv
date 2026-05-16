@@ -27,13 +27,16 @@
 //! in one or more layers, with connections to M neighbors per layer.
 
 use crate::pager::{Page, PageId, PageType, Pager};
+use crate::snap::Snapshot;
 use crate::table::{
     HnswVector, SpecialtyTableCapabilities, SpecialtyTableStats, Table, TableEngineKind,
     TableError, TableResult, VectorHit, VectorMetric, VectorSearch, VectorSearchOptions,
     VerificationReport,
 };
+use crate::txn::{TransactionId, VersionChain};
 use crate::types::{KeyBuf, TableId};
 use crate::vfs::FileSystem;
+use crate::wal::LogSequenceNumber;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -138,6 +141,73 @@ struct HnswNode {
 
     /// Neighbors at each layer (layer -> list of neighbor node IDs)
     neighbors: Vec<Vec<NodeId>>,
+
+    /// Version chain for MVCC support
+    version_chain: VersionChain,
+}
+
+impl HnswNode {
+    /// Create a new HNSW node with a version chain.
+    fn new(id: KeyBuf, vector: Vec<f32>, layer: usize, tx_id: TransactionId) -> Self {
+        // Create a version chain with empty value (vector is stored separately)
+        let version_chain = VersionChain::new(Vec::new(), tx_id);
+        Self {
+            id,
+            vector,
+            layer,
+            neighbors: vec![Vec::new(); layer + 1],
+            version_chain,
+        }
+    }
+
+    /// Check if this node is visible to the given snapshot.
+    /// Returns false if the visible version is a tombstone.
+    fn is_visible(&self, snapshot: &Snapshot) -> bool {
+        match self.version_chain.find_visible_version(snapshot) {
+            Some(value) => !Self::is_tombstone(value),
+            None => false,
+        }
+    }
+
+    /// Check if a version value is a tombstone marker.
+    /// Tombstones are marked with a single byte [0xFF].
+    fn is_tombstone(value: &[u8]) -> bool {
+        value == &[0xFF]
+    }
+
+    /// Create a tombstone marker value.
+    fn tombstone_marker() -> Vec<u8> {
+        vec![0xFF]
+    }
+
+    /// Commit this node's version at the given LSN.
+    fn commit(&mut self, lsn: LogSequenceNumber) {
+        self.version_chain.commit(lsn);
+    }
+
+    /// Prepend a new version to this node's chain.
+    /// For deletions, use prepend_tombstone instead.
+    fn prepend_version(&mut self, tx_id: TransactionId) {
+        let old_chain = std::mem::replace(
+            &mut self.version_chain,
+            VersionChain::new(Vec::new(), tx_id),
+        );
+        self.version_chain = old_chain.prepend(Vec::new(), tx_id);
+    }
+
+    /// Prepend a tombstone version to mark this node as deleted.
+    fn prepend_tombstone(&mut self, tx_id: TransactionId) {
+        let old_chain = std::mem::replace(
+            &mut self.version_chain,
+            VersionChain::new(Self::tombstone_marker(), tx_id),
+        );
+        self.version_chain = old_chain.prepend(Self::tombstone_marker(), tx_id);
+    }
+
+    /// Vacuum old versions from this node's chain.
+    fn vacuum(&mut self, min_visible_lsn: LogSequenceNumber) -> usize {
+        self.version_chain.vacuum(min_visible_lsn)
+    }
 }
 
 /// Metadata stored in the root page
@@ -577,6 +647,11 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
             }
         }
 
+        // Serialize version chain using postcard
+        let chain_bytes = postcard::to_allocvec(&node.version_chain).unwrap_or_default();
+        data.extend_from_slice(&(chain_bytes.len() as u32).to_le_bytes());
+        data.extend_from_slice(&chain_bytes);
+
         Ok(data)
     }
 
@@ -644,11 +719,23 @@ impl<FS: FileSystem> PagedHnswVector<FS> {
             neighbors.push(layer_neighbors);
         }
 
+        // Deserialize version chain
+        let chain_len = u32::from_le_bytes(
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|e| TableError::Other(format!("Failed to read version chain length: {}", e)))?,
+        ) as usize;
+        pos += 4;
+
+        let version_chain = postcard::from_bytes(&data[pos..pos + chain_len])
+            .map_err(|e| TableError::Other(format!("Failed to deserialize version chain: {}", e)))?;
+
         Ok(HnswNode {
             id,
             vector,
             layer,
             neighbors,
+            version_chain,
         })
     }
 
@@ -825,12 +912,13 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
             let max_layer = *self.max_layer.read().unwrap();
 
             // Create initial node with empty neighbors
-            let initial_node = HnswNode {
-                id: id_buf.clone(),
-                vector: vector.to_vec(),
+            // Use transaction ID 0 for non-transactional insert (will be committed immediately)
+            let initial_node = HnswNode::new(
+                id_buf.clone(),
+                vector.to_vec(),
                 layer,
-                neighbors: vec![Vec::new(); layer + 1],
-            };
+                TransactionId::from(0),
+            );
             let node_id = self.store_node(&initial_node)?;
 
             // Search from top layer down to layer+1
@@ -881,12 +969,13 @@ impl<FS: FileSystem> VectorSearch for PagedHnswVector<FS> {
             node_id
         } else {
             // First node - becomes entry point
-            let node = HnswNode {
-                id: id_buf.clone(),
-                vector: vector.to_vec(),
+            // Use transaction ID 0 for non-transactional insert (will be committed immediately)
+            let node = HnswNode::new(
+                id_buf.clone(),
+                vector.to_vec(),
                 layer,
-                neighbors: vec![Vec::new(); layer + 1],
-            };
+                TransactionId::from(0),
+            );
             let node_id = self.store_node(&node)?;
             *self.entry_point.write().unwrap() = Some(node_id);
             *self.max_layer.write().unwrap() = layer;
@@ -1005,6 +1094,249 @@ impl<FS: FileSystem> HnswVector for PagedHnswVector<FS> {
     fn set_max_connections(&self, m: usize) {
         self.config.write().unwrap().max_connections = m;
         self.config.write().unwrap().max_connections_layer0 = m * 2;
+    }
+}
+
+// MVCC transaction support methods
+impl<FS: FileSystem> PagedHnswVector<FS> {
+    /// Insert a vector with transaction tracking.
+    pub fn insert_vector_tx(
+        &self,
+        id: &[u8],
+        vector: &[f32],
+        tx_id: TransactionId,
+    ) -> TableResult<()> {
+        // Validate vector dimensions
+        if vector.len() != self.config.read().unwrap().dimensions {
+            return Err(TableError::invalid_value(
+                "vector",
+                format!(
+                    "dimension mismatch: expected {}, got {}",
+                    self.config.read().unwrap().dimensions,
+                    vector.len()
+                ),
+            ));
+        }
+
+        let id_buf = KeyBuf(id.to_vec());
+
+        // Check if vector already exists
+        if self.id_to_node.read().unwrap().contains_key(&id_buf) {
+            return Err(TableError::Other(format!(
+                "Vector with ID {:?} already exists",
+                id_buf
+            )));
+        }
+
+        // Select layer for new node
+        let layer = self.select_layer();
+
+        // Get entry point
+        let entry_point = *self.entry_point.read().unwrap();
+
+        let node_id = if let Some(ep) = entry_point {
+            // Insert into existing graph
+            let max_layer = *self.max_layer.read().unwrap();
+
+            // Create initial node with transaction tracking
+            let initial_node = HnswNode::new(
+                id_buf.clone(),
+                vector.to_vec(),
+                layer,
+                tx_id,
+            );
+            let node_id = self.store_node(&initial_node)?;
+
+            // Search from top layer down to layer+1
+            let mut current_nearest = vec![ep];
+            for lc in (layer + 1..=max_layer).rev() {
+                current_nearest = self
+                    .search_layer(vector, current_nearest, 1, lc)?
+                    .into_iter()
+                    .map(|c| c.node_id)
+                    .collect();
+            }
+
+            // Insert at layers 0..=layer
+            for lc in 0..=layer {
+                let m = if lc == 0 {
+                    self.config.read().unwrap().max_connections_layer0
+                } else {
+                    self.config.read().unwrap().max_connections
+                };
+
+                let candidates = self.search_layer(
+                    vector,
+                    current_nearest.clone(),
+                    self.config.read().unwrap().ef_construction,
+                    lc,
+                )?;
+
+                let neighbors = self.select_neighbors(candidates, m, lc, true);
+
+                // Add bidirectional connections
+                self.connect_nodes(node_id, neighbors.clone(), lc)?;
+
+                // Update neighbors' connections
+                for neighbor_id in neighbors {
+                    self.prune_connections(neighbor_id, lc)?;
+                }
+
+                // Update current_nearest for next layer
+                current_nearest = vec![node_id];
+            }
+
+            // Update max layer if needed
+            if layer > max_layer {
+                *self.max_layer.write().unwrap() = layer;
+                *self.entry_point.write().unwrap() = Some(node_id);
+            }
+
+            node_id
+        } else {
+            // First node - becomes entry point
+            let node = HnswNode::new(
+                id_buf.clone(),
+                vector.to_vec(),
+                layer,
+                tx_id,
+            );
+            let node_id = self.store_node(&node)?;
+            *self.entry_point.write().unwrap() = Some(node_id);
+            *self.max_layer.write().unwrap() = layer;
+            node_id
+        };
+
+        // Update mapping
+        self.id_to_node.write().unwrap().insert(id_buf, node_id);
+        *self.num_vectors.write().unwrap() += 1;
+
+        Ok(())
+    }
+
+    /// Delete a vector with transaction tracking.
+    pub fn delete_vector_tx(&self, id: &[u8], tx_id: TransactionId) -> TableResult<()> {
+        let id_buf = KeyBuf(id.to_vec());
+
+        // Find the node
+        let node_id = self
+            .id_to_node
+            .read()
+            .unwrap()
+            .get(&id_buf)
+            .copied()
+            .ok_or_else(|| TableError::key_not_found(format!("Vector with ID {:?}", id_buf)))?;
+
+        // Load the node and mark it with a tombstone
+        let mut node = self.load_node(node_id)?;
+        node.prepend_tombstone(tx_id);
+        self.update_node(node_id, &node)?;
+
+        Ok(())
+    }
+
+    /// Search for vectors respecting snapshot visibility.
+    pub fn search_vector_snapshot(
+        &self,
+        query: &[f32],
+        limit: usize,
+        ef_search: Option<usize>,
+        snapshot: &Snapshot,
+    ) -> TableResult<Vec<VectorHit>> {
+        // Validate query dimensions
+        if query.len() != self.config.read().unwrap().dimensions {
+            return Err(TableError::invalid_value(
+                "query",
+                format!(
+                    "dimension mismatch: expected {}, got {}",
+                    self.config.read().unwrap().dimensions,
+                    query.len()
+                ),
+            ));
+        }
+
+        let entry_point = *self.entry_point.read().unwrap();
+        if entry_point.is_none() {
+            return Ok(Vec::new());
+        }
+
+        let ep = entry_point.unwrap();
+        let max_layer = *self.max_layer.read().unwrap();
+        let ef = ef_search.unwrap_or(self.config.read().unwrap().ef_construction);
+
+        // Search from top layer down to layer 0
+        let mut current_nearest = vec![ep];
+        for lc in (1..=max_layer).rev() {
+            current_nearest = self
+                .search_layer(query, current_nearest, 1, lc)?
+                .into_iter()
+                .map(|c| c.node_id)
+                .collect();
+        }
+
+        // Final search at layer 0
+        let candidates = self.search_layer(query, current_nearest, ef, 0)?;
+
+        // Convert to VectorHit, filter by visibility, and apply limit
+        let mut results = Vec::new();
+        for candidate in candidates {
+            let node = self.load_node(candidate.node_id)?;
+            
+            // Check visibility
+            if node.is_visible(snapshot) {
+                results.push(VectorHit {
+                    id: node.id,
+                    distance: candidate.distance,
+                });
+                
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Commit all versions created by the given transaction.
+    pub fn commit_versions(
+        &self,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
+        // Iterate through all nodes and commit matching versions
+        let id_to_node = self.id_to_node.read().unwrap();
+        for &node_id in id_to_node.values() {
+            let mut node = self.load_node(node_id)?;
+            
+            if node.version_chain.created_by == tx_id
+                && node.version_chain.commit_lsn.is_none()
+            {
+                node.commit(commit_lsn);
+                self.update_node(node_id, &node)?;
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Vacuum old versions that are no longer visible.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let mut total_removed = 0;
+        
+        // Iterate through all nodes and vacuum old versions
+        let id_to_node = self.id_to_node.read().unwrap();
+        for &node_id in id_to_node.values() {
+            let mut node = self.load_node(node_id)?;
+            let removed = node.vacuum(min_visible_lsn);
+            
+            if removed > 0 {
+                total_removed += removed;
+                self.update_node(node_id, &node)?;
+            }
+        }
+        
+        Ok(total_removed)
     }
 }
 
