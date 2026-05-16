@@ -132,7 +132,10 @@ fn test_rtree_mvcc_multiple_versions() {
         );
 
         // Query a large area that should contain all points up to this version
-        let query = GeometryRef::Point(GeoPoint { x: 25.0, y: 35.0 });
+        let query = GeometryRef::BoundingBox {
+            min: GeoPoint { x: 0.0, y: 0.0 },
+            max: GeoPoint { x: 50.0, y: 50.0 },
+        };
         let results = rtree
             .search_intersects_snapshot(query, 10, &snapshot)
             .unwrap();
@@ -177,7 +180,10 @@ fn test_rtree_mvcc_delete_creates_tombstone() {
     );
 
     // Verify point is visible
-    let query = GeometryRef::Point(GeoPoint { x: 10.0, y: 20.0 });
+    let query = GeometryRef::BoundingBox {
+        min: GeoPoint { x: 5.0, y: 15.0 },
+        max: GeoPoint { x: 15.0, y: 25.0 },
+    };
     let results = rtree
         .search_intersects_snapshot(query.clone(), 10, &snapshot1)
         .unwrap();
@@ -317,7 +323,10 @@ fn test_rtree_mvcc_vacuum() {
         Vec::new(),
     );
 
-    let query = GeometryRef::Point(GeoPoint { x: 15.0, y: 25.0 });
+    let query = GeometryRef::BoundingBox {
+        min: GeoPoint { x: 10.0, y: 20.0 },
+        max: GeoPoint { x: 20.0, y: 30.0 },
+    };
     let results = rtree
         .search_intersects_snapshot(query, 10, &snapshot)
         .unwrap();
@@ -351,7 +360,10 @@ fn test_rtree_mvcc_uncommitted_not_visible() {
         Vec::new(),
     );
 
-    let query = GeometryRef::Point(GeoPoint { x: 10.0, y: 20.0 });
+    let query = GeometryRef::BoundingBox {
+        min: GeoPoint { x: 5.0, y: 15.0 },
+        max: GeoPoint { x: 15.0, y: 25.0 },
+    };
     let results = rtree
         .search_intersects_snapshot(query, 10, &snapshot)
         .unwrap();
@@ -397,7 +409,10 @@ fn test_rtree_mvcc_concurrent_transactions() {
         Vec::new(),
     );
 
-    let query = GeometryRef::Point(GeoPoint { x: 15.0, y: 15.0 });
+    let query = GeometryRef::BoundingBox {
+        min: GeoPoint { x: 0.0, y: 0.0 },
+        max: GeoPoint { x: 35.0, y: 35.0 },
+    };
     let results1 = rtree
         .search_intersects_snapshot(query.clone(), 10, &snapshot1)
         .unwrap();
