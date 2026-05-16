@@ -331,14 +331,61 @@ impl<FS: FileSystem> PointLookup for AppendLog<FS> {
 // MutableTable Trait Implementation
 // =============================================================================
 
-impl<FS: FileSystem> MutableTable for AppendLog<FS> {
+impl<FS: FileSystem> MutableTable for &AppendLog<FS> {
     fn put(&mut self, key: &[u8], value: &[u8]) -> TableResult<u64> {
         let mut state = self.state.write().unwrap();
 
         // Check if we need to roll the segment
-        if Self::should_roll_segment(&state, &self.config) {
-            Self::roll_segment(&mut state, self.pager.clone())?;
-            Self::apply_retention(&mut state, &self.config.retention_policy)?;
+        // Call associated functions directly on the concrete type
+        if state.active_segment.size() >= self.config.segment_size {
+            // Roll the active segment to immutable
+            let old_segment_id = state.active_segment.id();
+            let next_segment_id = state.next_segment_id;
+
+            // Create new segment first to handle potential errors before mutating state
+            let new_segment = Segment::new(next_segment_id, self.pager.clone())?;
+            let old_segment = std::mem::replace(&mut state.active_segment, new_segment);
+
+            state.immutable_segments.insert(old_segment_id, old_segment);
+            state.next_segment_id = SegmentId(next_segment_id.0 + 1);
+            debug!("Rolled segment {} to immutable", old_segment_id.0);
+
+            // Apply retention policy
+            match &self.config.retention_policy {
+                RetentionPolicy::None => {}
+                RetentionPolicy::MaxSegments(max) => {
+                    while state.immutable_segments.len() > *max {
+                        if let Some((segment_id, _)) = state.immutable_segments.iter().next() {
+                            let segment_id = *segment_id;
+                            state.immutable_segments.remove(&segment_id);
+                            state.index.retain(|_, (seg_id, _)| *seg_id != segment_id);
+                            debug!("Removed segment {} due to retention policy", segment_id.0);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                RetentionPolicy::MaxAge(duration) => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let cutoff = now.saturating_sub(duration.as_secs());
+
+                    let to_remove: Vec<SegmentId> = state
+                        .immutable_segments
+                        .iter()
+                        .filter(|(_, seg)| seg.created_at() < cutoff)
+                        .map(|(id, _)| *id)
+                        .collect();
+
+                    for segment_id in to_remove {
+                        state.immutable_segments.remove(&segment_id);
+                        state.index.retain(|_, (seg_id, _)| *seg_id != segment_id);
+                        debug!("Removed segment {} due to age retention", segment_id.0);
+                    }
+                }
+            }
         }
 
         // Append to active segment
@@ -400,7 +447,7 @@ impl<FS: FileSystem> OrderedScan for AppendLog<FS> {
 // Flushable Trait Implementation
 // =============================================================================
 
-impl<FS: FileSystem> Flushable for AppendLog<FS> {
+impl<FS: FileSystem> Flushable for &AppendLog<FS> {
     fn flush(&mut self) -> TableResult<()> {
         let state = self.state.read().unwrap();
         state.active_segment.flush()?;

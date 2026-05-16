@@ -239,7 +239,12 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
     /// Insert a geometry into the tree.
     #[instrument(skip(self, geometry))]
-    fn insert_internal(&self, id: &[u8], geometry: GeometryRef<'_>, tx_id: TransactionId) -> TableResult<()> {
+    fn insert_internal(
+        &self,
+        id: &[u8],
+        geometry: GeometryRef<'_>,
+        tx_id: TransactionId,
+    ) -> TableResult<()> {
         let mbr = self.geometry_to_mbr(geometry)?;
         let object_id = KeyBuf(id.to_vec());
 
@@ -252,10 +257,12 @@ impl<FS: FileSystem> PagedRTree<FS> {
         })?;
 
         // Check if an entry with this ID already exists
-        if let Some((leaf_page_id, entry_index)) = self.find_leaf_entry(root_page_id, &root_node, id)? {
+        if let Some((leaf_page_id, entry_index)) =
+            self.find_leaf_entry(root_page_id, &root_node, id)?
+        {
             // Entry exists - update its version chain and MBR
             let mut leaf_node = Self::read_node(&self.pager, leaf_page_id)?;
-            
+
             if let Some(entries) = leaf_node.leaf_entries_mut() {
                 if let Some(entry) = entries.get_mut(entry_index) {
                     // Update the MBR to the new geometry
@@ -266,7 +273,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
                     return Ok(());
                 }
             }
-            
+
             return Err(TableError::Other(format!(
                 "Failed to update entry at index {} in leaf {}",
                 entry_index, leaf_page_id
@@ -1204,13 +1211,13 @@ impl<FS: FileSystem> PagedRTree<FS> {
         // The actual deletion happens during vacuum
         let root_page_id = self.root_page_id();
         let root_node = Self::read_node(&self.pager, root_page_id)?;
-        
+
         // Find the leaf containing this object
-        if let Some((leaf_page_id, entry_index)) = 
-            self.find_leaf_entry(root_page_id, &root_node, id)? 
+        if let Some((leaf_page_id, entry_index)) =
+            self.find_leaf_entry(root_page_id, &root_node, id)?
         {
             let mut leaf_node = Self::read_node(&self.pager, leaf_page_id)?;
-            
+
             if let Some(entries) = leaf_node.leaf_entries_mut() {
                 if let Some(entry) = entries.get_mut(entry_index) {
                     // Prepend a new version to mark as deleted
@@ -1220,8 +1227,11 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 }
             }
         }
-        
-        Err(TableError::key_not_found(format!("Geometry {:?} not found", id)))
+
+        Err(TableError::key_not_found(format!(
+            "Geometry {:?} not found",
+            id
+        )))
     }
 
     /// Search for geometries that intersect with the query, respecting snapshot visibility.
@@ -1335,8 +1345,8 @@ impl<FS: FileSystem> PagedRTree<FS> {
             RTreeNode::Leaf { entries, .. } => {
                 let mut modified = false;
                 for entry in entries.iter_mut() {
-                    if entry.version_chain.created_by == tx_id 
-                        && entry.version_chain.commit_lsn.is_none() 
+                    if entry.version_chain.created_by == tx_id
+                        && entry.version_chain.commit_lsn.is_none()
                     {
                         entry.commit(commit_lsn);
                         modified = true;
@@ -1394,11 +1404,8 @@ impl<FS: FileSystem> PagedRTree<FS> {
             RTreeNode::Internal { entries, .. } => {
                 for entry in entries {
                     let child_node = Self::read_node(&self.pager, entry.child_page_id)?;
-                    total_removed += self.vacuum_recursive(
-                        entry.child_page_id,
-                        child_node,
-                        min_visible_lsn,
-                    )?;
+                    total_removed +=
+                        self.vacuum_recursive(entry.child_page_id, child_node, min_visible_lsn)?;
                 }
             }
         }
@@ -1426,8 +1433,8 @@ impl<FS: FileSystem> PagedRTree<FS> {
                 // Search all children (we don't have spatial info for the ID)
                 for entry in entries {
                     let child_node = Self::read_node(&self.pager, entry.child_page_id)?;
-                    if let Some(result) = 
-                        self.find_leaf_entry(entry.child_page_id, &child_node, id)? 
+                    if let Some(result) =
+                        self.find_leaf_entry(entry.child_page_id, &child_node, id)?
                     {
                         return Ok(Some(result));
                     }
@@ -1436,7 +1443,6 @@ impl<FS: FileSystem> PagedRTree<FS> {
             }
         }
     }
-
 }
 
 // Implement Table trait

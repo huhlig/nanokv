@@ -184,10 +184,9 @@ impl LeafEntry {
             return Err("Insufficient bytes for version chain data".to_string());
         }
 
-        let version_chain = postcard::from_bytes(
-            &bytes[chain_len_offset + 4..chain_len_offset + 4 + chain_len],
-        )
-        .map_err(|e| format!("Failed to deserialize version chain: {}", e))?;
+        let version_chain =
+            postcard::from_bytes(&bytes[chain_len_offset + 4..chain_len_offset + 4 + chain_len])
+                .map_err(|e| format!("Failed to deserialize version chain: {}", e))?;
 
         Ok(Self {
             mbr,

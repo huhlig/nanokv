@@ -510,7 +510,10 @@ impl<FS: FileSystem> Transaction<FS> {
 
     /// Record a geospatial operation for commit/rollback.
     pub(crate) fn record_geospatial_operation(&self, object_id: TableId, op: GeoSpatialOp) {
-        self.geospatial_write_set.write().unwrap().push((object_id, op));
+        self.geospatial_write_set
+            .write()
+            .unwrap()
+            .push((object_id, op));
     }
 
     /// Record a full-text operation for commit/rollback.
@@ -1367,12 +1370,36 @@ impl<FS: FileSystem> Transaction<FS> {
         for ((object_id, key), value_opt) in &self.write_set {
             if let Some(engine) = self.engine_registry.get(*object_id) {
                 match &engine {
-                    TableEngineInstance::AppendLog(_appendlog) => {
+                    TableEngineInstance::AppendLog(appendlog) => {
                         // AppendLog doesn't use writer pattern, access directly
-                        // Need to get mutable reference - this is a limitation of the current design
-                        // In a real implementation, we'd need to handle this differently
-                        // For now, skip AppendLog in commit (writes are already applied)
-                        // TODO: Implement proper AppendLog commit handling
+                        // Uses interior mutability (RwLock) so we can call methods on &AppendLog
+                        match value_opt {
+                            Some(value) => {
+                                MutableTable::put(&mut appendlog.as_ref(), key, value).map_err(
+                                    |e| {
+                                        TransactionError::Other(format!(
+                                            "AppendLog put failed: {}",
+                                            e
+                                        ))
+                                    },
+                                )?;
+                            }
+                            None => {
+                                MutableTable::delete(&mut appendlog.as_ref(), key).map_err(
+                                    |e| {
+                                        TransactionError::Other(format!(
+                                            "AppendLog delete failed: {}",
+                                            e
+                                        ))
+                                    },
+                                )?;
+                            }
+                        }
+
+                        // Flush the AppendLog to ensure data is persisted
+                        Flushable::flush(&mut appendlog.as_ref()).map_err(|e| {
+                            TransactionError::Other(format!("AppendLog flush failed: {}", e))
+                        })?;
                     }
                     TableEngineInstance::PagedBTree(btree) => {
                         // Get a writer for this transaction
@@ -1748,12 +1775,14 @@ impl<FS: FileSystem> Transaction<FS> {
                                 },
                                 SerializedGeometry::Wkb(wkb) => GeometryRef::Wkb(wkb.as_slice()),
                             };
-                            rtree.insert_geometry(id.as_slice(), geometry_ref).map_err(|e| {
-                                TransactionError::Other(format!(
-                                    "GeoSpatial insert_geometry failed: {}",
-                                    e
-                                ))
-                            })?;
+                            rtree
+                                .insert_geometry(id.as_slice(), geometry_ref)
+                                .map_err(|e| {
+                                    TransactionError::Other(format!(
+                                        "GeoSpatial insert_geometry failed: {}",
+                                        e
+                                    ))
+                                })?;
                         }
                         GeoSpatialOp::DeleteGeometry { id } => {
                             rtree.delete_geometry(id.as_slice()).map_err(|e| {

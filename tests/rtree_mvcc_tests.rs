@@ -39,9 +39,7 @@ fn test_rtree_mvcc_snapshot_isolation() {
 
     // Transaction 1: Insert a point at (10.0, 20.0)
     let point1 = GeometryRef::Point(GeoPoint { x: 10.0, y: 20.0 });
-    rtree
-        .insert_geometry_tx(b"point1", point1, tx_id1)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point1", point1, tx_id1).unwrap();
 
     // Commit transaction 1 at LSN 10
     rtree
@@ -60,9 +58,7 @@ fn test_rtree_mvcc_snapshot_isolation() {
 
     // Transaction 2: Insert a point at (15.0, 25.0)
     let point2 = GeometryRef::Point(GeoPoint { x: 15.0, y: 25.0 });
-    rtree
-        .insert_geometry_tx(b"point2", point2, tx_id2)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point2", point2, tx_id2).unwrap();
 
     // Commit transaction 2 at LSN 20
     rtree
@@ -162,9 +158,7 @@ fn test_rtree_mvcc_delete_creates_tombstone() {
 
     // Transaction 1: Insert a point
     let point = GeometryRef::Point(GeoPoint { x: 10.0, y: 20.0 });
-    rtree
-        .insert_geometry_tx(b"point1", point, tx_id1)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point1", point, tx_id1).unwrap();
     rtree
         .commit_versions(tx_id1, LogSequenceNumber::from(10))
         .unwrap();
@@ -199,7 +193,11 @@ fn test_rtree_mvcc_delete_creates_tombstone() {
     let results = rtree
         .search_intersects_snapshot(query.clone(), 10, &snapshot1)
         .unwrap();
-    assert_eq!(results.len(), 1, "Old snapshot should still see deleted point");
+    assert_eq!(
+        results.len(),
+        1,
+        "Old snapshot should still see deleted point"
+    );
 
     // New snapshot should not see the point
     let snapshot2 = Snapshot::new(
@@ -214,7 +212,11 @@ fn test_rtree_mvcc_delete_creates_tombstone() {
     let results = rtree
         .search_intersects_snapshot(query.clone(), 10, &snapshot2)
         .unwrap();
-    assert_eq!(results.len(), 0, "New snapshot should not see deleted point");
+    assert_eq!(
+        results.len(),
+        0,
+        "New snapshot should not see deleted point"
+    );
 }
 
 #[test]
@@ -231,12 +233,8 @@ fn test_rtree_mvcc_nearest_neighbor_snapshot() {
     // Transaction 1: Insert points at (10, 10) and (20, 20)
     let point1 = GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 });
     let point2 = GeometryRef::Point(GeoPoint { x: 20.0, y: 20.0 });
-    rtree
-        .insert_geometry_tx(b"point1", point1, tx_id1)
-        .unwrap();
-    rtree
-        .insert_geometry_tx(b"point2", point2, tx_id1)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point1", point1, tx_id1).unwrap();
+    rtree.insert_geometry_tx(b"point2", point2, tx_id1).unwrap();
     rtree
         .commit_versions(tx_id1, LogSequenceNumber::from(10))
         .unwrap();
@@ -253,9 +251,7 @@ fn test_rtree_mvcc_nearest_neighbor_snapshot() {
 
     // Transaction 2: Insert a closer point at (5, 5)
     let point3 = GeometryRef::Point(GeoPoint { x: 5.0, y: 5.0 });
-    rtree
-        .insert_geometry_tx(b"point3", point3, tx_id2)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point3", point3, tx_id2).unwrap();
     rtree
         .commit_versions(tx_id2, LogSequenceNumber::from(20))
         .unwrap();
@@ -299,9 +295,7 @@ fn test_rtree_mvcc_vacuum() {
         let x = 10.0 + (i as f64);
         let y = 20.0 + (i as f64);
         let point = GeometryRef::Point(GeoPoint { x, y });
-        rtree
-            .insert_geometry_tx(b"point1", point, tx_id)
-            .unwrap();
+        rtree.insert_geometry_tx(b"point1", point, tx_id).unwrap();
         rtree
             .commit_versions(tx_id, LogSequenceNumber::from(i * 10))
             .unwrap();
@@ -346,9 +340,7 @@ fn test_rtree_mvcc_uncommitted_not_visible() {
 
     // Insert a point but don't commit it
     let point = GeometryRef::Point(GeoPoint { x: 10.0, y: 20.0 });
-    rtree
-        .insert_geometry_tx(b"point1", point, tx_id)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point1", point, tx_id).unwrap();
 
     // Create a snapshot - uncommitted data should not be visible
     let snapshot = Snapshot::new(
@@ -384,15 +376,11 @@ fn test_rtree_mvcc_concurrent_transactions() {
 
     // Transaction 1: Insert point1
     let point1 = GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 });
-    rtree
-        .insert_geometry_tx(b"point1", point1, tx_id1)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point1", point1, tx_id1).unwrap();
 
     // Transaction 2: Insert point2 (before tx1 commits)
     let point2 = GeometryRef::Point(GeoPoint { x: 20.0, y: 20.0 });
-    rtree
-        .insert_geometry_tx(b"point2", point2, tx_id2)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point2", point2, tx_id2).unwrap();
 
     // Commit tx1 at LSN 10
     rtree
@@ -426,9 +414,7 @@ fn test_rtree_mvcc_concurrent_transactions() {
 
     // Transaction 3: Insert point3
     let point3 = GeometryRef::Point(GeoPoint { x: 30.0, y: 30.0 });
-    rtree
-        .insert_geometry_tx(b"point3", point3, tx_id3)
-        .unwrap();
+    rtree.insert_geometry_tx(b"point3", point3, tx_id3).unwrap();
     rtree
         .commit_versions(tx_id3, LogSequenceNumber::from(30))
         .unwrap();
