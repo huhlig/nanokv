@@ -597,7 +597,7 @@ impl<FS: FileSystem> Database<FS> {
     /// are potentially visible).
     pub fn min_visible_lsn(&self) -> Option<LogSequenceNumber> {
         let snapshots = self.snapshots.read().unwrap();
-        
+
         // Find the minimum LSN across all active snapshots
         snapshots.values().map(|snapshot| snapshot.lsn).min()
     }
@@ -664,10 +664,10 @@ impl<FS: FileSystem> Database<FS> {
     /// ```
     pub fn vacuum_all(&self) -> Result<std::collections::HashMap<TableId, usize>, DatabaseError> {
         let mut results = std::collections::HashMap::new();
-        
+
         // Get all tables
         let tables = self.list_tables()?;
-        
+
         for table_info in tables {
             // Try to vacuum each table, but don't fail if a table doesn't support it
             match self.vacuum_table(table_info.id) {
@@ -682,7 +682,7 @@ impl<FS: FileSystem> Database<FS> {
                 }
             }
         }
-        
+
         Ok(results)
     }
 

@@ -2265,7 +2265,11 @@ impl<FS: FileSystem> PagedBTree<FS> {
     }
 
     /// Vacuum a single node recursively.
-    fn vacuum_node(&self, page_id: PageId, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+    fn vacuum_node(
+        &self,
+        page_id: PageId,
+        min_visible_lsn: LogSequenceNumber,
+    ) -> TableResult<usize> {
         let node = self.read_node(page_id)?;
         let mut total_removed = 0;
 
@@ -2280,7 +2284,10 @@ impl<FS: FileSystem> PagedBTree<FS> {
                 }
                 total_removed += self.vacuum_node(rightmost_child, min_visible_lsn)?;
             }
-            BTreeNode::Leaf { mut entries, next_leaf } => {
+            BTreeNode::Leaf {
+                mut entries,
+                next_leaf,
+            } => {
                 // Vacuum each entry's version chain
                 for entry in &mut entries {
                     let removed = entry.chain.vacuum(min_visible_lsn);

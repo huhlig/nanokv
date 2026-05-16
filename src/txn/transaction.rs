@@ -359,7 +359,7 @@ pub struct Transaction<FS: FileSystem> {
 
     // Track specialty-table geospatial operations for commit/rollback
     // Each entry is (table_id, geospatial_operation)
-    geospatial_write_set: Vec<(TableId, GeoSpatialOp)>,
+    geospatial_write_set: RwLock<Vec<(TableId, GeoSpatialOp)>>,
 
     // Track specialty-table full-text operations for commit/rollback
     // Each entry is (table_id, full_text_operation)
@@ -405,7 +405,7 @@ impl<FS: FileSystem> Transaction<FS> {
             graph_write_set: Vec::new(),
             timeseries_write_set: std::cell::RefCell::new(Vec::new()),
             vector_write_set: RwLock::new(Vec::new()),
-            geospatial_write_set: Vec::new(),
+            geospatial_write_set: RwLock::new(Vec::new()),
             fulltext_write_set: RwLock::new(Vec::new()),
             conflict_detector,
             wal,
@@ -509,8 +509,8 @@ impl<FS: FileSystem> Transaction<FS> {
     }
 
     /// Record a geospatial operation for commit/rollback.
-    pub(crate) fn record_geospatial_operation(&mut self, object_id: TableId, op: GeoSpatialOp) {
-        self.geospatial_write_set.push((object_id, op));
+    pub(crate) fn record_geospatial_operation(&self, object_id: TableId, op: GeoSpatialOp) {
+        self.geospatial_write_set.write().unwrap().push((object_id, op));
     }
 
     /// Record a full-text operation for commit/rollback.
@@ -1720,13 +1720,59 @@ impl<FS: FileSystem> Transaction<FS> {
         drop(vector_ops);
 
         // Apply geospatial operations after vector operations.
-        // Note: PagedRTree methods require &mut self, but the engine is stored in Arc.
-        // The R-Tree implementation needs to be updated to use interior mutability (RwLock)
-        // for its mutable state before geospatial operations can be applied in transactions.
-        // Operations are logged to WAL for durability.
-        for (_object_id, _op) in &self.geospatial_write_set {
-            // TODO: Apply geospatial operations when PagedRTree is updated to use interior mutability
+        let geospatial_ops = self.geospatial_write_set.read().unwrap();
+        for (object_id, op) in geospatial_ops.iter() {
+            if let Some(engine) = self.engine_registry.get(*object_id) {
+                match &engine {
+                    crate::table::TableEngineInstance::PagedRTree(rtree) => match op {
+                        GeoSpatialOp::InsertGeometry { id, geometry } => {
+                            // Convert SerializedGeometry to GeometryRef
+                            let geometry_ref = match geometry {
+                                SerializedGeometry::Point { x, y } => {
+                                    GeometryRef::Point(crate::table::GeoPoint { x: *x, y: *y })
+                                }
+                                SerializedGeometry::BoundingBox {
+                                    min_x,
+                                    min_y,
+                                    max_x,
+                                    max_y,
+                                } => GeometryRef::BoundingBox {
+                                    min: crate::table::GeoPoint {
+                                        x: *min_x,
+                                        y: *min_y,
+                                    },
+                                    max: crate::table::GeoPoint {
+                                        x: *max_x,
+                                        y: *max_y,
+                                    },
+                                },
+                                SerializedGeometry::Wkb(wkb) => GeometryRef::Wkb(wkb.as_slice()),
+                            };
+                            rtree.insert_geometry(id.as_slice(), geometry_ref).map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "GeoSpatial insert_geometry failed: {}",
+                                    e
+                                ))
+                            })?;
+                        }
+                        GeoSpatialOp::DeleteGeometry { id } => {
+                            rtree.delete_geometry(id.as_slice()).map_err(|e| {
+                                TransactionError::Other(format!(
+                                    "GeoSpatial delete_geometry failed: {}",
+                                    e
+                                ))
+                            })?;
+                        }
+                    },
+                    _ => {
+                        return Err(TransactionError::Other(
+                            "table is not a geospatial R-Tree table".to_string(),
+                        ));
+                    }
+                }
+            }
         }
+        drop(geospatial_ops);
 
         // Apply full-text operations after geospatial operations.
         let fulltext_ops = self.fulltext_write_set.read().unwrap();
@@ -1821,8 +1867,11 @@ impl<FS: FileSystem> Transaction<FS> {
         }
 
         // Add tables from geospatial_write_set
-        for (object_id, _op) in &self.geospatial_write_set {
-            modified_tables.insert(*object_id);
+        {
+            let geospatial_ops = self.geospatial_write_set.read().unwrap();
+            for (object_id, _op) in geospatial_ops.iter() {
+                modified_tables.insert(*object_id);
+            }
         }
 
         // Add tables from fulltext_write_set
@@ -2714,7 +2763,7 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
     }
 
     fn insert_geometry(
-        &mut self,
+        &self,
         id: &[u8],
         geometry: GeometryRef<'_>,
     ) -> crate::table::TableResult<()> {
@@ -2797,7 +2846,7 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
         Ok(())
     }
 
-    fn delete_geometry(&mut self, id: &[u8]) -> crate::table::TableResult<()> {
+    fn delete_geometry(&self, id: &[u8]) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
                 "transaction {} is not active for delete_geometry",

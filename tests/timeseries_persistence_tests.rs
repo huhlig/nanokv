@@ -64,7 +64,7 @@ fn test_bucket_flush_and_load() {
 
     bucket.insert(100, vec![1, 2, 3], tx_id).unwrap();
     bucket.insert(200, vec![4, 5, 6], tx_id).unwrap();
-    
+
     // Commit the versions
     bucket.commit_versions(tx_id, commit_lsn);
 
@@ -393,7 +393,7 @@ fn test_large_bucket_persistence() {
     for i in 0..1000 {
         bucket.insert(i, vec![i as u8; 10], tx_id).unwrap();
     }
-    
+
     // Commit all versions
     bucket.commit_versions(tx_id, commit_lsn);
 
@@ -436,9 +436,11 @@ fn test_timeseries_cursor_aggregations() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -476,9 +478,11 @@ fn test_timeseries_cursor_downsampling_avg() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 120).unwrap();
     let windows = cursor.downsample(60, TimeSeriesAggregation::Avg).unwrap();
@@ -517,9 +521,11 @@ fn test_timeseries_cursor_skips_non_numeric_values_for_numeric_aggregations() {
         .append_point(series_key, 200, b"not-a-number")
         .unwrap();
     table.append_point(series_key, 300, b"18").unwrap();
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -546,9 +552,11 @@ fn test_timeseries_cursor_downsampling_count_and_invalid_interval() {
     table.append_point(series_key, 10, b"bad").unwrap();
     table.append_point(series_key, 20, b"still-bad").unwrap();
     table.append_point(series_key, 70, b"ignored").unwrap();
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 120).unwrap();
     let windows = cursor.downsample(60, TimeSeriesAggregation::Count).unwrap();
@@ -610,9 +618,11 @@ fn test_aggregation_with_single_value() {
 
     let series_key = b"single-value";
     table.append_point(series_key, 100, b"42.5").unwrap();
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 200).unwrap();
 
@@ -646,9 +656,11 @@ fn test_aggregation_with_negative_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -675,9 +687,11 @@ fn test_aggregation_with_zero_values() {
     for i in 0..5 {
         table.append_point(series_key, i * 100, b"0").unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -710,9 +724,11 @@ fn test_aggregation_with_very_large_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 
@@ -744,9 +760,11 @@ fn test_aggregation_with_very_small_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 
@@ -780,9 +798,11 @@ fn test_downsampling_with_uneven_windows() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 100).unwrap();
     let windows = cursor.downsample(50, TimeSeriesAggregation::Sum).unwrap();
@@ -823,9 +843,11 @@ fn test_downsampling_with_min_max() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 100).unwrap();
 
@@ -876,9 +898,11 @@ fn test_aggregation_with_json_nested_values() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 
@@ -905,9 +929,11 @@ fn test_aggregation_with_all_non_numeric() {
             .append_point(series_key, i * 100, b"not-a-number")
             .unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 500).unwrap();
 
@@ -939,9 +965,11 @@ fn test_downsampling_with_large_interval() {
             .append_point(series_key, i * 10, format!("{}", i * 10).as_bytes())
             .unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 100).unwrap();
 
@@ -973,9 +1001,11 @@ fn test_multiple_aggregations_consistency() {
     for (ts, value) in samples {
         table.append_point(series_key, ts, value).unwrap();
     }
-    
+
     // Commit the versions so they become visible
-    table.commit_versions(TransactionId::from(0), create_commit_lsn()).unwrap();
+    table
+        .commit_versions(TransactionId::from(0), create_commit_lsn())
+        .unwrap();
 
     let cursor = table.scan_series(series_key, 0, 400).unwrap();
 

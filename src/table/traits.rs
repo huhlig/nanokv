@@ -1097,9 +1097,9 @@ pub trait GeoSpatial {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn insert_geometry(&mut self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()>;
+    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()>;
 
-    fn delete_geometry(&mut self, id: &[u8]) -> TableResult<()>;
+    fn delete_geometry(&self, id: &[u8]) -> TableResult<()>;
 
     fn intersects(&self, query: GeometryRef<'_>, limit: usize) -> TableResult<Vec<GeoHit>>;
 

@@ -184,14 +184,29 @@ fn test_concurrent_readers_consistent_state() {
     // Multiple readers from snapshot should see consistent state
     for i in 0..5 {
         let tx_reader = db.begin_read_at(snapshot.lsn).unwrap();
-        
+
         let v1 = tx_reader.get(table_id, b"key1").unwrap();
         let v2 = tx_reader.get(table_id, b"key2").unwrap();
         let v3 = tx_reader.get(table_id, b"key3").unwrap();
-        
-        assert_eq!(v1.as_ref().map(|v| v.0.as_slice()), Some(&b"value1"[..]), "Reader {} saw wrong value for key1", i);
-        assert_eq!(v2.as_ref().map(|v| v.0.as_slice()), Some(&b"value2"[..]), "Reader {} saw wrong value for key2", i);
-        assert_eq!(v3.as_ref().map(|v| v.0.as_slice()), Some(&b"value3"[..]), "Reader {} saw wrong value for key3", i);
+
+        assert_eq!(
+            v1.as_ref().map(|v| v.0.as_slice()),
+            Some(&b"value1"[..]),
+            "Reader {} saw wrong value for key1",
+            i
+        );
+        assert_eq!(
+            v2.as_ref().map(|v| v.0.as_slice()),
+            Some(&b"value2"[..]),
+            "Reader {} saw wrong value for key2",
+            i
+        );
+        assert_eq!(
+            v3.as_ref().map(|v| v.0.as_slice()),
+            Some(&b"value3"[..]),
+            "Reader {} saw wrong value for key3",
+            i
+        );
     }
 
     // Commit the update
@@ -276,19 +291,23 @@ fn test_write_write_conflict_btree() {
     // Second transaction tries to write to same key - should detect conflict
     let result = tx2.put(table_id, b"key1", b"tx2_value");
     assert!(result.is_err(), "Expected write-write conflict on put");
-    
+
     // Verify the error is a write-write conflict
     match result {
         Err(e) => {
             let err_str = format!("{:?}", e);
-            assert!(err_str.contains("WriteWriteConflict"), "Expected WriteWriteConflict error, got: {}", err_str);
+            assert!(
+                err_str.contains("WriteWriteConflict"),
+                "Expected WriteWriteConflict error, got: {}",
+                err_str
+            );
         }
         Ok(_) => panic!("Expected error but got Ok"),
     }
 
     // First commit should succeed
     assert!(tx1.commit().is_ok());
-    
+
     // tx2 already failed at put(), so we don't need to test commit
 }
 
@@ -349,7 +368,9 @@ fn test_long_running_transaction_consistency() {
         let mut tx_update = db.begin_write(Durability::SyncOnCommit).unwrap();
         let key = format!("key{}", i);
         let value = format!("updated{}", i);
-        tx_update.put(table_id, key.as_bytes(), value.as_bytes()).unwrap();
+        tx_update
+            .put(table_id, key.as_bytes(), value.as_bytes())
+            .unwrap();
         tx_update.commit().unwrap();
     }
 
@@ -407,7 +428,7 @@ fn test_long_running_transaction_blocks_vacuum() {
 
     // Try to vacuum - should not remove versions visible to snapshot
     let _removed = db.vacuum_table(table_id).unwrap();
-    
+
     // Snapshot should still be able to read original value
     let tx_snap = db.begin_read_at(snapshot.lsn).unwrap();
     let value = tx_snap.get(table_id, b"key1").unwrap();
@@ -418,7 +439,7 @@ fn test_long_running_transaction_blocks_vacuum() {
 
     // Now vacuum should be able to remove more versions
     let _removed_after = db.vacuum_table(table_id).unwrap();
-    
+
     // We can't assert exact counts due to base version retention,
     // but we verified the snapshot protection works
 }

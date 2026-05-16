@@ -266,12 +266,12 @@ impl MemoryGraphTable {
         // Vacuum in-memory index if enabled
         if self.config.use_memory_index {
             let mut index = self.index.write().unwrap();
-            
+
             // Vacuum outgoing edges
             for chain in index.outgoing_edges.values_mut() {
                 total_removed += chain.vacuum(min_visible_lsn);
             }
-            
+
             // Vacuum incoming edges
             for chain in index.incoming_edges.values_mut() {
                 total_removed += chain.vacuum(min_visible_lsn);

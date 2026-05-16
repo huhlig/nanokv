@@ -575,7 +575,11 @@ impl<FS: FileSystem> LsmTree<FS> {
         let mut total_removed = 0;
 
         // Vacuum active memtable
-        total_removed += self.active_memtable.read().unwrap().vacuum(min_visible_lsn)?;
+        total_removed += self
+            .active_memtable
+            .read()
+            .unwrap()
+            .vacuum(min_visible_lsn)?;
 
         // Vacuum immutable memtables
         let immutable = self.immutable_memtables.read().unwrap();

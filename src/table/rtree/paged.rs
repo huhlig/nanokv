@@ -1231,11 +1231,11 @@ impl<FS: FileSystem> GeoSpatial for PagedRTree<FS> {
         }
     }
 
-    fn insert_geometry(&mut self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()> {
+    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()> {
         self.insert_internal(id, geometry)
     }
 
-    fn delete_geometry(&mut self, id: &[u8]) -> TableResult<()> {
+    fn delete_geometry(&self, id: &[u8]) -> TableResult<()> {
         self.delete_internal(id)
     }
 
