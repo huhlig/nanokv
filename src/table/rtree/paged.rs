@@ -17,12 +17,15 @@
 //! Paged R-Tree implementation for geospatial indexing.
 
 use crate::pager::{PageId, PageType, Pager};
+use crate::snap::Snapshot;
 use crate::table::{
     GeoHit, GeoPoint, GeoSpatial, GeometryRef, SpecialtyTableCapabilities, SpecialtyTableStats,
     Table, TableCapabilities, TableEngineKind, TableError, TableResult, VerificationReport,
 };
+use crate::txn::TransactionId;
 use crate::types::{KeyBuf, TableId};
 use crate::vfs::FileSystem;
+use crate::wal::LogSequenceNumber;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, instrument};
@@ -139,11 +142,13 @@ impl<FS: FileSystem> PagedRTree<FS> {
             .map_err(|e| TableError::Other(format!("Invalid spatial config: {}", e)))?;
 
         // Convert geometries to leaf entries
+        // Use transaction ID 0 for bulk load (will be committed immediately)
+        let tx_id = TransactionId::from(0);
         let leaf_entries: Vec<LeafEntry> = entries
             .into_iter()
             .map(|(id, geometry)| {
                 let mbr = Self::geometry_to_mbr_static(geometry)?;
-                Ok(LeafEntry::new(mbr, KeyBuf(id)))
+                Ok(LeafEntry::new(mbr, KeyBuf(id), tx_id))
             })
             .collect::<TableResult<Vec<_>>>()?;
 
@@ -234,10 +239,10 @@ impl<FS: FileSystem> PagedRTree<FS> {
 
     /// Insert a geometry into the tree.
     #[instrument(skip(self, geometry))]
-    fn insert_internal(&self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()> {
+    fn insert_internal(&self, id: &[u8], geometry: GeometryRef<'_>, tx_id: TransactionId) -> TableResult<()> {
         let mbr = self.geometry_to_mbr(geometry)?;
         let object_id = KeyBuf(id.to_vec());
-        let entry = LeafEntry::new(mbr, object_id);
+        let entry = LeafEntry::new(mbr, object_id, tx_id);
 
         let root_page_id = self.root_page_id();
         let root_node = Self::read_node(&self.pager, root_page_id).map_err(|e| {
@@ -1039,6 +1044,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
             &query_mbr,
             &mut results,
             limit,
+            None,
         )?;
 
         Ok(results)
@@ -1052,6 +1058,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
         query_mbr: &Mbr,
         results: &mut Vec<GeoHit>,
         limit: usize,
+        snapshot: Option<&Snapshot>,
     ) -> TableResult<()> {
         if results.len() >= limit {
             return Ok(());
@@ -1061,6 +1068,12 @@ impl<FS: FileSystem> PagedRTree<FS> {
             RTreeNode::Leaf { entries, .. } => {
                 for entry in entries {
                     if entry.mbr.intersects(query_mbr) {
+                        // Check visibility if snapshot is provided
+                        if let Some(snap) = snapshot {
+                            if !entry.is_visible(snap) {
+                                continue;
+                            }
+                        }
                         results.push(GeoHit {
                             id: entry.object_id.clone(),
                             distance: None,
@@ -1081,6 +1094,7 @@ impl<FS: FileSystem> PagedRTree<FS> {
                             query_mbr,
                             results,
                             limit,
+                            snapshot,
                         )?;
                         if results.len() >= limit {
                             break;
@@ -1150,6 +1164,255 @@ impl<FS: FileSystem> PagedRTree<FS> {
             })
             .collect())
     }
+    /// Insert a geometry with transaction tracking.
+    pub fn insert_geometry_tx(
+        &self,
+        id: &[u8],
+        geometry: GeometryRef<'_>,
+        tx_id: TransactionId,
+    ) -> TableResult<()> {
+        self.insert_internal(id, geometry, tx_id)
+    }
+
+    /// Delete a geometry with transaction tracking.
+    pub fn delete_geometry_tx(&self, id: &[u8], tx_id: TransactionId) -> TableResult<()> {
+        // For delete, we mark the entry with a new version that will be invisible
+        // The actual deletion happens during vacuum
+        let root_page_id = self.root_page_id();
+        let root_node = Self::read_node(&self.pager, root_page_id)?;
+        
+        // Find the leaf containing this object
+        if let Some((leaf_page_id, entry_index)) = 
+            self.find_leaf_entry(root_page_id, &root_node, id)? 
+        {
+            let mut leaf_node = Self::read_node(&self.pager, leaf_page_id)?;
+            
+            if let Some(entries) = leaf_node.leaf_entries_mut() {
+                if let Some(entry) = entries.get_mut(entry_index) {
+                    // Prepend a new version to mark as deleted
+                    entry.prepend_version(tx_id);
+                    Self::write_node(&self.pager, leaf_page_id, &leaf_node)?;
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(TableError::key_not_found(format!("Geometry {:?} not found", id)))
+    }
+
+    /// Search for geometries that intersect with the query, respecting snapshot visibility.
+    pub fn search_intersects_snapshot(
+        &self,
+        query: GeometryRef<'_>,
+        limit: usize,
+        snapshot: &Snapshot,
+    ) -> TableResult<Vec<GeoHit>> {
+        let query_mbr = self.geometry_to_mbr(query)?;
+        let mut results = Vec::new();
+
+        let root_page_id = self.root_page_id();
+        let root_node = Self::read_node(&self.pager, root_page_id)?;
+
+        self.search_intersects_recursive(
+            root_page_id,
+            &root_node,
+            &query_mbr,
+            &mut results,
+            limit,
+            Some(snapshot),
+        )?;
+
+        Ok(results)
+    }
+
+    /// Search for nearest geometries to a point, respecting snapshot visibility.
+    pub fn search_nearest_snapshot(
+        &self,
+        point: GeoPoint,
+        limit: usize,
+        snapshot: &Snapshot,
+    ) -> TableResult<Vec<GeoHit>> {
+        let mut heap = BinaryHeap::new();
+        let mut results = Vec::new();
+
+        let root_page_id = self.root_page_id();
+        let root_node = Self::read_node(&self.pager, root_page_id)?;
+
+        heap.push(std::cmp::Reverse((
+            -root_node
+                .calculate_mbr(self.config.dimensions)
+                .min_distance(point) as i64,
+            root_page_id,
+            matches!(root_node, RTreeNode::Leaf { .. }),
+        )));
+
+        while let Some(std::cmp::Reverse((_neg_dist, page_id, _is_leaf))) = heap.pop() {
+            if results.len() >= limit {
+                break;
+            }
+
+            let node = Self::read_node(&self.pager, page_id)?;
+
+            match node {
+                RTreeNode::Leaf { entries, .. } => {
+                    for entry in entries {
+                        // Check visibility
+                        if entry.is_visible(snapshot) {
+                            let distance = entry.mbr.min_distance(point);
+                            results.push((distance, entry.object_id.clone()));
+                        }
+                    }
+                }
+                RTreeNode::Internal { entries, .. } => {
+                    for entry in entries {
+                        let distance = entry.mbr.min_distance(point);
+                        heap.push(std::cmp::Reverse((
+                            -(distance as i64),
+                            entry.child_page_id,
+                            false,
+                        )));
+                    }
+                }
+            }
+        }
+
+        results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        results.truncate(limit);
+
+        Ok(results
+            .into_iter()
+            .map(|(distance, id)| GeoHit {
+                id,
+                distance: Some(distance as f32),
+            })
+            .collect())
+    }
+
+    /// Commit all versions created by the given transaction.
+    pub fn commit_versions(
+        &self,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
+        let root_page_id = self.root_page_id();
+        let root_node = Self::read_node(&self.pager, root_page_id)?;
+        self.commit_versions_recursive(root_page_id, root_node, tx_id, commit_lsn)
+    }
+
+    /// Recursively commit versions in the tree.
+    fn commit_versions_recursive(
+        &self,
+        page_id: PageId,
+        mut node: RTreeNode,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
+        match &mut node {
+            RTreeNode::Leaf { entries, .. } => {
+                let mut modified = false;
+                for entry in entries.iter_mut() {
+                    if entry.version_chain.created_by == tx_id 
+                        && entry.version_chain.commit_lsn.is_none() 
+                    {
+                        entry.commit(commit_lsn);
+                        modified = true;
+                    }
+                }
+                if modified {
+                    Self::write_node(&self.pager, page_id, &node)?;
+                }
+            }
+            RTreeNode::Internal { entries, .. } => {
+                for entry in entries {
+                    let child_node = Self::read_node(&self.pager, entry.child_page_id)?;
+                    self.commit_versions_recursive(
+                        entry.child_page_id,
+                        child_node,
+                        tx_id,
+                        commit_lsn,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Vacuum old versions that are no longer visible.
+    pub fn vacuum(&self, min_visible_lsn: LogSequenceNumber) -> TableResult<usize> {
+        let root_page_id = self.root_page_id();
+        let root_node = Self::read_node(&self.pager, root_page_id)?;
+        self.vacuum_recursive(root_page_id, root_node, min_visible_lsn)
+    }
+
+    /// Recursively vacuum old versions in the tree.
+    fn vacuum_recursive(
+        &self,
+        page_id: PageId,
+        mut node: RTreeNode,
+        min_visible_lsn: LogSequenceNumber,
+    ) -> TableResult<usize> {
+        let mut total_removed = 0;
+
+        match &mut node {
+            RTreeNode::Leaf { entries, .. } => {
+                let mut modified = false;
+                for entry in entries.iter_mut() {
+                    let removed = entry.vacuum(min_visible_lsn);
+                    if removed > 0 {
+                        total_removed += removed;
+                        modified = true;
+                    }
+                }
+                if modified {
+                    Self::write_node(&self.pager, page_id, &node)?;
+                }
+            }
+            RTreeNode::Internal { entries, .. } => {
+                for entry in entries {
+                    let child_node = Self::read_node(&self.pager, entry.child_page_id)?;
+                    total_removed += self.vacuum_recursive(
+                        entry.child_page_id,
+                        child_node,
+                        min_visible_lsn,
+                    )?;
+                }
+            }
+        }
+
+        Ok(total_removed)
+    }
+
+    /// Find a leaf entry by object ID.
+    fn find_leaf_entry(
+        &self,
+        page_id: PageId,
+        node: &RTreeNode,
+        id: &[u8],
+    ) -> TableResult<Option<(PageId, usize)>> {
+        match node {
+            RTreeNode::Leaf { entries, .. } => {
+                for (index, entry) in entries.iter().enumerate() {
+                    if entry.object_id.as_ref() == id {
+                        return Ok(Some((page_id, index)));
+                    }
+                }
+                Ok(None)
+            }
+            RTreeNode::Internal { entries, .. } => {
+                // Search all children (we don't have spatial info for the ID)
+                for entry in entries {
+                    let child_node = Self::read_node(&self.pager, entry.child_page_id)?;
+                    if let Some(result) = 
+                        self.find_leaf_entry(entry.child_page_id, &child_node, id)? 
+                    {
+                        return Ok(Some(result));
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
 }
 
 // Implement Table trait
@@ -1232,7 +1495,9 @@ impl<FS: FileSystem> GeoSpatial for PagedRTree<FS> {
     }
 
     fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()> {
-        self.insert_internal(id, geometry)
+        // Use transaction ID 0 for non-transactional inserts
+        // These will be immediately committed
+        self.insert_internal(id, geometry, TransactionId::from(0))
     }
 
     fn delete_geometry(&self, id: &[u8]) -> TableResult<()> {

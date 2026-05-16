@@ -25,6 +25,7 @@ use super::mbr::Mbr;
 use super::node::{InternalEntry, LeafEntry, RTreeNode};
 use crate::pager::{PageId, PageType, Pager};
 use crate::table::TableError;
+use crate::txn::TransactionId;
 use crate::vfs::FileSystem;
 
 /// Entry to be bulk loaded, with precomputed center coordinates.
@@ -101,10 +102,12 @@ pub fn str_bulk_load<FS: FileSystem>(
         slice.sort_by(|a, b| a.center_y.partial_cmp(&b.center_y).unwrap());
 
         // Group into leaf nodes of max_entries each
+        // Use transaction ID 0 for bulk load (will be committed immediately)
+        let tx_id = TransactionId::from(0);
         for chunk in slice.chunks(max_entries) {
             let leaf_entries: Vec<LeafEntry> = chunk
                 .iter()
-                .map(|e| LeafEntry::new(e.mbr, e.object_id.clone()))
+                .map(|e| LeafEntry::new(e.mbr, e.object_id.clone(), tx_id))
                 .collect();
             leaf_groups.push(leaf_entries);
         }
@@ -315,13 +318,14 @@ mod tests {
         let fs = MemoryFileSystem::new();
         let pager = create_test_pager(&fs, "/test_bulk_load_small.db");
         let config = SpatialConfig::default().with_max_entries(64);
+        let tx_id = TransactionId::from(0);
 
         let entries: Vec<LeafEntry> = (0..100)
             .map(|i| {
                 let x = (i % 10) as f64;
                 let y = (i / 10) as f64;
                 let mbr = Mbr::from_point_2d(GeoPoint { x, y });
-                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()))
+                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()), tx_id)
             })
             .collect();
 
@@ -344,13 +348,14 @@ mod tests {
         let fs = MemoryFileSystem::new();
         let pager = create_test_pager(&fs, "/test_bulk_load_large.db");
         let config = SpatialConfig::default().with_max_entries(64);
+        let tx_id = TransactionId::from(0);
 
         let entries: Vec<LeafEntry> = (0..10_000)
             .map(|i| {
                 let x = (i % 100) as f64;
                 let y = (i / 100) as f64;
                 let mbr = Mbr::from_point_2d(GeoPoint { x, y });
-                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()))
+                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()), tx_id)
             })
             .collect();
 
@@ -396,13 +401,14 @@ mod tests {
         let fs = MemoryFileSystem::new();
         let pager = create_test_pager(&fs, "/test_bulk_load_intersects.db");
         let config = SpatialConfig::default().with_max_entries(64);
+        let tx_id = TransactionId::from(0);
 
         let entries: Vec<LeafEntry> = (0..1000)
             .map(|i| {
                 let x = (i % 50) as f64;
                 let y = (i / 50) as f64;
                 let mbr = Mbr::from_point_2d(GeoPoint { x, y });
-                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()))
+                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()), tx_id)
             })
             .collect();
 
@@ -454,6 +460,7 @@ mod tests {
         let fs = MemoryFileSystem::new();
         let pager = create_test_pager(&fs, "/test_bulk_load_leaf_chain.db");
         let config = SpatialConfig::default().with_max_entries(64);
+        let tx_id = TransactionId::from(0);
 
         let entries: Vec<LeafEntry> = (0..200)
             .map(|i| {
@@ -461,7 +468,7 @@ mod tests {
                     x: (i % 20) as f64,
                     y: (i / 20) as f64,
                 });
-                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()))
+                LeafEntry::new(mbr, KeyBuf(format!("point_{}", i).into_bytes()), tx_id)
             })
             .collect();
 

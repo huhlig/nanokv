@@ -18,7 +18,10 @@
 
 use super::mbr::Mbr;
 use crate::pager::PageId;
+use crate::snap::Snapshot;
+use crate::txn::{TransactionId, VersionChain};
 use crate::types::KeyBuf;
+use crate::wal::LogSequenceNumber;
 
 /// R-Tree node type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,12 +77,53 @@ pub struct LeafEntry {
     pub mbr: Mbr,
     /// Object identifier
     pub object_id: KeyBuf,
+    /// Version chain for MVCC support
+    pub version_chain: VersionChain,
 }
 
 impl LeafEntry {
-    /// Create a new leaf entry.
-    pub fn new(mbr: Mbr, object_id: KeyBuf) -> Self {
-        Self { mbr, object_id }
+    /// Create a new leaf entry with a version chain.
+    pub fn new(mbr: Mbr, object_id: KeyBuf, tx_id: TransactionId) -> Self {
+        // Create a version chain with empty value (geometry is stored in MBR)
+        let version_chain = VersionChain::new(Vec::new(), tx_id);
+        Self {
+            mbr,
+            object_id,
+            version_chain,
+        }
+    }
+
+    /// Create a leaf entry from existing components.
+    pub fn from_parts(mbr: Mbr, object_id: KeyBuf, version_chain: VersionChain) -> Self {
+        Self {
+            mbr,
+            object_id,
+            version_chain,
+        }
+    }
+
+    /// Check if this entry is visible to the given snapshot.
+    pub fn is_visible(&self, snapshot: &Snapshot) -> bool {
+        self.version_chain.find_visible_version(snapshot).is_some()
+    }
+
+    /// Commit this entry's version at the given LSN.
+    pub fn commit(&mut self, lsn: LogSequenceNumber) {
+        self.version_chain.commit(lsn);
+    }
+
+    /// Prepend a new version to this entry's chain.
+    pub fn prepend_version(&mut self, tx_id: TransactionId) {
+        let old_chain = std::mem::replace(
+            &mut self.version_chain,
+            VersionChain::new(Vec::new(), tx_id),
+        );
+        self.version_chain = old_chain.prepend(Vec::new(), tx_id);
+    }
+
+    /// Vacuum old versions from this entry's chain.
+    pub fn vacuum(&mut self, min_visible_lsn: LogSequenceNumber) -> usize {
+        self.version_chain.vacuum(min_visible_lsn)
     }
 
     /// Serialize the entry to bytes.
@@ -91,6 +135,11 @@ impl LeafEntry {
         let id_len = id_data.len() as u32;
         bytes.extend_from_slice(&id_len.to_le_bytes());
         bytes.extend_from_slice(id_data);
+
+        // Serialize version chain using postcard
+        let chain_bytes = postcard::to_allocvec(&self.version_chain).unwrap_or_default();
+        bytes.extend_from_slice(&(chain_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&chain_bytes);
 
         bytes
     }
@@ -120,7 +169,31 @@ impl LeafEntry {
 
         let object_id = KeyBuf(bytes[mbr_len + 4..mbr_len + 4 + id_len].to_vec());
 
-        Ok(Self { mbr, object_id })
+        // Deserialize version chain
+        let chain_len_offset = mbr_len + 4 + id_len;
+        if bytes.len() < chain_len_offset + 4 {
+            return Err("Insufficient bytes for version chain length".to_string());
+        }
+
+        let chain_len_bytes: [u8; 4] = bytes[chain_len_offset..chain_len_offset + 4]
+            .try_into()
+            .unwrap();
+        let chain_len = u32::from_le_bytes(chain_len_bytes) as usize;
+
+        if bytes.len() < chain_len_offset + 4 + chain_len {
+            return Err("Insufficient bytes for version chain data".to_string());
+        }
+
+        let version_chain = postcard::from_bytes(
+            &bytes[chain_len_offset + 4..chain_len_offset + 4 + chain_len],
+        )
+        .map_err(|e| format!("Failed to deserialize version chain: {}", e))?;
+
+        Ok(Self {
+            mbr,
+            object_id,
+            version_chain,
+        })
     }
 }
 
@@ -473,7 +546,8 @@ mod tests {
     fn test_leaf_entry_serialization() {
         let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
         let object_id = KeyBuf(b"test_object".to_vec());
-        let entry = LeafEntry::new(mbr, object_id.clone());
+        let tx_id = TransactionId::from(1);
+        let entry = LeafEntry::new(mbr, object_id.clone(), tx_id);
 
         let bytes = entry.to_bytes();
         let deserialized = LeafEntry::from_bytes(&bytes).unwrap();
@@ -487,7 +561,8 @@ mod tests {
         let mut node = RTreeNode::new_leaf();
 
         let mbr = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
-        let entry = LeafEntry::new(mbr, KeyBuf(b"test".to_vec()));
+        let tx_id = TransactionId::from(1);
+        let entry = LeafEntry::new(mbr, KeyBuf(b"test".to_vec()), tx_id);
         node.add_leaf_entry(entry).unwrap();
 
         let bytes = node.to_bytes();
@@ -503,10 +578,11 @@ mod tests {
 
         let mbr1 = Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 });
         let mbr2 = Mbr::from_points_2d(GeoPoint { x: 2.0, y: 2.0 }, GeoPoint { x: 3.0, y: 3.0 });
+        let tx_id = TransactionId::from(1);
 
-        node.add_leaf_entry(LeafEntry::new(mbr1, KeyBuf(b"obj1".to_vec())))
+        node.add_leaf_entry(LeafEntry::new(mbr1, KeyBuf(b"obj1".to_vec()), tx_id))
             .unwrap();
-        node.add_leaf_entry(LeafEntry::new(mbr2, KeyBuf(b"obj2".to_vec())))
+        node.add_leaf_entry(LeafEntry::new(mbr2, KeyBuf(b"obj2".to_vec()), tx_id))
             .unwrap();
 
         let combined_mbr = node.calculate_mbr(2);
