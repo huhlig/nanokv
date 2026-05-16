@@ -47,39 +47,39 @@ This document tracks the integration of MVCC (Multi-Version Concurrency Control)
    - Has `commit_versions()` and `vacuum()` methods
    - Serializes/deserializes chains with postcard
 
-### ❌ Engines WITHOUT VersionChain Integration
+### ⏳ Engines WITHOUT VersionChain Integration (nanokv-302)
 
-2. **MemoryGraphTable** (`src/table/graph/memory.rs`)
-   - Current: Stores edges in HashMaps
-   - Need: Version chains for edge add/remove
-   - Priority: HIGH (specialty table with transactions)
+**Status**: Blocked by nanokv-8xz (PagedRTree interior mutability) and nanokv-ckm (transaction commit path)
 
-3. **PagedRTree** (`src/table/rtree/paged.rs`)
+See `docs/SPECIALTY_TABLE_MVCC_INTEGRATION_PLAN.md` for detailed implementation plan.
+
+1. **PagedRTree** (`src/table/rtree/paged.rs`)
    - Current: Stores geometry in R-tree nodes
    - Need: Version chains for geometry updates
    - Priority: MEDIUM (geospatial queries)
+   - Blocker: nanokv-8xz (interior mutability issue)
 
-4. **PagedBloomFilter** (`src/table/bloom/paged.rs`)
-   - Current: Append-only bit array
-   - Need: Possibly N/A (bloom filters are probabilistic)
-   - Priority: LOW (may not need MVCC)
-
-5. **Blob Tables** (`src/table/blob/*.rs`)
-   - Current: Store large binary objects
-   - Need: Version chains for blob updates
-   - Priority: MEDIUM (large object storage)
-
-6. **PagedFullTextIndex** (`src/table/fulltext/mod.rs`)
-   - Current: Inverted index with posting lists
-   - Need: Version chains for document updates
-   - Priority: MEDIUM (full-text search)
-
-7. **PagedHnswVector** (`src/table/hnsw/paged.rs`)
+2. **PagedHnswVector** (`src/table/hnsw/paged.rs`)
    - Current: HNSW graph for vector search
    - Need: Version chains for vector updates
    - Priority: MEDIUM (vector search)
 
-8. **AppendLog** (`src/table/appendlog/mod.rs`)
+3. **PagedFullTextIndex** (`src/table/fulltext/mod.rs`)
+   - Current: Inverted index with posting lists
+   - Need: Version chains for document updates
+   - Priority: MEDIUM (full-text search)
+
+4. **Blob Tables** (`src/table/blob/*.rs`)
+   - Current: Store large binary objects
+   - Need: Version chains for blob metadata
+   - Priority: MEDIUM (large object storage)
+
+5. **PagedBloomFilter** (`src/table/bloom/paged.rs`)
+   - Current: Append-only bit array
+   - Need: Possibly N/A (bloom filters are probabilistic)
+   - Priority: LOW (may not need MVCC)
+
+6. **AppendLog** (`src/table/appendlog/mod.rs`)
    - Current: Append-only log
    - Need: Possibly N/A (append-only by design)
    - Priority: LOW (may not need MVCC)
