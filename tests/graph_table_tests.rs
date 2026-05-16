@@ -57,6 +57,7 @@ fn test_graph_basic_operations() {
     graph
         .remove_edge(b"alice", b"follows", b"bob", b"edge1")
         .unwrap();
+    commit_graph(&graph);
 
     let cursor = graph.outgoing(b"alice", Some(b"follows")).unwrap();
     let edges: Vec<_> = cursor.collect_all().unwrap();
@@ -72,6 +73,7 @@ fn test_graph_directed() {
     graph
         .add_edge(b"alice", b"follows", b"bob", b"edge1")
         .unwrap();
+    commit_graph(&graph);
 
     // Alice follows Bob
     let cursor = graph.outgoing(b"alice", Some(b"follows")).unwrap();
@@ -98,6 +100,7 @@ fn test_graph_undirected() {
     graph
         .add_edge(b"alice", b"friends", b"bob", b"edge1")
         .unwrap();
+    commit_graph(&graph);
 
     // Both directions should work
     let cursor = graph.outgoing(b"alice", Some(b"friends")).unwrap();
@@ -125,6 +128,7 @@ fn test_graph_multiple_labels() {
     graph
         .add_edge(b"alice", b"follows", b"charlie", b"edge3")
         .unwrap();
+    commit_graph(&graph);
 
     // Query by specific label
     let cursor = graph.outgoing(b"alice", Some(b"follows")).unwrap();
@@ -159,6 +163,7 @@ fn test_graph_bfs_traversal() {
     graph
         .add_edge(b"alice", b"knows", b"eve", b"edge4")
         .unwrap();
+    commit_graph(&graph);
 
     let mut visited = Vec::new();
     graph
@@ -188,6 +193,7 @@ fn test_graph_dfs_traversal() {
     graph
         .add_edge(b"charlie", b"knows", b"dave", b"edge3")
         .unwrap();
+    commit_graph(&graph);
 
     let mut visited = Vec::new();
     graph
@@ -216,6 +222,7 @@ fn test_graph_neighbors() {
     graph
         .add_edge(b"alice", b"knows", b"dave", b"edge3")
         .unwrap();
+    commit_graph(&graph);
 
     let neighbors = graph.neighbors(b"alice").unwrap();
     assert_eq!(neighbors.len(), 3);
@@ -232,6 +239,7 @@ fn test_graph_has_edge() {
     graph
         .add_edge(b"alice", b"follows", b"bob", b"edge1")
         .unwrap();
+    commit_graph(&graph);
 
     assert!(graph.has_edge(b"alice", b"bob", Some(b"follows")).unwrap());
     assert!(!graph.has_edge(b"bob", b"alice", Some(b"follows")).unwrap());
@@ -257,6 +265,7 @@ fn test_graph_cycle_detection() {
     graph
         .add_edge(b"charlie", b"knows", b"alice", b"edge3")
         .unwrap();
+    commit_graph(&graph);
 
     let mut visited = Vec::new();
     graph
@@ -285,6 +294,7 @@ fn test_graph_disconnected_components() {
     graph
         .add_edge(b"charlie", b"knows", b"dave", b"edge2")
         .unwrap();
+    commit_graph(&graph);
 
     // BFS from alice should only visit component 1
     let mut visited = Vec::new();
@@ -312,6 +322,7 @@ fn test_graph_stats() {
     graph
         .add_edge(b"bob", b"follows", b"charlie", b"edge2")
         .unwrap();
+    commit_graph(&graph);
 
     let stats = graph.stats().unwrap();
     assert!(stats.entry_count.is_some());
@@ -337,6 +348,7 @@ fn test_graph_self_loop() {
     graph
         .add_edge(b"alice", b"likes", b"alice", b"edge1")
         .unwrap();
+    commit_graph(&graph);
 
     let cursor = graph.outgoing(b"alice", Some(b"likes")).unwrap();
     let edges: Vec<_> = cursor.collect_all().unwrap();
@@ -361,6 +373,7 @@ fn test_graph_parallel_edges() {
     graph
         .add_edge(b"alice", b"mentions", b"bob", b"edge3")
         .unwrap();
+    commit_graph(&graph);
 
     let cursor = graph.outgoing(b"alice", None).unwrap();
     let edges: Vec<_> = cursor.collect_all().unwrap();

@@ -499,6 +499,7 @@ fn test_timeseries_append_and_scan() {
     table.append_point(b"cpu.usage", 1000, b"value1").unwrap();
     table.append_point(b"cpu.usage", 2000, b"value2").unwrap();
     table.append_point(b"cpu.usage", 3000, b"value3").unwrap();
+    table.commit_versions(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
 
     let mut cursor = table.scan_series(b"cpu.usage", 1500, 2500).unwrap();
     let mut count = 0;
@@ -562,6 +563,7 @@ fn test_graph_add_edge_and_traverse() {
     graph
         .add_edge(b"bob", b"follows", b"david", b"edge3")
         .unwrap();
+    graph.commit_versions(TransactionId::from(1), LogSequenceNumber::from(1)).unwrap();
 
     let mut cursor = graph.outgoing(b"alice", Some(b"follows")).unwrap();
     let mut count = 0;
