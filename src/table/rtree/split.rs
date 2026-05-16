@@ -713,25 +713,31 @@ fn calculate_combined_mbr_leaf(entries: &[LeafEntry], dimensions: usize) -> Mbr 
 mod tests {
     use super::*;
     use crate::table::GeoPoint;
+    use crate::txn::TransactionId;
     use crate::types::KeyBuf;
 
     fn create_test_leaf_entries() -> Vec<LeafEntry> {
+        let tx_id = TransactionId::from(1);
         vec![
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 1.0, y: 1.0 }),
                 KeyBuf(b"obj1".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 2.0, y: 2.0 }, GeoPoint { x: 3.0, y: 3.0 }),
                 KeyBuf(b"obj2".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 4.0, y: 4.0 }, GeoPoint { x: 5.0, y: 5.0 }),
                 KeyBuf(b"obj3".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 6.0, y: 6.0 }, GeoPoint { x: 7.0, y: 7.0 }),
                 KeyBuf(b"obj4".to_vec()),
+                tx_id,
             ),
         ]
     }
@@ -779,32 +785,39 @@ mod tests {
     #[test]
     fn test_hilbert_split_preserves_spatial_clustering() {
         // Create entries that are clearly clustered in two groups
+        let tx_id = TransactionId::from(1);
         let entries = vec![
             // Cluster 1: bottom-left
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 0.0, y: 0.0 }, GeoPoint { x: 0.5, y: 0.5 }),
                 KeyBuf(b"a1".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 0.1, y: 0.1 }, GeoPoint { x: 0.6, y: 0.6 }),
                 KeyBuf(b"a2".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 0.2, y: 0.2 }, GeoPoint { x: 0.7, y: 0.7 }),
                 KeyBuf(b"a3".to_vec()),
+                tx_id,
             ),
             // Cluster 2: top-right
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 8.0, y: 8.0 }, GeoPoint { x: 8.5, y: 8.5 }),
                 KeyBuf(b"b1".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 8.1, y: 8.1 }, GeoPoint { x: 8.6, y: 8.6 }),
                 KeyBuf(b"b2".to_vec()),
+                tx_id,
             ),
             LeafEntry::new(
                 Mbr::from_points_2d(GeoPoint { x: 8.2, y: 8.2 }, GeoPoint { x: 8.7, y: 8.7 }),
                 KeyBuf(b"b3".to_vec()),
+                tx_id,
             ),
         ];
 
