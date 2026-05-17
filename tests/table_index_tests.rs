@@ -441,13 +441,13 @@ fn test_rtree_insert_and_query() {
     )
     .unwrap();
     rtree
-        .insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 1.0, y: 2.0 }))
+        .insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 1.0, y: 2.0 }), TransactionId::from(0))
         .unwrap();
     rtree
-        .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 5.0, y: 5.0 }))
+        .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 5.0, y: 5.0 }), TransactionId::from(0))
         .unwrap();
     rtree
-        .insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 }))
+        .insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 }), TransactionId::from(0))
         .unwrap();
 
     let query_box = GeometryRef::BoundingBox {
@@ -471,13 +471,13 @@ fn test_rtree_nearest_neighbor() {
     )
     .unwrap();
     rtree
-        .insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 0.0, y: 0.0 }))
+        .insert_geometry(b"point1", GeometryRef::Point(GeoPoint { x: 0.0, y: 0.0 }), TransactionId::from(0))
         .unwrap();
     rtree
-        .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 }))
+        .insert_geometry(b"point2", GeometryRef::Point(GeoPoint { x: 10.0, y: 10.0 }), TransactionId::from(0))
         .unwrap();
     rtree
-        .insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 20.0, y: 20.0 }))
+        .insert_geometry(b"point3", GeometryRef::Point(GeoPoint { x: 20.0, y: 20.0 }), TransactionId::from(0))
         .unwrap();
 
     let nearest = rtree.nearest(GeoPoint { x: 1.0, y: 1.0 }, 1).unwrap();

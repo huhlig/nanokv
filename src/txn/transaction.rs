@@ -1847,7 +1847,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                 SerializedGeometry::Wkb(wkb) => GeometryRef::Wkb(wkb.as_slice()),
                             };
                             rtree
-                                .insert_geometry(id.as_slice(), geometry_ref)
+                                .insert_geometry(id.as_slice(), geometry_ref, self.txn_id)
                                 .map_err(|e| {
                                     TransactionError::Other(format!(
                                         "GeoSpatial insert_geometry failed: {}",
@@ -2903,6 +2903,7 @@ impl<FS: FileSystem> GeoSpatial for Transaction<FS> {
         &self,
         id: &[u8],
         geometry: GeometryRef<'_>,
+        _tx_id: TransactionId,
     ) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(

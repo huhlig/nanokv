@@ -1524,10 +1524,8 @@ impl<FS: FileSystem> GeoSpatial for PagedRTree<FS> {
         }
     }
 
-    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()> {
-        // Use transaction ID 0 for non-transactional inserts
-        // These will be immediately committed
-        self.insert_internal(id, geometry, TransactionId::from(0))
+    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>, tx_id: TransactionId) -> TableResult<()> {
+        self.insert_internal(id, geometry, tx_id)
     }
 
     fn delete_geometry(&self, id: &[u8]) -> TableResult<()> {

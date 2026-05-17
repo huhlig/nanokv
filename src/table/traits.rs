@@ -1097,7 +1097,7 @@ pub trait GeoSpatial {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>) -> TableResult<()>;
+    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>, tx_id: TransactionId) -> TableResult<()>;
 
     fn delete_geometry(&self, id: &[u8]) -> TableResult<()>;
 
