@@ -349,8 +349,10 @@ impl GraphAdjacency for MemoryGraphTable {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
-        self.add_edge_with_weight(source, label, target, edge_id, None)
+        self.add_edge_with_weight(source, label, target, edge_id, None, tx_id, commit_lsn)
     }
 
     fn add_edge_with_weight(
@@ -360,8 +362,10 @@ impl GraphAdjacency for MemoryGraphTable {
         target: &[u8],
         edge_id: &[u8],
         weight: Option<f64>,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
-        let (tx_id, lsn) = self.next_tx();
+        let lsn = commit_lsn;
 
         // Create edge data with optional weight
         let edge_data = EdgeData {
@@ -505,8 +509,9 @@ impl GraphAdjacency for MemoryGraphTable {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
+        tx_id: TransactionId,
+        _commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
-        let (tx_id, _lsn) = self.next_tx();
 
         // Remove edge data (storage layer handles tombstones)
         let edge_key = GraphKey::EdgeData {

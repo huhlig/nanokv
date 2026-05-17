@@ -33,13 +33,13 @@ fn test_graph_basic_operations() {
 
     // Add edges
     graph
-        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .add_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1, TransactionId::from(1), LogSequenceNumber::from(1)), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"bob", b"follows", b"charlie", b"edge2")
+        .add_edge(b"bob", b"follows", b"charlie", b"edge2", TransactionId::from(1, TransactionId::from(1), LogSequenceNumber::from(1)), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"follows", b"charlie", b"edge3")
+        .add_edge(b"alice", b"follows", b"charlie", b"edge3", TransactionId::from(1, TransactionId::from(1), LogSequenceNumber::from(1)), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -55,7 +55,7 @@ fn test_graph_basic_operations() {
 
     // Remove an edge
     graph
-        .remove_edge(b"alice", b"follows", b"bob", b"edge1")
+        .remove_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1, TransactionId::from(1), LogSequenceNumber::from(1)), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -71,7 +71,7 @@ fn test_graph_directed() {
 
     // Add directed edge
     graph
-        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .add_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1, TransactionId::from(1), LogSequenceNumber::from(1)), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -98,7 +98,7 @@ fn test_graph_undirected() {
 
     // Add undirected edge
     graph
-        .add_edge(b"alice", b"friends", b"bob", b"edge1")
+        .add_edge(b"alice", b"friends", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -120,13 +120,13 @@ fn test_graph_multiple_labels() {
 
     // Add edges with different labels
     graph
-        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .add_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"likes", b"bob", b"edge2")
+        .add_edge(b"alice", b"likes", b"bob", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"follows", b"charlie", b"edge3")
+        .add_edge(b"alice", b"follows", b"charlie", b"edge3", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -152,16 +152,16 @@ fn test_graph_bfs_traversal() {
 
     // Create a simple graph: alice -> bob -> charlie -> dave
     graph
-        .add_edge(b"alice", b"knows", b"bob", b"edge1")
+        .add_edge(b"alice", b"knows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"bob", b"knows", b"charlie", b"edge2")
+        .add_edge(b"bob", b"knows", b"charlie", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"charlie", b"knows", b"dave", b"edge3")
+        .add_edge(b"charlie", b"knows", b"dave", b"edge3", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"knows", b"eve", b"edge4")
+        .add_edge(b"alice", b"knows", b"eve", b"edge4", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -185,13 +185,13 @@ fn test_graph_dfs_traversal() {
 
     // Create a simple graph
     graph
-        .add_edge(b"alice", b"knows", b"bob", b"edge1")
+        .add_edge(b"alice", b"knows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"bob", b"knows", b"charlie", b"edge2")
+        .add_edge(b"bob", b"knows", b"charlie", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"charlie", b"knows", b"dave", b"edge3")
+        .add_edge(b"charlie", b"knows", b"dave", b"edge3", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -214,13 +214,13 @@ fn test_graph_neighbors() {
     let mut graph = MemoryGraphTable::new(TableId::from(1), "neighbors_graph".to_string(), config);
 
     graph
-        .add_edge(b"alice", b"knows", b"bob", b"edge1")
+        .add_edge(b"alice", b"knows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"knows", b"charlie", b"edge2")
+        .add_edge(b"alice", b"knows", b"charlie", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"knows", b"dave", b"edge3")
+        .add_edge(b"alice", b"knows", b"dave", b"edge3", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -237,7 +237,7 @@ fn test_graph_has_edge() {
     let mut graph = MemoryGraphTable::new(TableId::from(1), "has_edge_graph".to_string(), config);
 
     graph
-        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .add_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -257,13 +257,13 @@ fn test_graph_cycle_detection() {
 
     // Create a cycle: alice -> bob -> charlie -> alice
     graph
-        .add_edge(b"alice", b"knows", b"bob", b"edge1")
+        .add_edge(b"alice", b"knows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"bob", b"knows", b"charlie", b"edge2")
+        .add_edge(b"bob", b"knows", b"charlie", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"charlie", b"knows", b"alice", b"edge3")
+        .add_edge(b"charlie", b"knows", b"alice", b"edge3", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -287,12 +287,12 @@ fn test_graph_disconnected_components() {
 
     // Component 1: alice -> bob
     graph
-        .add_edge(b"alice", b"knows", b"bob", b"edge1")
+        .add_edge(b"alice", b"knows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
 
     // Component 2: charlie -> dave
     graph
-        .add_edge(b"charlie", b"knows", b"dave", b"edge2")
+        .add_edge(b"charlie", b"knows", b"dave", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -317,10 +317,10 @@ fn test_graph_stats() {
     let mut graph = MemoryGraphTable::new(TableId::from(1), "stats_graph".to_string(), config);
 
     graph
-        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .add_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"bob", b"follows", b"charlie", b"edge2")
+        .add_edge(b"bob", b"follows", b"charlie", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -346,7 +346,7 @@ fn test_graph_self_loop() {
 
     // Add self-loop
     graph
-        .add_edge(b"alice", b"likes", b"alice", b"edge1")
+        .add_edge(b"alice", b"likes", b"alice", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 
@@ -365,13 +365,13 @@ fn test_graph_parallel_edges() {
 
     // Add multiple edges between same vertices with different labels
     graph
-        .add_edge(b"alice", b"follows", b"bob", b"edge1")
+        .add_edge(b"alice", b"follows", b"bob", b"edge1", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"likes", b"bob", b"edge2")
+        .add_edge(b"alice", b"likes", b"bob", b"edge2", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     graph
-        .add_edge(b"alice", b"mentions", b"bob", b"edge3")
+        .add_edge(b"alice", b"mentions", b"bob", b"edge3", TransactionId::from(1), LogSequenceNumber::from(1))
         .unwrap();
     commit_graph(&graph);
 

@@ -1714,7 +1714,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                 target,
                                 edge_id,
                             } => {
-                                graph.add_edge(source.as_slice(), label.as_slice(), target.as_slice(), edge_id.as_slice()).map_err(|e| {
+                                graph.add_edge(source.as_slice(), label.as_slice(), target.as_slice(), edge_id.as_slice(), self.txn_id, commit_lsn).map_err(|e| {
                                     TransactionError::Other(format!(
                                         "Graph add_edge failed: {}",
                                         e
@@ -1728,7 +1728,7 @@ impl<FS: FileSystem> Transaction<FS> {
                                 edge_id,
                             } => {
                                 graph
-                                    .remove_edge(source.as_slice(), label.as_slice(), target.as_slice(), edge_id.as_slice())
+                                    .remove_edge(source.as_slice(), label.as_slice(), target.as_slice(), edge_id.as_slice(), self.txn_id, commit_lsn)
                                     .map_err(|e| {
                                         TransactionError::Other(format!(
                                             "Graph remove_edge failed: {}",
@@ -2281,6 +2281,8 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
+        _tx_id: crate::txn::TransactionId,
+        _commit_lsn: crate::wal::LogSequenceNumber,
     ) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
@@ -2332,6 +2334,8 @@ impl<FS: FileSystem> GraphAdjacency for Transaction<FS> {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
+        _tx_id: crate::txn::TransactionId,
+        _commit_lsn: crate::wal::LogSequenceNumber,
     ) -> crate::table::TableResult<()> {
         if !self.is_active() {
             return Err(crate::table::TableError::Other(format!(
