@@ -2118,18 +2118,25 @@ impl<FS: FileSystem> DenseOrdered for PagedBTree<FS> {
         }
     }
 
-    fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+    fn insert_entry(
+        &mut self,
+        index_key: &[u8],
+        primary_key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
         // For a secondary index, we store: index_key -> primary_key
         // This allows lookups by the indexed field to find the primary key
-
-        // Use the internal insert method with a default transaction ID
-        // and commit LSN of 1 (immediately committed for index operations)
-        let tx_id = TransactionId::from(0);
-        let commit_lsn = LogSequenceNumber::from(1);
         self.insert_internal(index_key.to_vec(), primary_key.to_vec(), tx_id, commit_lsn)
     }
 
-    fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+    fn delete_entry(
+        &mut self,
+        index_key: &[u8],
+        primary_key: &[u8],
+        _tx_id: TransactionId,
+        _commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
         // For secondary indexes, we need to delete the specific index_key -> primary_key mapping
         // First, verify that the entry exists and points to the expected primary key
 

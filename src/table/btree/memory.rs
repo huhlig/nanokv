@@ -863,7 +863,13 @@ impl DenseOrdered for MemoryBTree {
         }
     }
 
-    fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+    fn insert_entry(
+        &mut self,
+        index_key: &[u8],
+        primary_key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
         // For a secondary index, we store: index_key -> primary_key
         // This allows lookups by the indexed field to find the primary key
         let mut data = self.data.write().unwrap();
@@ -874,16 +880,14 @@ impl DenseOrdered for MemoryBTree {
             .unwrap_or(0);
 
         // Create a new version with the primary key as the value
-        let tx_id = TransactionId::from(0); // Use a default transaction ID for now
         let mut new_chain = if let Some(existing_chain) = data.remove(index_key) {
             existing_chain.prepend(primary_key.to_vec(), tx_id)
         } else {
             VersionChain::new(primary_key.to_vec(), tx_id)
         };
 
-        // Immediately commit the version for index operations
-        // Indexes don't participate in MVCC transactions
-        new_chain.commit(LogSequenceNumber::from(1));
+        // Commit the version with the provided LSN
+        new_chain.commit(commit_lsn);
 
         let new_size = Self::estimate_entry_size(index_key, &new_chain);
         data.insert(index_key.to_vec(), new_chain);
@@ -895,7 +899,13 @@ impl DenseOrdered for MemoryBTree {
         Ok(())
     }
 
-    fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()> {
+    fn delete_entry(
+        &mut self,
+        index_key: &[u8],
+        primary_key: &[u8],
+        _tx_id: TransactionId,
+        _commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()> {
         // For secondary indexes, we need to delete the specific index_key -> primary_key mapping
         // In a simple implementation, we just remove the entry if it matches
         let mut data = self.data.write().unwrap();

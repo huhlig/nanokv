@@ -870,9 +870,21 @@ pub trait DenseOrdered {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn insert_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()>;
+    fn insert_entry(
+        &mut self,
+        index_key: &[u8],
+        primary_key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
-    fn delete_entry(&mut self, index_key: &[u8], primary_key: &[u8]) -> TableResult<()>;
+    fn delete_entry(
+        &mut self,
+        index_key: &[u8],
+        primary_key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     fn scan(&self, bounds: ScanBounds) -> TableResult<Self::Cursor<'_>>;
 
@@ -926,7 +938,12 @@ pub trait ApproximateMembership {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn insert_key(&mut self, key: &[u8]) -> TableResult<()>;
+    fn insert_key(
+        &mut self,
+        key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     /// Returns false only when the key is definitely absent.
     fn might_contain(&self, key: &[u8]) -> TableResult<bool>;
@@ -948,15 +965,32 @@ pub trait FullTextSearch {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn index_document(&self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
+    fn index_document(
+        &self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     /// Update an existing document, replacing its indexed content.
     ///
     /// This is more efficient than delete-then-insert for posting list updates,
     /// as it can reuse existing posting list entries where terms haven't changed.
-    fn update_document(&self, doc_id: &[u8], fields: &[TextField<'_>]) -> TableResult<()>;
+    fn update_document(
+        &self,
+        doc_id: &[u8],
+        fields: &[TextField<'_>],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
-    fn delete_document(&self, doc_id: &[u8]) -> TableResult<()>;
+    fn delete_document(
+        &self,
+        doc_id: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     fn search(&self, query: TextQuery<'_>, limit: usize) -> TableResult<Vec<ScoredDocument>>;
 
@@ -978,9 +1012,20 @@ pub trait VectorSearch {
 
     fn metric(&self) -> VectorMetric;
 
-    fn insert_vector(&self, id: &[u8], vector: &[f32]) -> TableResult<()>;
+    fn insert_vector(
+        &self,
+        id: &[u8],
+        vector: &[f32],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
-    fn delete_vector(&self, id: &[u8]) -> TableResult<()>;
+    fn delete_vector(
+        &self,
+        id: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     fn search_vector<'a>(
         &self,
@@ -1026,6 +1071,8 @@ pub trait GraphAdjacency {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()>;
 
     /// Add an edge with an optional weight.
@@ -1035,10 +1082,12 @@ pub trait GraphAdjacency {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
-        _weight: Option<f64>,
+        weight: Option<f64>,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()> {
         // Default implementation ignores weight
-        self.add_edge(source, label, target, edge_id)
+        self.add_edge(source, label, target, edge_id, tx_id, commit_lsn)
     }
 
     fn remove_edge(
@@ -1047,6 +1096,8 @@ pub trait GraphAdjacency {
         label: &[u8],
         target: &[u8],
         edge_id: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
     ) -> TableResult<()>;
 
     fn outgoing(&self, source: &[u8], label: Option<&[u8]>) -> TableResult<Self::EdgeCursor<'_>>;
@@ -1071,7 +1122,14 @@ pub trait TimeSeries {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn append_point(&self, series_key: &[u8], timestamp: i64, value_key: &[u8]) -> TableResult<()>;
+    fn append_point(
+        &self,
+        series_key: &[u8],
+        timestamp: i64,
+        value_key: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     fn scan_series(
         &self,
@@ -1097,9 +1155,20 @@ pub trait GeoSpatial {
 
     fn capabilities(&self) -> SpecialtyTableCapabilities;
 
-    fn insert_geometry(&self, id: &[u8], geometry: GeometryRef<'_>, tx_id: TransactionId) -> TableResult<()>;
+    fn insert_geometry(
+        &self,
+        id: &[u8],
+        geometry: GeometryRef<'_>,
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
-    fn delete_geometry(&self, id: &[u8]) -> TableResult<()>;
+    fn delete_geometry(
+        &self,
+        id: &[u8],
+        tx_id: TransactionId,
+        commit_lsn: LogSequenceNumber,
+    ) -> TableResult<()>;
 
     fn intersects(&self, query: GeometryRef<'_>, limit: usize) -> TableResult<Vec<GeoHit>>;
 
